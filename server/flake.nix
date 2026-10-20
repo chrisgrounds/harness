@@ -10,11 +10,16 @@
   inputs.flake-utils.url = "github:numtide/flake-utils";
   outputs = { self, nixpkgs, nixpkgs-2605, flake-utils, haskellNix }:
     let
+      # `nix flake check` and `nix develop` fully evaluate *every* system in
+      # `eachSystem`.  haskell.nix resolves each project's plan via
+      # import-from-derivation (`cabal.project.drv`), which carries a hard
+      # platform requirement — so on an x86_64 box, evaluating the aarch64 /
+      # darwin jobs fails with "Required system: 'aarch64-linux'".  A pure
+      # flake can't detect the host system, so list only the target(s) you
+      # actually build on here.  (Add other systems when working on those
+      # hosts, e.g. via Hydra/CI on the matching machines.)
       supportedSystems = [
         "x86_64-linux"
-        "x86_64-darwin"
-        "aarch64-linux"
-        "aarch64-darwin"
       ];
     in
       flake-utils.lib.eachSystem supportedSystems (system:
