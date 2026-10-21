@@ -72,15 +72,15 @@ toApiDefinition :: Model -> ApiDefinition
 toApiDefinition Mercury3 = ApiDefinition (BaseUrl "api.inceptionlabs.ai") (Uri "/v1/chat/completions")
 
 -- TODO:
--- handle tool calls
 -- send response to client
--- build a test client
+-- handle tool calls
 
 main :: IO ()
 main = do
   loadEnv
   apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
   let socketPath = "/tmp/harness.sock"
+  print "listening..."
 
   let model = Mercury3
   let chat = ChatPayload [] model
@@ -99,7 +99,6 @@ main = do
       talk conn chat apiKey
       close conn
     )
-  -- run_agent (MaxTurns 1) apiKey model
 
 talk :: Socket -> ChatPayload -> ApiKey -> IO ()
 talk s chat apiKey = do
@@ -109,8 +108,9 @@ talk s chat apiKey = do
 
     agentMessage <- callLLM message apiKey (model chat)
 
-    sendAll s $ "you said: " <> bytes
-    talk s (addMessage agentMessage . addMessage message $ chat) apiKey
+    let newChatPayload = addMessage agentMessage . addMessage message $ chat
+    sendAll s $ L.toStrict (encode newChatPayload)
+    talk s newChatPayload apiKey
 
 callLLM :: Message -> ApiKey -> Model -> IO Message
 callLLM message key@(ApiKey apiKey) model = do
