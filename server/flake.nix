@@ -41,9 +41,9 @@
       in flake // {
         legacyPackages = pkgs;
 
-        # `nix build .` builds the hello executable; the per-component
-        # attributes (e.g. `nix build .#hello:exe:hello`) come from `flake`.
-        packages = flake.packages // { default = flake.packages."hello:exe:hello"; };
+        # `nix build .` builds the server executable; the per-component
+        # attributes (e.g. `nix build .#hello:exe:server`) come from `flake`.
+        packages = flake.packages // { default = flake.packages."hello:exe:server"; };
       });
 
   # --- Flake Local Nix Configuration ----------------------------
