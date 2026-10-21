@@ -14,6 +14,8 @@ import System.Directory
 import qualified Data.ByteString.Char8 as B
 import GHC.Generics (Generic)
 import Data.Text
+import Control.Monad (unless, forever, void)
+import Network.Socket.ByteString (recv, sendAll)
 
 newtype BaseUrl = BaseUrl Text
   deriving (Show)
@@ -23,6 +25,9 @@ newtype Uri = Uri Text
 
 newtype ApiKey = ApiKey String
   deriving (Show)
+
+newtype MaxTurns = MaxTurns Int
+  deriving (Show, Num, Eq)
 
 data Message = Message {
   role :: String,
@@ -45,18 +50,22 @@ data APIDefinition = APIDefinition BaseUrl Uri
 toApiDefinition :: Model -> APIDefinition
 toApiDefinition Mercury = APIDefinition (BaseUrl "api.inceptionlabs.ai") (Uri "/v1/chat/completions")
 
+-- TODO:
+-- Listen to socket and serialize request into type
+-- handle tool calls
+-- save history
+-- send response to client
+-- build a test client
+
 main :: IO ()
 main = do
   loadEnv
+  apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
 
   let model = Mercury
 
-  apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
-
   let socketPath = "/tmp/harness.sock"
-
   sock <- socket AF_UNIX Stream defaultProtocol
-
   bind sock (SockAddrUnix socketPath)
 
   harness (MaxTurns 1) apiKey model
@@ -64,8 +73,8 @@ main = do
   close sock
   removeFile socketPath
 
-newtype MaxTurns = MaxTurns Int
-  deriving (Show, Num, Eq)
+talk :: Socket -> IO ()
+talk = undefined
 
 harness :: MaxTurns -> ApiKey -> Model -> IO ()
 harness 0 _ _ = pure ()

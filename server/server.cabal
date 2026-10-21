@@ -1,5 +1,5 @@
 cabal-version: >= 1.10
-name: hello
+name: server
 version: 1.0.0.2
 license: BSD3
 license-file: LICENSE
@@ -7,15 +7,10 @@ copyright: (c) Simon Marlow
 author: Simon Marlow
 maintainer: Simon Marlow <marlowsd@gmail.com>
 stability: stable
-homepage: http://www.haskell.org/hello/
-synopsis: Hello World, an example package
+homepage: http://www.haskell.org/server/
+synopsis: server World, an example package
 category: Console, Text
 build-type: Simple
-
-description:
-  This is an implementation of the classic "Hello World" program in
-  Haskell, as an example of how to create a minimal Haskell application
-  using Cabal and haskell.nix.
 
 executable server
   hs-source-dirs: src

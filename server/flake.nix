@@ -42,8 +42,8 @@
         legacyPackages = pkgs;
 
         # `nix build .` builds the server executable; the per-component
-        # attributes (e.g. `nix build .#hello:exe:server`) come from `flake`.
-        packages = flake.packages // { default = flake.packages."hello:exe:server"; };
+        # attributes (e.g. `nix build .#server:exe:server`) come from `flake`.
+        packages = flake.packages // { default = flake.packages."server:exe:server"; };
       });
 
   # --- Flake Local Nix Configuration ----------------------------
