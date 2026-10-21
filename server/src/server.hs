@@ -12,6 +12,7 @@ import System.Environment
 import LoadEnv
 import System.Directory
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString as S
 import GHC.Generics (Generic)
 import Data.Text
 import Control.Monad (unless, forever, void)
@@ -44,11 +45,11 @@ instance ToJSON ChatPayload
 
 data Model = Mercury
 
-data APIDefinition = APIDefinition BaseUrl Uri
+data ApiDefinition = ApiDefinition BaseUrl Uri
  deriving (Show)
 
-toApiDefinition :: Model -> APIDefinition
-toApiDefinition Mercury = APIDefinition (BaseUrl "api.inceptionlabs.ai") (Uri "/v1/chat/completions")
+toApiDefinition :: Model -> ApiDefinition
+toApiDefinition Mercury = ApiDefinition (BaseUrl "api.inceptionlabs.ai") (Uri "/v1/chat/completions")
 
 -- TODO:
 -- Listen to socket and serialize request into type
@@ -68,18 +69,29 @@ main = do
   sock <- socket AF_UNIX Stream defaultProtocol
   bind sock (SockAddrUnix socketPath)
 
-  harness (MaxTurns 1) apiKey model
+  listen sock 1
+
+  (conn, _) <- accept sock
+
+  talk conn
+
+  close conn
+  -- run_agent (MaxTurns 1) apiKey model
 
   close sock
   removeFile socketPath
 
 talk :: Socket -> IO ()
-talk = undefined
+talk s = do
+  msg <- recv s 1024
+  unless (S.null msg) $ do
+    sendAll s $ "you said: " <> msg
+    talk s
 
-harness :: MaxTurns -> ApiKey -> Model -> IO ()
-harness 0 _ _ = pure ()
-harness n key@(ApiKey apiKey) model = do
-  let APIDefinition (BaseUrl baseUrl) (Uri uri) = toApiDefinition model
+run_agent :: MaxTurns -> ApiKey -> Model -> IO ()
+run_agent 0 _ _ = pure ()
+run_agent n key@(ApiKey apiKey) model = do
+  let ApiDefinition (BaseUrl baseUrl) (Uri uri) = toApiDefinition model
 
   runReq defaultHttpConfig $ do
     let payload = ChatPayload
@@ -91,4 +103,4 @@ harness n key@(ApiKey apiKey) model = do
 
     liftIO $ print (responseBody res :: Value)
 
-  harness (n - 1) key model
+  run_agent (n - 1) key model
