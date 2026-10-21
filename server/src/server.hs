@@ -13,13 +13,12 @@ import LoadEnv
 import System.Directory
 import qualified Data.ByteString.Char8 as B
 import GHC.Generics (Generic)
+import Data.Text
 
-data AIClient = AIClient {
-  baseUrl :: BaseUrl,
-  apiKey :: ApiKey
-} deriving (Show)
+newtype BaseUrl = BaseUrl Text
+  deriving (Show)
 
-newtype BaseUrl = BaseUrl String
+newtype Uri = Uri Text
   deriving (Show)
 
 newtype ApiKey = ApiKey String
@@ -38,12 +37,21 @@ data ChatPayload = ChatPayload
 instance ToJSON Message
 instance ToJSON ChatPayload
 
+data Model = Mercury
+
+data APIDefinition = APIDefinition BaseUrl Uri
+ deriving (Show)
+
+toApiDefinition :: Model -> APIDefinition
+toApiDefinition Mercury = APIDefinition (BaseUrl "api.inceptionlabs.ai") (Uri "/v1/chat/completions")
+
 main :: IO ()
 main = do
   loadEnv
 
+  let model = Mercury
+
   apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
-  apiUrl <- BaseUrl <$> getEnv "API_URL"
 
   let socketPath = "/tmp/harness.sock"
 
@@ -51,7 +59,7 @@ main = do
 
   bind sock (SockAddrUnix socketPath)
 
-  harness (MaxTurns 1) (AIClient apiUrl apiKey)
+  harness (MaxTurns 1) apiKey model
 
   close sock
   removeFile socketPath
@@ -59,21 +67,19 @@ main = do
 newtype MaxTurns = MaxTurns Int
   deriving (Show, Num, Eq)
 
-harness :: MaxTurns -> AIClient -> IO ()
-harness 0 _ = pure ()
-harness n aiClient = do
-  print $ "iteration: " ++ show n
+harness :: MaxTurns -> ApiKey -> Model -> IO ()
+harness 0 _ _ = pure ()
+harness n key@(ApiKey apiKey) model = do
+  let APIDefinition (BaseUrl baseUrl) (Uri uri) = toApiDefinition model
 
   runReq defaultHttpConfig $ do
     let payload = ChatPayload
-          { messages = [Message "user" "What is a diffusion model?"]
+          { messages = [Message "user" "What is 2+2?"]
           , model    = "mercury-3"
           }
 
-    let ApiKey rawKey = apiKey aiClient
-
-    res <- req POST (https "api.inceptionlabs.ai" /: "/v1/chat/completions") (ReqBodyJson payload) jsonResponse (header "Authorization" ("Bearer " <> B.pack rawKey))
+    res <- req POST (https baseUrl /: uri) (ReqBodyJson payload) jsonResponse (header "Authorization" ("Bearer " <> B.pack apiKey))
 
     liftIO $ print (responseBody res :: Value)
 
-  harness (n - 1) aiClient
+  harness (n - 1) key model

@@ -23,6 +23,7 @@ executable server
   build-depends:
       base >= 4.2 && < 5
     , req
+    , text
     , network
     , aeson
     , load-env
