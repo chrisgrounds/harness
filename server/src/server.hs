@@ -1,6 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 
 module Main (main) where
 
@@ -17,6 +19,8 @@ import GHC.Generics (Generic)
 import Data.Text
 import Control.Monad (unless, forever, void)
 import Network.Socket.ByteString (recv, sendAll)
+import Data.Aeson.Key (fromString)
+import Control.Exception
 
 newtype BaseUrl = BaseUrl Text
   deriving (Show)
@@ -28,33 +32,44 @@ newtype ApiKey = ApiKey String
   deriving (Show)
 
 newtype MaxTurns = MaxTurns Int
-  deriving (Show, Num, Eq)
-
-data Message = Message {
-  role :: String,
-  content :: String
-} deriving (Show, Generic)
+  deriving stock (Show, Eq)
+  deriving newtype (Num)
 
 data ChatPayload = ChatPayload
   { messages :: [Message]
-  , model    :: String
-  } deriving (Show, Generic)
+  , model    :: Model
+  } deriving (Show, Generic, ToJSON, FromJSON)
 
-instance ToJSON Message
-instance ToJSON ChatPayload
+data Message = Message {
+  role :: Role,
+  content :: String
+} deriving (Show, Generic, ToJSON, FromJSON)
 
-data Model = Mercury
+data Role = User | Agent | System
+  deriving (Show, Generic, ToJSON, FromJSON)
+
+data Model = Mercury3
+  deriving (Show, Generic)
+
+instance ToJSON Model where
+  toJSON Mercury3 = object ["model" .= ("mercury-3" :: Text)]
+
+instance FromJSON Model where
+  parseJSON = withObject "model" $ \v -> do
+    model <- v .: "model"
+    case (model :: Text) of
+      "mercury-3" -> pure Mercury3
+      _           -> fail "unknown model"
 
 data ApiDefinition = ApiDefinition BaseUrl Uri
  deriving (Show)
 
 toApiDefinition :: Model -> ApiDefinition
-toApiDefinition Mercury = ApiDefinition (BaseUrl "api.inceptionlabs.ai") (Uri "/v1/chat/completions")
+toApiDefinition Mercury3 = ApiDefinition (BaseUrl "api.inceptionlabs.ai") (Uri "/v1/chat/completions")
 
 -- TODO:
--- Listen to socket and serialize request into type
--- handle tool calls
 -- save history
+-- handle tool calls
 -- send response to client
 -- build a test client
 
@@ -63,30 +78,36 @@ main = do
   loadEnv
   apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
 
-  let model = Mercury
-
+  let model = Mercury3
   let socketPath = "/tmp/harness.sock"
-  sock <- socket AF_UNIX Stream defaultProtocol
-  bind sock (SockAddrUnix socketPath)
 
-  listen sock 1
 
-  (conn, _) <- accept sock
+  bracket
+    (socket AF_UNIX Stream defaultProtocol)
+    (\s -> do
+      close s
+      removeFile socketPath)
+    (\s -> do
+      bind s (SockAddrUnix socketPath)
 
-  talk conn
+      listen s 1
 
-  close conn
+      -- forever $ do
+      (conn, _) <- accept s
+      talk conn model
+      close conn
+    )
   -- run_agent (MaxTurns 1) apiKey model
 
-  close sock
-  removeFile socketPath
 
-talk :: Socket -> IO ()
-talk s = do
-  msg <- recv s 1024
-  unless (S.null msg) $ do
-    sendAll s $ "you said: " <> msg
-    talk s
+talk :: Socket -> Model -> IO ()
+talk s model = do
+  bytes <- recv s 1024
+  unless (S.null bytes) $ do
+    message <- either fail pure (eitherDecodeStrict bytes :: Either String Message)
+
+    sendAll s $ "you said: " <> bytes
+    talk s model
 
 run_agent :: MaxTurns -> ApiKey -> Model -> IO ()
 run_agent 0 _ _ = pure ()
@@ -95,8 +116,8 @@ run_agent n key@(ApiKey apiKey) model = do
 
   runReq defaultHttpConfig $ do
     let payload = ChatPayload
-          { messages = [Message "user" "What is 2+2?"]
-          , model    = "mercury-3"
+          { messages = [Message User "What is 2+2?"]
+          , model    = model
           }
 
     res <- req POST (https baseUrl /: uri) (ReqBodyJson payload) jsonResponse (header "Authorization" ("Bearer " <> B.pack apiKey))

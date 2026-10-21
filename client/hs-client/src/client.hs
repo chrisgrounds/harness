@@ -6,13 +6,18 @@ import Network.Socket
 import Network.Socket.ByteString (sendAll, recv)
 import System.IO
 import qualified Data.ByteString.Char8 as B
+import Control.Monad (forever)
+import Control.Exception
 
 main :: IO ()
 main = do
-  let socketPath = "/tmp/harness.sock"
-  sock <- socket AF_UNIX Stream defaultProtocol
-  connect sock (SockAddrUnix socketPath)
-  z <- getLine
-  sendAll sock $ B.pack z
-  print =<< recv sock 1024
-  close sock
+  bracket
+    (socket AF_UNIX Stream defaultProtocol)
+    close
+    $ \s -> do
+      connect s (SockAddrUnix "/tmp/harness.sock")
+
+      forever $ do
+        z <- getLine
+        sendAll s $ B.pack z
+        print =<< recv s 1024
