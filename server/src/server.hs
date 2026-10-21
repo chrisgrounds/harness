@@ -107,13 +107,13 @@ talk s chat apiKey = do
   unless (S.null bytes) $ do
     message <- either fail pure (eitherDecodeStrict bytes :: Either String Message)
 
-    agentMessage <- run_agent message apiKey (model chat)
+    agentMessage <- callLLM message apiKey (model chat)
 
     sendAll s $ "you said: " <> bytes
     talk s (addMessage agentMessage . addMessage message $ chat) apiKey
 
-run_agent :: Message -> ApiKey -> Model -> IO Message
-run_agent message key@(ApiKey apiKey) model = do
+callLLM :: Message -> ApiKey -> Model -> IO Message
+callLLM message key@(ApiKey apiKey) model = do
   let ApiDefinition (BaseUrl baseUrl) (Uri uri) = toApiDefinition model
 
   runReq defaultHttpConfig $ do
