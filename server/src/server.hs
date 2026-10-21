@@ -1,13 +1,18 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Main (main) where
 
 import Network.Socket
+import Control.Monad.IO.Class
+import Data.Aeson
 import Network.HTTP.Req
 import System.Environment
 import LoadEnv
 import System.Directory
+import qualified Data.ByteString.Char8 as B
+import GHC.Generics (Generic)
 
 data AIClient = AIClient {
   baseUrl :: BaseUrl,
@@ -19,6 +24,19 @@ newtype BaseUrl = BaseUrl String
 
 newtype ApiKey = ApiKey String
   deriving (Show)
+
+data Message = Message {
+  role :: String,
+  content :: String
+} deriving (Show, Generic)
+
+data ChatPayload = ChatPayload
+  { messages :: [Message]
+  , model    :: String
+  } deriving (Show, Generic)
+
+instance ToJSON Message
+instance ToJSON ChatPayload
 
 main :: IO ()
 main = do
@@ -33,22 +51,29 @@ main = do
 
   bind sock (SockAddrUnix socketPath)
 
-  harness (MaxIterations 5)
+  harness (MaxTurns 1) (AIClient apiUrl apiKey)
 
   close sock
   removeFile socketPath
 
-newtype MaxIterations = MaxIterations Int
+newtype MaxTurns = MaxTurns Int
   deriving (Show, Num, Eq)
 
-harness :: MaxIterations -> IO ()
-harness 0 = pure ()
-harness n = do
+harness :: MaxTurns -> AIClient -> IO ()
+harness 0 _ = pure ()
+harness n aiClient = do
   print $ "iteration: " ++ show n
 
-  harness $ n - 1
+  runReq defaultHttpConfig $ do
+    let payload = ChatPayload
+          { messages = [Message "user" "What is a diffusion model?"]
+          , model    = "mercury-3"
+          }
 
--- curl -X POST https://api.inceptionlabs.ai/v1/chat/completions \
---   -H "Authorization: Bearer INCEPTION_API_KEY" \
---   -H "Content-Type: application/json" \
---   -d '{"messages": [{"role": "user", "content": "What is a diffusion model?"}], "model": "mercury-3"}'
+    let ApiKey rawKey = apiKey aiClient
+
+    res <- req POST (https "api.inceptionlabs.ai" /: "/v1/chat/completions") (ReqBodyJson payload) jsonResponse (header "Authorization" ("Bearer " <> B.pack rawKey))
+
+    liftIO $ print (responseBody res :: Value)
+
+  harness (n - 1) aiClient
