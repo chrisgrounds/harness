@@ -14,4 +14,5 @@ At the moment as well we hardcode the `Mercury3` model and to use it we need to 
 | ------------- | ------------- |
 | server/  | Hand-written Haskell server code  |
 | hs-client-minimal/  | Hand-written Haskell test client code |
-| hs-client/  | LLM-written Haskell client code |
+| hs-tui-client/  | LLM-written Haskell client code |
+| rs-gui-client/  | LLM-written Rust + egui desktop client code |
