@@ -15,6 +15,7 @@ build-type: Simple
 executable server
   hs-source-dirs: src
   main-is: server.hs
+  other-modules: OpenAI
   build-depends:
       base >= 4.2 && < 5
     , req

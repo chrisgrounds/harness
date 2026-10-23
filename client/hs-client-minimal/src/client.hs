@@ -11,13 +11,17 @@ import Control.Monad (forever)
 import Control.Exception
 import Data.Aeson
 
+withSocket :: FilePath ->  (Socket -> IO b) -> IO b
+withSocket path io =
+  bracket (socket AF_UNIX Stream defaultProtocol) close io
+
 main :: IO ()
 main = do
-  bracket
-    (socket AF_UNIX Stream defaultProtocol)
-    close
+  let path = "/tmp/harness.sock"
+
+  withSocket path
     $ \s -> do
-      connect s (SockAddrUnix "/tmp/harness.sock")
+      connect s (SockAddrUnix path)
 
       forever $ do
         z <- getLine

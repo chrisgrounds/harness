@@ -19,12 +19,12 @@ import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import GHC.Generics (Generic)
 import Data.Text
-import Control.Monad (unless, forever, void)
+import Control.Monad (unless)
 import Network.Socket.ByteString (recv, sendAll)
-import Data.Aeson.Key (fromString)
 import Control.Exception
 import Data.Maybe (listToMaybe)
 import Control.Monad (join)
+import OpenAI
 
 newtype BaseUrl = BaseUrl Text
   deriving (Show)
@@ -52,90 +52,8 @@ data Message = Message {
 addMessage :: Message -> ChatPayload -> ChatPayload
 addMessage m c = ChatPayload (m : messages c) (model c)
 
-data Role = User | Agent | System
-  deriving (Show, Generic)
-
-instance ToJSON Role where
-  toJSON User   = String "user"
-  toJSON Agent  = String "assistant"
-  toJSON System = String "system"
-
-instance FromJSON Role where
-  parseJSON = withText "Role" $ \value ->
-    case value of
-      "user"      -> pure User
-      "assistant" -> pure Agent
-      "system"    -> pure System
-      _           -> fail "unknown role"
-
 data Model = Mercury3
   deriving (Show, Generic)
-
-data OpenAIChatCompletionResponse = OpenAIChatCompletionResponse
-  { responseChoices          :: [OpenAIChatResponseChoice]
-  , responseCreated          :: Integer
-  , responseId               :: Text
-  , responseModel            :: Text
-  , responseObject           :: Text
-  , responseReasoningSummary :: Maybe Value
-  , responseUsage            :: OpenAIChatResponseUsage
-  , responseWarning          :: Maybe Value
-  } deriving (Show, Generic)
-
-data OpenAIChatResponseChoice = OpenAIChatResponseChoice
-  { choiceFinishReason :: Maybe Text
-  , choiceIndex        :: Int
-  , choiceMessage      :: OpenAIChatResponseMessage
-  } deriving (Show, Generic)
-
-data OpenAIChatResponseMessage = OpenAIChatResponseMessage
-  { messageContent    :: Maybe Text
-  , messageRole       :: Role
-  , messageToolCallId :: Maybe Text
-  , messageToolCalls  :: Maybe [Value]
-  } deriving (Show, Generic)
-
-data OpenAIChatResponseUsage = OpenAIChatResponseUsage
-  { usageCompletionTokens        :: Int
-  , usageCompletionTokensDetails :: OpenAIChatCompletionTokensDetails
-  , usagePromptTokens            :: Int
-  , usagePromptTokensDetails     :: OpenAIChatPromptTokensDetails
-  , usageTotalTokens             :: Int
-  } deriving (Show, Generic)
-
-data OpenAIChatCompletionTokensDetails = OpenAIChatCompletionTokensDetails
-  { completionReasoningTokens :: Int
-  } deriving (Show, Generic)
-
-data OpenAIChatPromptTokensDetails = OpenAIChatPromptTokensDetails
-  { promptCachedTokens :: Int
-  } deriving (Show, Generic)
-
-
-jsonOptions :: String -> Options
-jsonOptions prefix = defaultOptions
-  { fieldLabelModifier =
-      camelTo2 '_' . Prelude.drop (Prelude.length prefix)
-  }
-
-instance FromJSON OpenAIChatCompletionResponse where
-  parseJSON = genericParseJSON (jsonOptions "response")
-
-instance FromJSON OpenAIChatResponseChoice where
-  parseJSON = genericParseJSON (jsonOptions "choice")
-
-instance FromJSON OpenAIChatResponseMessage where
-  parseJSON = genericParseJSON (jsonOptions "message")
-
-instance FromJSON OpenAIChatResponseUsage where
-  parseJSON = genericParseJSON (jsonOptions "usage")
-
-instance FromJSON OpenAIChatCompletionTokensDetails where
-  parseJSON = genericParseJSON (jsonOptions "completion")
-
-instance FromJSON OpenAIChatPromptTokensDetails where
-  parseJSON = genericParseJSON (jsonOptions "prompt")
-
 
 instance ToJSON Model where
   toJSON Mercury3 = String "mercury-3"
@@ -154,8 +72,6 @@ toApiDefinition :: Model -> ApiDefinition
 toApiDefinition Mercury3 = ApiDefinition (https "api.inceptionlabs.ai" /: "v1" /: "chat" /: "completions")
 
 -- TODO:
--- extract from the OpenAIChatCompletionResponse type relevant data and store in ChatPayload.Message
--- send chatpayload to client
 -- only send data we want to the llm
 -- handle tool calls
 

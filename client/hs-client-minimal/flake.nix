@@ -41,9 +41,9 @@
       in flake // {
         legacyPackages = pkgs;
 
-        # `nix build .` builds the client executable; the per-component
-        # attributes (e.g. `nix build .#client:exe:client`) come from `flake`.
-        packages = flake.packages // { default = flake.packages."client:exe:client"; };
+        # `nix build .` builds the hs-client-minimal executable; the per-component
+        # attributes (e.g. `nix build .#hs-client-minimal:exe:hs-client-minimal`) come from `flake`.
+        packages = flake.packages // { default = flake.packages."hs-client-minimal:exe:hs-client-minimal"; };
       });
 
   # --- Flake Local Nix Configuration ----------------------------

@@ -1,5 +1,5 @@
 cabal-version: >= 1.10
-name: client
+name: hs-client-minimal
 version: 1.0.0.0
 license: BSD3
 license-file: LICENSE
@@ -7,12 +7,12 @@ copyright: (c) Chris Grounds
 author: Chris Grounds
 maintainer: Chris Grounds
 stability: stable
-homepage: http://www.haskell.org/client/
+homepage: http://www.haskell.org/hs-client-minimal/
 synopsis: The harness client
 category: Console, Text
 build-type: Simple
 
-executable client
+executable hs-client-minimal
   hs-source-dirs: src
   main-is: client.hs
   build-depends:
