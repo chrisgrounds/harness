@@ -166,4 +166,4 @@ callLLM (ApiKey apiKey) chat = do
 
 -- divide by 1b because interval is in nanoseconds
 calculateTokensPerSecond :: Int -> Double -> Double
-calculateTokensPerSecond tokensUsed interval = fromIntegral tokensUsed / interval / 1e9 :: Double
+calculateTokensPerSecond tokensUsed interval = fromIntegral tokensUsed / (interval / 1e9) :: Double
