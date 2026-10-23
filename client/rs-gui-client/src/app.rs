@@ -3,13 +3,14 @@ use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
 use rs_gui_client::protocol::{MAX_REQUEST_BYTES, Message, encode_request, validate_request};
 use std::time::Instant;
 
-const BG: Color32 = Color32::from_rgb(16, 20, 28);
-const SURFACE: Color32 = Color32::from_rgb(24, 30, 40);
-const BORDER: Color32 = Color32::from_rgb(43, 53, 68);
-const MUTED: Color32 = Color32::from_rgb(150, 163, 181);
-const ACCENT: Color32 = Color32::from_rgb(129, 220, 185);
-const BLUE: Color32 = Color32::from_rgb(143, 190, 255);
-const AMBER: Color32 = Color32::from_rgb(237, 193, 121);
+const BG: Color32 = Color32::from_rgb(22, 26, 34);
+const SURFACE: Color32 = Color32::from_rgb(30, 35, 43);
+const BORDER: Color32 = Color32::from_rgb(60, 60, 60);
+const MUTED: Color32 = Color32::from_rgb(128, 128, 128);
+const ACCENT: Color32 = Color32::from_rgb(236, 91, 43);
+const BLUE: Color32 = Color32::from_rgb(86, 182, 194);
+const AMBER: Color32 = Color32::from_rgb(229, 192, 123);
+const ERROR: Color32 = Color32::from_rgb(224, 108, 117);
 
 #[derive(PartialEq)]
 enum Status {
@@ -197,10 +198,10 @@ impl ChatApp {
             .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(28, 18)))
             .show(ctx, |ui| {
                 if let Some(error) = &self.error {
-                    egui::Frame::new().fill(Color32::from_rgb(49, 35, 29)).corner_radius(8)
+                    egui::Frame::new().fill(Color32::from_rgb(76, 43, 44)).corner_radius(8)
                         .inner_margin(12).show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(RichText::new(error).color(AMBER));
+                            ui.label(RichText::new(error).color(ERROR));
                         });
                     ui.add_space(10.0);
                 }
@@ -257,7 +258,6 @@ impl ChatApp {
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
-        let wide = ctx.screen_rect().width() >= 850.0;
         egui::TopBottomPanel::top("header")
             .frame(
                 egui::Frame::new()
@@ -268,61 +268,21 @@ impl eframe::App for ChatApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("H / ").size(24.0).strong().color(ACCENT));
                     ui.label(RichText::new("harness").size(23.0).strong());
-                    ui.add_space(12.0);
-                    ui.label(
-                        RichText::new("YOUR LOCAL WORKSPACE")
-                            .size(10.0)
-                            .color(MUTED),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("RUST + EGUI").size(10.0).color(MUTED));
-                    });
                 });
             });
-        if wide {
-            egui::SidePanel::left("sidebar")
-                .resizable(false)
-                .exact_width(225.0)
-                .frame(egui::Frame::new().fill(BG).inner_margin(22))
-                .show(ctx, |ui| {
-                    ui.add_space(12.0);
-                    ui.label(RichText::new("WORKSPACE").size(10.0).color(MUTED).strong());
-                    ui.add_space(14.0);
-                    egui::Frame::new()
-                        .fill(SURFACE)
-                        .corner_radius(8)
-                        .inner_margin(12)
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(RichText::new("Conversation").color(ACCENT).strong());
-                            ui.label(
-                                RichText::new(format!("     Session {:02}", self.session))
-                                    .size(11.0)
-                                    .color(MUTED),
-                            );
-                        });
-                    ui.add_space(32.0);
-                    self.connection(ui);
-                    ui.add_space(30.0);
-                    ui.label(RichText::new("MODEL").size(10.0).color(MUTED).strong());
-                    ui.add_space(8.0);
-                    ui.label(self.model.as_deref().unwrap_or("Waiting for server"));
-                    ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                        ui.label(
-                            RichText::new("A little less friction.\nA little more flow.")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
-                    });
-                });
-        }
+
         self.composer(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(28, 12)))
             .show(ctx, |ui| {
-                if !wide { self.connection(ui); ui.add_space(12.0); }
+                self.connection(ui);
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Conversation").size(19.0).strong());
+                    ui.add_space(12.0);
+                    if let Some(model) = &self.model {
+                        ui.label(RichText::new(model).size(11.0).color(MUTED));
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new(format!("{} messages", self.messages.len())).size(11.0).color(MUTED));
                     });
@@ -333,18 +293,7 @@ impl eframe::App for ChatApp {
                         ui.set_width(ui.available_width());
                         if self.messages.is_empty() {
                             ui.add_space(45.0);
-                            ui.label(RichText::new("A clear space to think.").size(30.0).strong());
-                            ui.add_space(12.0);
                             ui.label(RichText::new("Explore your code, ask a question, or work through an idea.\nYour conversation and tool activity will appear here.").size(15.0).color(MUTED));
-                            ui.add_space(26.0);
-                            ui.horizontal_wrapped(|ui| {
-                                for prompt in ["Explain this project", "Discover the files", "Read README.md"] {
-                                    if ui.add(egui::Button::new(prompt).min_size(Vec2::new(0.0, 34.0)).corner_radius(8)).clicked() {
-                                        self.input = prompt.into();
-                                        self.focus_input = true;
-                                    }
-                                }
-                            });
                         }
                         for (index, message) in self.messages.iter().enumerate() {
                             ui.push_id((self.session, index), |ui| message_card(ui, message));
@@ -456,14 +405,14 @@ fn configure_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = BG;
     visuals.window_fill = SURFACE;
-    visuals.override_text_color = Some(Color32::from_rgb(226, 232, 240));
-    visuals.selection.bg_fill = Color32::from_rgb(44, 85, 77);
+    visuals.override_text_color = Some(Color32::from_rgb(238, 238, 238));
+    visuals.selection.bg_fill = Color32::from_rgb(73, 42, 36);
     visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT);
     visuals.widgets.inactive.bg_fill = SURFACE;
     visuals.widgets.inactive.weak_bg_fill = SURFACE;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(42, 55, 67);
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(42, 55, 67);
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(37, 43, 53);
+    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(37, 43, 53);
     ctx.set_visuals(visuals);
     ctx.style_mut(|style| {
         style.spacing.item_spacing = Vec2::new(10.0, 8.0);
