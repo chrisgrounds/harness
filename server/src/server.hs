@@ -1,30 +1,33 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE DataKinds #-}
 
 module Main (main) where
 
-import Network.Socket
+import Chat
+import Control.Exception
+import Control.Monad (forever, unless)
 import Control.Monad.IO.Class
 import Data.Aeson
-import Network.HTTP.Req
-import System.Environment
-import LoadEnv
-import System.Directory
-import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as L
-import GHC.Generics (Generic)
-import Data.Text
-import Control.Monad (unless)
+import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
+import LoadEnv
+import Network.HTTP.Req
+import Network.Socket
 import Network.Socket.ByteString (recv, sendAll)
-import Control.Exception
-import Data.Maybe (listToMaybe)
-import Control.Monad (join)
 import OpenAI
+import System.Directory
+import System.Environment
+import System.Process (system)
 
 newtype BaseUrl = BaseUrl Text
   deriving (Show)
@@ -39,43 +42,21 @@ newtype MaxTurns = MaxTurns Int
   deriving stock (Show, Eq)
   deriving newtype (Num)
 
-data ChatPayload = ChatPayload
-  { messages :: [Message]
-  , model    :: Model
-  } deriving (Show, Generic, ToJSON, FromJSON)
+-- @spec can we make this a FilePath instead of Text?
+data ReadFilePath = ReadFilePath {readPath :: Text}
+  deriving (Show)
 
-data Message = Message {
-  role :: Role,
-  content :: Maybe Text
-} deriving (Show, Generic, ToJSON, FromJSON)
-
-addMessage :: Message -> ChatPayload -> ChatPayload
-addMessage m c = ChatPayload (m : messages c) (model c)
-
-data Model = Mercury3
-  deriving (Show, Generic)
-
-instance ToJSON Model where
-  toJSON Mercury3 = String "mercury-3"
-
-instance FromJSON Model where
-  parseJSON = withObject "model" $ \v -> do
-    model <- v .: "Model"
-    case (model :: Text) of
-      "mercury-3" -> pure Mercury3
-      _           -> fail "unknown model"
+instance FromJSON ReadFilePath where
+  parseJSON = withObject "ReadFilePath" $ \value ->
+    ReadFilePath <$> value .: "path"
 
 data ApiDefinition = ApiDefinition (Url 'Https)
- deriving (Show)
+  deriving (Show)
 
 toApiDefinition :: Model -> ApiDefinition
 toApiDefinition Mercury3 = ApiDefinition (https "api.inceptionlabs.ai" /: "v1" /: "chat" /: "completions")
 
--- TODO:
--- only send data we want to the llm
--- handle tool calls
-
-withSocket :: FilePath ->  (Socket -> IO b) -> IO b
+withSocket :: FilePath -> (Socket -> IO b) -> IO b
 withSocket path io =
   bracket
     (socket AF_UNIX Stream defaultProtocol)
@@ -87,25 +68,50 @@ main = do
   loadEnv
   apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
   let socketPath = "/tmp/harness.sock"
-  print "listening..."
+  print "opening server, listening..."
 
   let model = Mercury3
-  let chat = ChatPayload [] model
+  let chat =
+        ChatPayload
+          []
+          model
+          [ Tool
+              { toolType = FunctionTool,
+                toolFunction =
+                  ToolFunction
+                    { toolFunctionName = ReadFile,
+                      toolFunctionDescription = "Reads a file",
+                      toolFunctionParameters =
+                        object
+                          [ "type" .= ("string" :: Text),
+                            "properties"
+                              .= object
+                                [ "path"
+                                    .= object
+                                      [ "type" .= ("string" :: Text),
+                                        "description" .= ("The file path to read" :: Text)
+                                      ]
+                                ],
+                            "required" .= (["path"] :: [Text]),
+                            "additionalProperties" .= False
+                          ]
+                    }
+              }
+          ]
 
-  withSocket socketPath
-    (\s -> do
-      bind s (SockAddrUnix socketPath)
+  withSocket
+    socketPath
+    ( \s -> do
+        bind s (SockAddrUnix socketPath)
 
-      listen s 1
+        listen s 1
 
-      (conn, _) <- accept s
-      talk conn chat apiKey
-      close conn
+        forever $ do
+          (conn, addr) <- accept s
+          print $ "accepting connection from: " <> show addr
+          talk conn chat apiKey
+          close conn
     )
-
-getContent :: OpenAIChatCompletionResponse -> Maybe Text
-getContent res =
-  join $ (messageContent . choiceMessage) <$> (listToMaybe $ responseChoices res)
 
 talk :: Socket -> ChatPayload -> ApiKey -> IO ()
 talk s chat apiKey = do
@@ -113,23 +119,73 @@ talk s chat apiKey = do
   unless (S.null bytes) $ do
     message <- either fail pure (eitherDecodeStrict bytes :: Either String Message)
 
-    agentMessage <- callLLM message apiKey (model chat)
+    agentMessage <- callLLM message apiKey chat
 
-    let newChatPayload = addMessage agentMessage . addMessage message $ chat
-    sendAll s $ L.toStrict (encode newChatPayload)
+    let chatPayloadWithAgentResponse = addMessage agentMessage . addMessage message $ chat
+
+    sendAll s $ L.toStrict (encode chatPayloadWithAgentResponse)
+
+    (_, ToolCallResult toolCallResults) <- handleAssistantMessage agentMessage
+
+    print $ toolCallResults
+
+    let newChatPayload = chatPayloadWithAgentResponse
+
+    -- sendAll s $ L.toStrict (encode newChatPayload)
     talk s newChatPayload apiKey
 
-callLLM :: Message -> ApiKey -> Model -> IO Message
-callLLM message key@(ApiKey apiKey) model = do
-  let ApiDefinition url = toApiDefinition model
+data ToolCallResult = ToolCallResult [(Text, Text)]
+
+handleAssistantMessage :: Message -> IO (Message, ToolCallResult)
+handleAssistantMessage msg = case role msg of
+  Assistant -> do
+    let tools = toolCalls msg
+
+    -- we can run them in parallel later on, but for now one at a time
+    res <- mapM runToolRequest tools
+
+    pure (msg, ToolCallResult res)
+  _ -> pure (msg, ToolCallResult [])
+
+runToolRequest :: ToolRequest -> IO (Text, Text)
+runToolRequest tool = case (toolRequestFunctionParamsName toolDetails) of
+  ReadFile -> do
+    res <- runReadFile toolDetails
+    pure (toolRequestId tool, res)
+  where
+    toolDetails = toolRequestFunction tool
+
+runReadFile :: ToolRequestFunctionParams -> IO Text
+runReadFile toolDetails = do
+  let args = toolRequestFunctionParamsArguments toolDetails
+  ReadFilePath path <-
+    either fail pure (eitherDecodeStrict (TE.encodeUtf8 args))
+  -- For now we make this a relative path
+  TIO.readFile ("./" <> T.unpack path)
+
+callLLM :: Message -> ApiKey -> ChatPayload -> IO Message
+callLLM message key@(ApiKey apiKey) chat = do
+  let ApiDefinition url = toApiDefinition (model chat)
 
   runReq defaultHttpConfig $ do
-    let payload = ChatPayload { messages = [Message User (content message)], model = model }
+    let userPayload =
+          ChatPayload
+            { messages = [Message User (content message) []],
+              model = (model chat),
+              tools = (tools chat)
+            }
 
-    res <- req POST url (ReqBodyJson payload) jsonResponse (header "Authorization" ("Bearer " <> B.pack apiKey))
+    res <- req POST url (ReqBodyJson userPayload) jsonResponse (header "Authorization" ("Bearer " <> B.pack apiKey))
 
     let parsedRes = responseBody res :: OpenAIChatCompletionResponse
 
-    let content = getContent parsedRes
-
-    pure $ Message Agent content
+    case listToMaybe (responseChoices parsedRes) of
+      Nothing -> pure $ Message Assistant (Just "No content") []
+      Just choice -> do
+        let responseMessage = choiceMessage choice
+        pure $
+          Message
+            { role = messageRole responseMessage,
+              content = messageContent responseMessage,
+              toolCalls = fromMaybe [] (messageToolCalls responseMessage)
+            }

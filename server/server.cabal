@@ -15,7 +15,7 @@ build-type: Simple
 executable server
   hs-source-dirs: src
   main-is: server.hs
-  other-modules: OpenAI
+  other-modules: Chat, OpenAI
   build-depends:
       base >= 4.2 && < 5
     , req
@@ -25,4 +25,5 @@ executable server
     , load-env
     , directory
     , bytestring
+    , process
   default-language: Haskell2010
