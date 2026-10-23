@@ -118,7 +118,6 @@ talkWithToolRequests apiKey toolRequests chat = do
 
       talkWithToolRequests apiKey (getLatestToolRequests chatWithAgentResponse) chatWithAgentResponse
 
-
 runToolRequest :: ToolRequest -> IO (ToolCallId, Text)
 runToolRequest tool = do
   let toolDetails = toolRequestFunction tool

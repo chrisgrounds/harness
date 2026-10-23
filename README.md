@@ -1,6 +1,6 @@
 # Harness
 
-This is an LLM-harness written in Haskell. It is split into a client-server architecture. The server runs on a UNIX socket and any client can connect to it.
+This is an LLM-harness written in Haskell. It is split into a client-server architecture. The server listens to a UNIX socket and any client can connect to it via that socket.
 
 The core type that clients need to follow is the `Chat` type which the server will send down the socket. It contains the entire history of messages and tool calls, along with tool definitions, and the model being used.
 
