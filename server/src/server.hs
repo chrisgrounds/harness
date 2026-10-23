@@ -8,9 +8,8 @@
 module Main (main) where
 
 import Chat
-import Control.Exception (IOException, bracket, try)
+import Control.Exception (bracket)
 import Control.Monad (forever, unless)
-import Control.Monad.IO.Class
 import Data.Aeson
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as B
@@ -18,8 +17,6 @@ import qualified Data.ByteString.Lazy.Char8 as L
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.IO as TIO
 import LoadEnv
 import Network.HTTP.Req
 import Network.Socket
@@ -27,7 +24,7 @@ import Network.Socket.ByteString (recv, sendAll)
 import OpenAI
 import System.Directory
 import System.Environment
-import System.Process (system)
+import Tools
 
 newtype BaseUrl = BaseUrl Text
   deriving (Show)
@@ -37,18 +34,6 @@ newtype Uri = Uri Text
 
 newtype ApiKey = ApiKey String
   deriving (Show)
-
-newtype MaxTurns = MaxTurns Int
-  deriving stock (Show, Eq)
-  deriving newtype (Num)
-
--- @spec can we make this a FilePath instead of Text?
-data ReadFilePath = ReadFilePath {readPath :: Text}
-  deriving (Show)
-
-instance FromJSON ReadFilePath where
-  parseJSON = withObject "ReadFilePath" $ \value ->
-    ReadFilePath <$> value .: "path"
 
 data ApiDefinition = ApiDefinition (Url 'Https)
   deriving (Show)
@@ -68,36 +53,15 @@ main = do
   loadEnv
   apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
   let socketPath = "/tmp/harness.sock"
-  print "opening server, listening..."
+  putStrLn "opening server, listening..."
 
-  let model = Mercury3
+  -- Don't hardcode this
+  let llmModel = Mercury3
   let chat =
-        ChatPayload
+        Chat
           []
-          model
-          [ ToolDefinition
-              { toolType = FunctionTool,
-                toolFunction =
-                  ToolFunction
-                    { toolFunctionName = ReadFile,
-                      toolFunctionDescription = "Reads a file",
-                      toolFunctionParameters =
-                        object
-                          [ "type" .= ("string" :: Text),
-                            "properties"
-                              .= object
-                                [ "path"
-                                    .= object
-                                      [ "type" .= ("string" :: Text),
-                                        "description" .= ("The file path to read" :: Text)
-                                      ]
-                                ],
-                            "required" .= (["path"] :: [Text]),
-                            "additionalProperties" .= False
-                          ]
-                    }
-              }
-          ]
+          llmModel
+          (map toolToApiDefinition [ReadFile, Discover])
 
   withSocket
     socketPath
@@ -113,7 +77,7 @@ main = do
           close conn
     )
 
-talk :: Socket -> ChatPayload -> ApiKey -> IO ()
+talk :: Socket -> Chat -> ApiKey -> IO ()
 talk s chat apiKey = do
   bytes <- recv s 1024
   unless (S.null bytes) $ do
@@ -128,7 +92,7 @@ talk s chat apiKey = do
     sendAll s $ L.toStrict (encode chatWithToolCalls)
     talk s chatWithToolCalls apiKey
 
-talkWithToolRequests :: ApiKey -> [ToolRequest] -> ChatPayload -> IO ChatPayload
+talkWithToolRequests :: ApiKey -> [ToolRequest] -> Chat -> IO Chat
 talkWithToolRequests _ [] chat = pure chat
 talkWithToolRequests apiKey toolRequests chat = do
   toolCallResults <- mapM runToolRequest toolRequests
@@ -153,27 +117,17 @@ talkWithToolRequests apiKey toolRequests chat = do
       talkWithToolRequests apiKey (maybe [] toolCalls (listToMaybe $ messages chatWithAgentResponse)) chatWithAgentResponse
 
 runToolRequest :: ToolRequest -> IO (ToolCallId, Text)
-runToolRequest tool = case (toolRequestFunctionParamsName toolDetails) of
-  ReadFile -> do
-    res <- runReadFile toolDetails
+runToolRequest tool = do
+  let toolDetails = toolRequestFunction tool
+  res <- runTool (toolRequestFunctionParamsName toolDetails) toolDetails
 
-    case res of
-      Left err -> pure (toolRequestId tool, "Could not read file: " <> T.pack (show err))
-      Right contents -> pure (toolRequestId tool, contents)
-  where
-    toolDetails = toolRequestFunction tool
+  case res of
+    -- this error message is specific for ReadFile and does not apply to Discover, for example
+    Left err -> pure (toolRequestId tool, "Could not read file: " <> T.pack (show err))
+    Right contents -> pure (toolRequestId tool, contents)
 
-runReadFile :: ToolRequestFunctionParams -> IO (Either IOException Text)
-runReadFile toolDetails = do
-  let args = toolRequestFunctionParamsArguments toolDetails
-  ReadFilePath path <-
-    either fail pure (eitherDecodeStrict (TE.encodeUtf8 args))
-  -- For now we make this a relative path
-  -- we should really handle this much better
-  try $ TIO.readFile ("../" <> T.unpack path)
-
-callLLM :: ApiKey -> ChatPayload -> IO ChatPayload
-callLLM key@(ApiKey apiKey) chat = do
+callLLM :: ApiKey -> Chat -> IO Chat
+callLLM (ApiKey apiKey) chat = do
   let ApiDefinition url = toApiDefinition (model chat)
 
   -- the `Chat` type here stores most recent messages at the beginning of [Message]

@@ -57,17 +57,19 @@ data ToolRequestFunctionParams = ToolRequestFunctionParams
 data ToolType = FunctionTool
   deriving (Show)
 
-data ToolName = ReadFile
+data ToolName = ReadFile | Discover
   deriving (Show)
 
 instance FromJSON ToolName where
   parseJSON = withText "ToolName" $ \value ->
     case value of
       "ReadFile" -> pure ReadFile
+      "Discover" -> pure Discover
       _ -> fail "unknown tool name"
 
 instance ToJSON ToolName where
   toJSON ReadFile = String "ReadFile"
+  toJSON Discover = String "Discover"
 
 instance FromJSON ToolType where
   parseJSON = withText "ToolType" $ \value ->

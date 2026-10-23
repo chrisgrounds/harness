@@ -37,3 +37,10 @@ tool requests display those requests without a missing-text placeholder.
 The server currently reads
 requests in a single 1024-byte chunk, so larger encoded requests are rejected
 locally. Requests are still subject to that server framing limitation.
+
+Run the socket regression tests after building:
+
+```sh
+cabal build hs-client
+python3 tests/test_socket.py
+```

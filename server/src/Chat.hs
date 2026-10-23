@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Chat
-  ( ChatPayload (..),
+  ( Chat (..),
     Message (..),
     Model (..),
     ToolDefinition (..),
@@ -20,7 +20,7 @@ import Data.Text (Text)
 import GHC.Generics (Generic)
 import OpenAI (Role, ToolCallId, ToolName, ToolRequest, ToolType)
 
-data ChatPayload = ChatPayload
+data Chat = Chat
   { messages :: [Message],
     model :: Model,
     tools :: [ToolDefinition]
@@ -35,7 +35,7 @@ data Message = Message
   }
   deriving (Show, Generic)
 
-getLatestToolRequests :: ChatPayload -> [ToolRequest]
+getLatestToolRequests :: Chat -> [ToolRequest]
 getLatestToolRequests = maybe [] toolCalls . listToMaybe . messages
 
 instance FromJSON Message where
@@ -55,10 +55,10 @@ instance ToJSON Message where
         ++ ["tool_calls" .= toolCalls message | not (null (toolCalls message))]
         ++ ["tool_call_id" .= callId | Just callId <- [toolCallId message]]
 
-addMessage :: Message -> ChatPayload -> ChatPayload
+addMessage :: Message -> Chat -> Chat
 addMessage m c = c {messages = m : messages c}
 
-addMessages :: [Message] -> ChatPayload -> ChatPayload
+addMessages :: [Message] -> Chat -> Chat
 addMessages ms c = c {messages = ms ++ messages c}
 
 data ToolDefinition = ToolDefinition
