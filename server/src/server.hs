@@ -96,6 +96,7 @@ talk s chat apiKey = do
 talkWithToolRequests :: ApiKey -> [ToolRequest] -> Chat -> IO Chat
 talkWithToolRequests _ [] chat = pure chat
 talkWithToolRequests apiKey toolRequests chat = do
+  -- can we run these in parallel?
   toolCallResults <- mapM runToolRequest toolRequests
 
   if length toolCallResults == 0
@@ -115,7 +116,8 @@ talkWithToolRequests apiKey toolRequests chat = do
 
       chatWithAgentResponse <- callLLM apiKey newChat
 
-      talkWithToolRequests apiKey (maybe [] toolCalls (listToMaybe $ messages chatWithAgentResponse)) chatWithAgentResponse
+      talkWithToolRequests apiKey (getLatestToolRequests chatWithAgentResponse) chatWithAgentResponse
+
 
 runToolRequest :: ToolRequest -> IO (ToolCallId, Text)
 runToolRequest tool = do
