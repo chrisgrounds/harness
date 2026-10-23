@@ -31,7 +31,8 @@ data Message = Message
   { role :: Role,
     content :: Maybe Text,
     toolCalls :: [ToolRequest],
-    toolCallId :: Maybe ToolCallId
+    toolCallId :: Maybe ToolCallId,
+    tokensPerSecond :: Maybe Double
   }
   deriving (Show, Generic)
 
@@ -45,12 +46,14 @@ instance FromJSON Message where
       <*> value .:? "content"
       <*> value .:? "tool_calls" .!= []
       <*> value .:? "tool_call_id"
+      <*> value .:? "tokens_per_second"
 
 instance ToJSON Message where
   toJSON message =
     object $
       [ "role" .= role message,
-        "content" .= content message
+        "content" .= content message,
+        "tokens_per_second" .= tokensPerSecond message
       ]
         ++ ["tool_calls" .= toolCalls message | not (null (toolCalls message))]
         ++ ["tool_call_id" .= callId | Just callId <- [toolCallId message]]
@@ -101,7 +104,7 @@ instance ToJSON Model where
 
 instance FromJSON Model where
   parseJSON = withObject "model" $ \v -> do
-    model <- v .: "Model"
-    case (model :: Text) of
+    m <- v .: "Model"
+    case (m :: Text) of
       "mercury-3" -> pure Mercury3
       _ -> fail "unknown model"

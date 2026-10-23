@@ -10,6 +10,7 @@ module Main (main) where
 import Chat
 import Control.Exception (bracket)
 import Control.Monad (forever, unless)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as B
@@ -17,6 +18,7 @@ import qualified Data.ByteString.Lazy.Char8 as L
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import GHC.Clock (getMonotonicTimeNSec)
 import LoadEnv
 import Network.HTTP.Req
 import Network.Socket
@@ -107,7 +109,8 @@ talkWithToolRequests apiKey toolRequests chat = do
                 { role = Tool,
                   content = Just toolResult,
                   toolCalls = [],
-                  toolCallId = Just tCallId
+                  toolCallId = Just tCallId,
+                  tokensPerSecond = Nothing
                 }
             | (tCallId, toolResult) <- toolCallResults
             ]
@@ -137,8 +140,14 @@ callLLM (ApiKey apiKey) chat = do
   let llmChat = chat {messages = reverse $ messages chat}
 
   runReq defaultHttpConfig $ do
+    start <- liftIO getMonotonicTimeNSec
+
     res <- req POST url (ReqBodyJson llmChat) jsonResponse (header "Authorization" ("Bearer " <> B.pack apiKey))
     let parsedRes = responseBody res :: OpenAIChatCompletionResponse
+
+    end <- liftIO getMonotonicTimeNSec
+
+    let tokensUsed = usageCompletionTokens . responseUsage $ parsedRes
 
     case listToMaybe (responseChoices parsedRes) of
       Nothing -> pure chat
@@ -149,7 +158,12 @@ callLLM (ApiKey apiKey) chat = do
                 { role = messageRole responseMessage,
                   content = messageContent responseMessage,
                   toolCalls = fromMaybe [] (messageToolCalls responseMessage),
-                  toolCallId = Nothing
+                  toolCallId = Nothing,
+                  tokensPerSecond = Just (calculateTokensPerSecond tokensUsed (fromIntegral (end - start)))
                 }
 
         pure $ addMessage msg chat
+
+-- divide by 1b because interval is in nanoseconds
+calculateTokensPerSecond :: Int -> Double -> Double
+calculateTokensPerSecond tokensUsed interval = fromIntegral tokensUsed / interval / 1e9 :: Double

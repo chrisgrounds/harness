@@ -20,12 +20,14 @@ import System.Console.Haskeline
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (die)
 import System.IO (hIsTerminalDevice, stdout)
+import Text.Printf (printf)
 
-data Message = Message T.Text (Maybe T.Text) [ToolRequest]
+data Message = Message T.Text (Maybe T.Text) [ToolRequest] (Maybe Double)
 
 instance FromJSON Message where
   parseJSON = withObject "message" $ \v ->
     Message <$> v .: "role" <*> v .:? "content" <*> v .:? "tool_calls" .!= []
+      <*> v .:? "tokens_per_second"
 
 data ToolRequest = ToolRequest T.Text T.Text
 
@@ -102,15 +104,15 @@ receiveReply sock initial = consume (A.parse json' initial)
       Error err -> ioError (userError ("Invalid server response: " ++ err))
       Success (Reply messages) -> do
         -- History is newest-first; the latest user message bounds this turn.
-        let turn = reverse (takeWhile (\(Message role _ _) -> role /= "user") messages)
-        if any (\(Message role _ _) -> role == "assistant") turn
-          then pure (filter (\(Message role _ _) -> role == "assistant" || role == "tool") turn, rest)
+        let turn = reverse (takeWhile (\(Message role _ _ _) -> role /= "user") messages)
+        if any (\(Message role _ _ _) -> role == "assistant") turn
+          then pure (filter (\(Message role _ _ _) -> role == "assistant" || role == "tool") turn, rest)
           else ioError (userError "Server response contains no agent reply.")
 
 renderReply :: Bool -> Message -> String
-renderReply color (Message "tool" content _) =
+renderReply color (Message "tool" content _ _) =
   renderMessage color "33" "tool" (maybe "(no tool output)" T.unpack content)
-renderReply color (Message _ content requests) = intercalate "\n" (agentLines ++ toolLines)
+renderReply color (Message _ content requests tokensPerSecond) = intercalate "\n" (agentLines ++ toolLines ++ speedLines)
   where
     agentLines = case content of
       Just text | not (T.null text) -> [renderMessage color "1;32" "agent" (T.unpack text)]
@@ -119,6 +121,10 @@ renderReply color (Message _ content requests) = intercalate "\n" (agentLines ++
     toolLines =
       [ renderMessage color "33" "tool" (T.unpack (name <> " " <> arguments))
       | ToolRequest name arguments <- requests
+      ]
+    speedLines =
+      [ paint color "2" (printf "        %.1f tokens/s" speed)
+      | Just speed <- [tokensPerSecond]
       ]
 
 renderMessage :: Bool -> String -> String -> String -> String
