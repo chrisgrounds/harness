@@ -83,6 +83,7 @@ talk s chat apiKey = do
   unless (S.null bytes) $ do
     message <- either fail pure (eitherDecodeStrict bytes :: Either String Message)
 
+    -- wtf are these names, Chris
     let newChat = addMessage message chat
 
     newerChat <- callLLM apiKey newChat
