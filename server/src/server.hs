@@ -8,7 +8,7 @@
 module Main (main) where
 
 import Chat
-import Control.Exception
+import Control.Exception (IOException, bracket, try)
 import Control.Monad (forever, unless)
 import Control.Monad.IO.Class
 import Data.Aeson
@@ -75,7 +75,7 @@ main = do
         ChatPayload
           []
           model
-          [ Tool
+          [ ToolDefinition
               { toolType = FunctionTool,
                 toolFunction =
                   ToolFunction
@@ -119,73 +119,81 @@ talk s chat apiKey = do
   unless (S.null bytes) $ do
     message <- either fail pure (eitherDecodeStrict bytes :: Either String Message)
 
-    agentMessage <- callLLM message apiKey chat
+    let newChat = addMessage message chat
 
-    let chatPayloadWithAgentResponse = addMessage agentMessage . addMessage message $ chat
+    newerChat <- callLLM apiKey newChat
 
-    sendAll s $ L.toStrict (encode chatPayloadWithAgentResponse)
+    chatWithToolCalls <- talkWithToolRequests apiKey (getLatestToolRequests newerChat) newerChat
 
-    (_, ToolCallResult toolCallResults) <- handleAssistantMessage agentMessage
+    sendAll s $ L.toStrict (encode chatWithToolCalls)
+    talk s chatWithToolCalls apiKey
 
-    print $ toolCallResults
+talkWithToolRequests :: ApiKey -> [ToolRequest] -> ChatPayload -> IO ChatPayload
+talkWithToolRequests _ [] chat = pure chat
+talkWithToolRequests apiKey toolRequests chat = do
+  toolCallResults <- mapM runToolRequest toolRequests
 
-    let newChatPayload = chatPayloadWithAgentResponse
+  if length toolCallResults == 0
+    then pure chat
+    else do
+      let toolMessages =
+            [ Message
+                { role = Tool,
+                  content = Just toolResult,
+                  toolCalls = [],
+                  toolCallId = Just tCallId
+                }
+            | (tCallId, toolResult) <- toolCallResults
+            ]
 
-    -- sendAll s $ L.toStrict (encode newChatPayload)
-    talk s newChatPayload apiKey
+      let newChat = addMessages toolMessages chat
 
-data ToolCallResult = ToolCallResult [(Text, Text)]
+      chatWithAgentResponse <- callLLM apiKey newChat
 
-handleAssistantMessage :: Message -> IO (Message, ToolCallResult)
-handleAssistantMessage msg = case role msg of
-  Assistant -> do
-    let tools = toolCalls msg
+      talkWithToolRequests apiKey (maybe [] toolCalls (listToMaybe $ messages chatWithAgentResponse)) chatWithAgentResponse
 
-    -- we can run them in parallel later on, but for now one at a time
-    res <- mapM runToolRequest tools
-
-    pure (msg, ToolCallResult res)
-  _ -> pure (msg, ToolCallResult [])
-
-runToolRequest :: ToolRequest -> IO (Text, Text)
+runToolRequest :: ToolRequest -> IO (ToolCallId, Text)
 runToolRequest tool = case (toolRequestFunctionParamsName toolDetails) of
   ReadFile -> do
     res <- runReadFile toolDetails
-    pure (toolRequestId tool, res)
+
+    case res of
+      Left err -> pure (toolRequestId tool, "Could not read file: " <> T.pack (show err))
+      Right contents -> pure (toolRequestId tool, contents)
   where
     toolDetails = toolRequestFunction tool
 
-runReadFile :: ToolRequestFunctionParams -> IO Text
+runReadFile :: ToolRequestFunctionParams -> IO (Either IOException Text)
 runReadFile toolDetails = do
   let args = toolRequestFunctionParamsArguments toolDetails
   ReadFilePath path <-
     either fail pure (eitherDecodeStrict (TE.encodeUtf8 args))
   -- For now we make this a relative path
-  TIO.readFile ("./" <> T.unpack path)
+  -- we should really handle this much better
+  try $ TIO.readFile ("../" <> T.unpack path)
 
-callLLM :: Message -> ApiKey -> ChatPayload -> IO Message
-callLLM message key@(ApiKey apiKey) chat = do
+callLLM :: ApiKey -> ChatPayload -> IO ChatPayload
+callLLM key@(ApiKey apiKey) chat = do
   let ApiDefinition url = toApiDefinition (model chat)
 
+  -- the `Chat` type here stores most recent messages at the beginning of [Message]
+  -- whereas the LLM expects the reverse
+  let llmChat = chat {messages = reverse $ messages chat}
+
   runReq defaultHttpConfig $ do
-    let userPayload =
-          ChatPayload
-            { messages = [Message User (content message) []],
-              model = (model chat),
-              tools = (tools chat)
-            }
-
-    res <- req POST url (ReqBodyJson userPayload) jsonResponse (header "Authorization" ("Bearer " <> B.pack apiKey))
-
+    res <- req POST url (ReqBodyJson llmChat) jsonResponse (header "Authorization" ("Bearer " <> B.pack apiKey))
     let parsedRes = responseBody res :: OpenAIChatCompletionResponse
 
     case listToMaybe (responseChoices parsedRes) of
-      Nothing -> pure $ Message Assistant (Just "No content") []
+      Nothing -> pure chat
       Just choice -> do
         let responseMessage = choiceMessage choice
-        pure $
-          Message
-            { role = messageRole responseMessage,
-              content = messageContent responseMessage,
-              toolCalls = fromMaybe [] (messageToolCalls responseMessage)
-            }
+        let msg =
+              Message
+                { role = messageRole responseMessage,
+                  content = messageContent responseMessage,
+                  toolCalls = fromMaybe [] (messageToolCalls responseMessage),
+                  toolCallId = Nothing
+                }
+
+        pure $ addMessage msg chat

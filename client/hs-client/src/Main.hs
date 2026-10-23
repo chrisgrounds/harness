@@ -11,7 +11,7 @@ import qualified Data.Attoparsec.ByteString as A
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.Char (isControl, isSpace)
-import Data.List (find, intercalate)
+import Data.List (intercalate)
 import Data.Maybe (isNothing)
 import qualified Data.Text as T
 import Network.Socket
@@ -67,7 +67,7 @@ runClient path = catch session reportError
 
 chat :: Socket -> Bool -> Bool -> B.ByteString -> InputT IO ()
 chat sock color interactive pending = do
-  input <- getInputLine (if interactive then paint color "1;36" "you     " ++ "> " else "")
+  input <- getInputLine (if interactive then paint color "1;36" "you   " ++ "> " else "")
   case input of
     Nothing -> pure ()
     Just line
@@ -84,12 +84,12 @@ chat sock color interactive pending = do
             else do
               liftIO $ sendAll sock payload
               (reply, rest) <- liftIO $ receiveReply sock pending
-              outputStrLn (renderReply color reply ++ "\n")
+              outputStrLn (intercalate "\n" (map (renderReply color) reply) ++ "\n")
               chat sock color interactive rest
 
 -- The server sends an unframed JSON object, with newest messages first.
 -- Incremental parsing handles socket boundaries, including split UTF-8 characters.
-receiveReply :: Socket -> B.ByteString -> IO (Message, B.ByteString)
+receiveReply :: Socket -> B.ByteString -> IO ([Message], B.ByteString)
 receiveReply sock initial = consume (A.parse json' initial)
   where
     consume (A.Fail _ _ err) = ioError (userError ("Invalid server response: " ++ err))
@@ -100,12 +100,16 @@ receiveReply sock initial = consume (A.parse json' initial)
         else consume (next chunk)
     consume (A.Done rest value) = case fromJSON value of
       Error err -> ioError (userError ("Invalid server response: " ++ err))
-      Success (Reply messages) -> case find isAgent messages of
-        Nothing -> ioError (userError "Server response contains no agent reply.")
-        Just message -> pure (message, rest)
-    isAgent (Message role _ _) = role == "assistant"
+      Success (Reply messages) -> do
+        -- History is newest-first; the latest user message bounds this turn.
+        let turn = reverse (takeWhile (\(Message role _ _) -> role /= "user") messages)
+        if any (\(Message role _ _) -> role == "assistant") turn
+          then pure (filter (\(Message role _ _) -> role == "assistant" || role == "tool") turn, rest)
+          else ioError (userError "Server response contains no agent reply.")
 
 renderReply :: Bool -> Message -> String
+renderReply color (Message "tool" content _) =
+  renderMessage color "33" "tool" (maybe "(no tool output)" T.unpack content)
 renderReply color (Message _ content requests) = intercalate "\n" (agentLines ++ toolLines)
   where
     agentLines = case content of
@@ -119,8 +123,9 @@ renderReply color (Message _ content requests) = intercalate "\n" (agentLines ++
 
 renderMessage :: Bool -> String -> String -> String -> String
 renderMessage color code label content =
-  paint color code (label ++ replicate (8 - length label) ' ') ++ "> " ++
-    T.unpack (T.replace "\n" "\n          " (T.pack (filter safeChar content)))
+  paint color code (label ++ replicate (6 - length label) ' ')
+    ++ "> "
+    ++ T.unpack (T.replace "\n" "\n          " (T.pack (filter safeChar content)))
   where
     safeChar c = not (isControl c) || c == '\n' || c == '\t'
 

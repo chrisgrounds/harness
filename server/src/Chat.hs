@@ -3,32 +3,40 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Chat
-  ( ChatPayload (..)
-  , Message (..)
-  , Model (..)
-  , Tool (..)
-  , ToolFunction (..)
-  , addMessage
-  ) where
+  ( ChatPayload (..),
+    Message (..),
+    Model (..),
+    ToolDefinition (..),
+    ToolFunction (..),
+    addMessage,
+    addMessages,
+    getLatestToolRequests,
+  )
+where
 
 import Data.Aeson
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import GHC.Generics (Generic)
-import OpenAI (Role, ToolName, ToolRequest, ToolType)
+import OpenAI (Role, ToolCallId, ToolName, ToolRequest, ToolType)
 
 data ChatPayload = ChatPayload
   { messages :: [Message],
     model :: Model,
-    tools :: [Tool]
+    tools :: [ToolDefinition]
   }
   deriving (Show, Generic, ToJSON, FromJSON)
 
 data Message = Message
   { role :: Role,
     content :: Maybe Text,
-    toolCalls :: [ToolRequest]
+    toolCalls :: [ToolRequest],
+    toolCallId :: Maybe ToolCallId
   }
   deriving (Show, Generic)
+
+getLatestToolRequests :: ChatPayload -> [ToolRequest]
+getLatestToolRequests = maybe [] toolCalls . listToMaybe . messages
 
 instance FromJSON Message where
   parseJSON = withObject "Message" $ \value ->
@@ -36,6 +44,7 @@ instance FromJSON Message where
       <$> value .: "role"
       <*> value .:? "content"
       <*> value .:? "tool_calls" .!= []
+      <*> value .:? "tool_call_id"
 
 instance ToJSON Message where
   toJSON message =
@@ -44,11 +53,15 @@ instance ToJSON Message where
         "content" .= content message
       ]
         ++ ["tool_calls" .= toolCalls message | not (null (toolCalls message))]
+        ++ ["tool_call_id" .= callId | Just callId <- [toolCallId message]]
 
 addMessage :: Message -> ChatPayload -> ChatPayload
 addMessage m c = c {messages = m : messages c}
 
-data Tool = Tool
+addMessages :: [Message] -> ChatPayload -> ChatPayload
+addMessages ms c = c {messages = ms ++ messages c}
+
+data ToolDefinition = ToolDefinition
   { toolType :: ToolType,
     toolFunction :: ToolFunction
   }
@@ -68,10 +81,10 @@ jsonOptions prefix =
         camelTo2 '_' . Prelude.drop (Prelude.length prefix)
     }
 
-instance FromJSON Tool where
+instance FromJSON ToolDefinition where
   parseJSON = genericParseJSON (jsonOptions "tool")
 
-instance ToJSON Tool where
+instance ToJSON ToolDefinition where
   toJSON = genericToJSON (jsonOptions "tool")
 
 instance FromJSON ToolFunction where

@@ -2,8 +2,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module OpenAI
-  ( Role (User, Assistant, System),
+  ( Role (..),
     ToolRequest (..),
+    ToolCallId,
     ToolRequestFunctionParams (..),
     ToolType (..),
     ToolName (..),
@@ -39,11 +40,13 @@ instance FromJSON Role where
       _ -> fail "unknown role"
 
 data ToolRequest = ToolRequest
-  { toolRequestId :: Text,
+  { toolRequestId :: ToolCallId,
     toolRequestType :: ToolType,
     toolRequestFunction :: ToolRequestFunctionParams
   }
   deriving (Show, Generic)
+
+type ToolCallId = Text
 
 data ToolRequestFunctionParams = ToolRequestFunctionParams
   { toolRequestFunctionParamsName :: ToolName,

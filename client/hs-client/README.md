@@ -1,7 +1,7 @@
 # hs-client
 
 A small, scrollback-friendly terminal UI for harness. Cyan `you` prompts and
-green `agent` replies and yellow `tool` requests keep the conversation clear,
+green `agent` replies and yellow `tool` requests and results keep the conversation clear,
 with no panels or extra chrome.
 Multiline replies keep their indentation. Input supports editing and session history.
 
@@ -14,11 +14,13 @@ nix develop path:. -c cabal run hs-client
 ```
 
 ```text
-you     > explain this function
-agent   > I'll read the file first.
-tool    > ReadFile {"path":"src/Main.hs"}
+you   > explain this function
+agent > I'll read the file first.
+tool  > ReadFile {"path":"src/Main.hs"}
+tool  > module Main (main) where ...
+agent > This function connects to the harness server.
 
-you     >
+you   >
 ```
 
 Enter sends a message; Up/Down recalls previous input. `/quit`, Ctrl-D on an
@@ -26,8 +28,10 @@ empty prompt, or Ctrl-C exits. Pass a socket path with
 `cabal run hs-client -- /path/to/harness.sock`; the default is `/tmp/harness.sock`.
 Set `NO_COLOR=1` for plain text. Redirected output also omits colour.
 
-The client reads the server's JSON responses and displays the newest agent
-reply and its tool requests, including responses split across socket reads.
+The client reads the server's JSON responses and displays all agent messages,
+tool requests, and tool results from the current turn in chronological order,
+including responses split across socket reads. Earlier conversation history
+and the echoed user message are not repeated.
 Each tool request shows its function name and arguments. Replies containing only
 tool requests display those requests without a missing-text placeholder.
 The server currently reads
