@@ -1,12 +1,12 @@
 cabal-version: 2.2
-name: hs-client
+name: hs-tui-client
 version: 0.1.0.0
 synopsis: A minimal terminal client for harness
 license: BSD-3-Clause
 license-file: LICENSE
 build-type: Simple
 
-executable hs-client
+executable hs-tui-client
   hs-source-dirs: src
   main-is: Main.hs
   build-depends:

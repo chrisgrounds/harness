@@ -1,4 +1,4 @@
-"""Socket regression tests. Build hs-client, then run this file with Python 3."""
+"""Socket regression tests. Build hs-tui-client, then run this file with Python 3."""
 
 import json
 import os
@@ -29,13 +29,13 @@ class SocketTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.binary = subprocess.check_output(
-            ["cabal", "list-bin", "hs-client", "--offline"],
+            ["cabal", "list-bin", "hs-tui-client", "--offline"],
             cwd=CLIENT_DIR, text=True,
         ).strip()
 
     def run_chat(self, turns):
         errors = []
-        with tempfile.TemporaryDirectory(prefix="hs-client-test-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="hs-tui-client-test-") as tmp:
             path = str(Path(tmp) / "server.sock")
             with socket.socket(socket.AF_UNIX) as server:
                 server.bind(path)

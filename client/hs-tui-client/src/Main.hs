@@ -26,7 +26,10 @@ data Message = Message T.Text (Maybe T.Text) [ToolRequest] (Maybe Double)
 
 instance FromJSON Message where
   parseJSON = withObject "message" $ \v ->
-    Message <$> v .: "role" <*> v .:? "content" <*> v .:? "tool_calls" .!= []
+    Message
+      <$> v .: "role"
+      <*> v .:? "content"
+      <*> v .:? "tool_calls" .!= []
       <*> v .:? "tokens_per_second"
 
 data ToolRequest = ToolRequest T.Text T.Text
@@ -45,16 +48,16 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ["--help"] -> putStrLn "Usage: hs-client [SOCKET]\nDefault socket: /tmp/harness.sock\nEnter sends; Up/Down recalls input; /quit or Ctrl-D exits."
+    ["--help"] -> putStrLn "Usage: hs-tui-client [SOCKET]\nDefault socket: /tmp/harness.sock\nEnter sends; Up/Down recalls input; /quit or Ctrl-D exits."
     [] -> runClient "/tmp/harness.sock"
     [path] | take 1 path /= "-" -> runClient path
-    _ -> die "Usage: hs-client [SOCKET]"
+    _ -> die "Usage: hs-tui-client [SOCKET]"
 
 runClient :: FilePath -> IO ()
 runClient path = catch session reportError
   where
     reportError :: IOException -> IO ()
-    reportError err = die ("hs-client: " ++ displayException err)
+    reportError err = die ("hs-tui-client: " ++ displayException err)
     session = do
       terminal <- hIsTerminalDevice stdout
       noColor <- lookupEnv "NO_COLOR"

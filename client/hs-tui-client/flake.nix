@@ -41,9 +41,9 @@
       in flake // {
         legacyPackages = pkgs;
 
-        # `nix build .` builds the hs-client executable; the per-component
-        # attributes (e.g. `nix build .#hs-client:exe:hs-client`) come from `flake`.
-        packages = flake.packages // { default = flake.packages."hs-client:exe:hs-client"; };
+        # `nix build .` builds the hs-tui-client executable; the per-component
+        # attributes (e.g. `nix build .#hs-tui-client:exe:hs-tui-client`) come from `flake`.
+        packages = flake.packages // { default = flake.packages."hs-tui-client:exe:hs-tui-client"; };
       });
 
   # --- Flake Local Nix Configuration ----------------------------
