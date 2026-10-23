@@ -19,4 +19,5 @@ executable client
       base >= 4.2 && < 5
     , network
     , bytestring
+    , aeson
   default-language: Haskell2010
