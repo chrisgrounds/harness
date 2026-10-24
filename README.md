@@ -16,3 +16,4 @@ At the moment as well we hardcode the `Mercury3` model and to use it we need to 
 | hs-client-minimal/  | Hand-written Haskell test client code |
 | hs-tui-client/  | LLM-written Haskell client code |
 | rs-gui-client/  | LLM-written Rust + egui desktop client code |
+| bend-client/  | LLM-written Bend 2 terminal client with native socket/JSON effects |
