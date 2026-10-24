@@ -1,25 +1,39 @@
-# Proofs of the client contract. The laws remain unchanged.
+# Proofs of the pure client contract, checked with bend PROOF.bend --verdict.
 import Base
 import ./src/protocol.bend as Protocol
-import ./src/main.bend as Client
+import ./src/session.bend as Client
 import ./LAWS.bend as Laws
 
+# {==} is an equality proof by computation (reflexivity), not a hole.
+# For these laws, unfolding the named definitions makes both sides identical
+# for all their arguments. No case split or induction hypothesis is needed.
+# An unfinished proof would use ?TODO instead.
+
 def Laws.tool_calls_are_visible(name, arguments, rest, color):
+  # render_calls on Con emits this call's line followed by render_calls(rest).
   {==}
 
 def Laws.tool_only_messages_show_calls(calls, speed, color):
+  # render_message selects Agent; render_text(None) reduces to render_empty.
+  # The calls and optional speed remain appended exactly as the law requires.
   {==}
 
-def Laws.prompts_can_be_submitted(text, socket, interactive, color):
+def Laws.prompts_can_be_submitted(text, color):
+  # command(False, False) reduces to accepted with the encoded original text,
+  # its byte-limit decision, and the user echo, exactly matching the law.
   {==}
 
-def Laws.accepted_prompts_are_sent_once(payload, socket, color):
+def Laws.accepted_prompts_are_sent_once(bytes, echo):
+  # accepted(True) constructs Waiting with one Display and one Send, whose
+  # payload is bytes followed by LF. Both sides construct the same Decision.
   {==}
 
 def Laws.tool_results_are_visible(text, calls, speed, color):
+  # render_message on Tool/Some selects the tool line containing text.
   {==}
 
 def Laws.missing_tool_results_have_a_placeholder(calls, speed, color):
+  # render_message on Tool/None selects the literal "(no tool output)" line.
   {==}
 
 def Laws.older_history_is_excluded(newer, text, calls, speed, older):
@@ -76,16 +90,17 @@ def Laws.assistant_messages_are_not_silent(text, calls, speed, color):
     case Some{SCon{h, t}} calls True{}:
       {==}
 
-def Laws.oversized_prompts_are_rejected_without_sending(socket, color):
+def Laws.oversized_prompts_are_rejected_without_sending(bytes, echo, too_big):
+  %too_big : {Client.accepted(Client.fits(bytes), bytes, echo) == Client.accepted(_, bytes, echo) : Client.Decision}
   {==}
 
-def Laws.failed_exchanges_are_not_retried(code, message, socket, color):
+def Laws.failed_exchanges_are_not_retried(message, color):
   {==}
 
-def Laws.quit_does_not_send(socket, interactive, color):
+def Laws.quit_does_not_send(color):
   {==}
 
-def Laws.end_of_input_does_not_send(socket, interactive, color):
+def Laws.end_of_input_does_not_send(color):
   {==}
 
 # Filtering retains only characters satisfying the display predicate.
@@ -214,3 +229,12 @@ def Laws.plain_display_contains_no_unsafe_controls(text):
   +copy = text
   append_safe(Protocol.format_body(copy), "\n", formatted_safe(copy), {==})
 
+
+def Laws.prompt_encoding_and_size(text):
+  ({==}, {==})
+
+def Laws.received_turns_use_the_renderer(messages, color):
+  {==}
+
+def Laws.exhausted_budget_closes(color):
+  {==}

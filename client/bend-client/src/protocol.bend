@@ -115,25 +115,3 @@ def render(messages: List<&2, Message>, +color: Bool) -> String:
       ""
     case Con{message, rest}:
       render_message(message, color) ++ render(rest, color)
-
-
-# C-only effects, built by ../build.sh. Each borrowed socket is returned.
-def connect(path: String) -> IO(Result<&1, &1, U32 & String, Socket>):
-  import "./host.c"
-
-def input() -> IO(Result<&1, &1, U32 & String, Maybe<&2, String>>):
-  import "./host.c"
-
-def interactive() -> IO(Bool):
-  import "./host.c"
-
-def color() -> IO(Bool):
-  import "./host.c"
-
-# None means the encoded message exceeds the server's 1024-byte limit.
-def encode(text: String) -> IO(Maybe<&2, String>):
-  import "./host.c"
-
-def exchange(socket: Socket, payload: String) ->
-  IO(Socket & Result<&1, &1, U32 & String, List<&2, Message>>):
-  import "./host.c"

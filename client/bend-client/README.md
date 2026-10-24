@@ -1,108 +1,94 @@
 # bend-client
 
-A terminal client for Harness written in [Bend 2](https://github.com/bendlang/bend),
-with cyan user prompts, green agent replies, yellow tool activity, and optional
-tokens-per-second values. It keeps a single Unix socket connection across turns.
+A terminal client for Harness written entirely in [Bend 2](https://github.com/bendlang/bend).
+JSON, UTF-8, framing, rendering, and session decisions are implemented in Bend;
+networking and stdin use Bend's built-in Base effects. There is no project C
+adapter, json-c dependency, or `@unsafe` code.
 
-Start the Harness server, then run from this directory:
+Start the updated Harness server, then run from this directory:
 
 ```sh
 nix run path:.
-# Optional socket path (default: /tmp/harness.sock):
-nix run path:. -- /path/to/harness.sock
+# Optional colors and driver budget:
+nix run path:. -- --color --steps 100000
+# Connect to a different local port:
+nix run path:. -- --port 7777
 ```
 
-Enter sends a line; `/quit`, Ctrl-D at an empty prompt, or Ctrl-C exits.
+The server now listens on `127.0.0.1:7777` for newline-delimited JSON and keeps
+its original Unix socket for existing clients. The Bend client requires this
+TCP endpoint; it cannot connect to the old Unix-only server.
+
+Enter sends a line; `/quit`, Ctrl-D at an empty line, or Ctrl-C exits.
 Whitespace-only lines are ignored. Input uses the terminal's standard line
-editing; this client does not implement Up/Down history or a multiline composer.
-Set `NO_COLOR=1` for plain text. Redirected output also omits color and prompts.
-Replies preserve line breaks and indentation, with terminal control characters
-removed from server text.
+editing, without history or a multiline composer. Submitted input is displayed
+with a `you` label after Enter. Output is plain text by default; `--color` enables
+cyan user text, green agent replies, and yellow tool activity.
 
-The client displays the current turn in chronological order, including tool-only
-assistant messages, tool results, and multiple tool cycles. Earlier history and
-the echoed user message are omitted. It handles JSON and UTF-8 split across reads,
-missing/null content, and missing/null throughput values. Messages appear when
-the server sends the completed turn, rather than streaming individual tokens.
+The client displays each completed turn chronologically, including tool-only
+assistant messages, tool results, and multiple tool cycles. Earlier history is
+omitted. Replies preserve newlines and indentation while removing terminal
+control characters. Missing content and optional throughput values are handled.
+Replies arrive as completed turns, without token streaming.
 
-The server currently reads each request with a single 1024-byte `recv`. The client
-rejects requests exceeding 1024 encoded JSON bytes before sending them, and lets
-you enter a shorter message. That server framing limitation still applies even
-to accepted requests. Connection or malformed-response errors terminate the
-session with a nonzero status; failed requests are never retried automatically.
-Replies are limited to 64 MiB and 64 JSON nesting levels.
+Requests are limited to 1024 encoded UTF-8 JSON bytes, excluding the newline.
+Oversized requests are rejected locally and you can enter a shorter prompt.
+TCP framing handles reads that split JSON or UTF-8 characters. Input lines are
+capped at 1 MiB, replies at 8 MiB, and JSON nesting at 64 levels. Malformed replies
+and connection errors terminate the session; requests are never retried.
 
-## Build and test
+The driver consumes a finite budget, defaulting to 100000 steps. `--steps N`
+accepts 0 through 10000000. A step processes input or a reply chunk, so this is
+not a turn count. Exhaustion closes the session with a nonzero status. The
+budget bounds driver recursion, not wall-clock time: Base I/O can block.
 
-The Nix flake supports `x86_64-linux` and pins Bend **2.0.39** and json-c **0.19**,
-including release archive checksums. It provides the compiler, Clang, and Python:
+## Build
+
+The Nix flake supports `x86_64-linux`, pins Bend **2.0.39**, and supplies Clang:
 
 ```sh
 nix build path:.
 nix flake check path:.
 nix develop path:. -c ./build.sh
-nix develop path:. -c python3 tests/test_socket.py
 ./build/bend-client --help
 ```
 
-Without Nix, install Bend 2.0.39, Clang 14+, `pkg-config`, and json-c 0.19 or newer
-development headers, then run `./build.sh`. Use `BEND=/path/to/bend`
-and `CC=/path/to/clang` to override the executables. Python 3 is needed only for
-the regression tests. The built executable requires json-c at runtime, but does
-not require Bend, Python, or a separate socket bridge.
+Without Nix, install Bend 2.0.39 and Clang 14+, then run `./build.sh`.
+Use `BEND=/path/to/bend` and `CC=/path/to/clang` to override the executables.
+The build checks `PROOF.bend` and `src/main.bend` before native compilation.
+Socket tests are not part of the build or flake checks.
 
-## Implementation
+Bend's native backend generates C internally and relies on its runtime and OS
+for effects. “Entirely in Bend” describes the application source; it does not
+remove the compiler's C backend or make networking mathematically pure.
 
-- `src/main.bend`: CLI, input handling, session loop, and error handling.
-- `src/protocol.bend`: typed messages, current-turn selection, rendering, and
-  foreign-effect declarations.
-- `src/host.c`: POSIX socket/terminal effects and JSON encoding/decoding using
-  json-c. Blocking input and exchanges run on Bend's I/O worker threads.
-- `LAWS.bend`: the client contract, with 15 obligations covering ten behavioral
-  requirements.
-- `PROOF.bend`: proof bodies for all 15 obligations, plus induction lemmas for
-  filtering, string/list conversion, and safe formatting. The laws are unchanged.
+## Implementation and proofs
 
-Bend's Base library currently provides TCP/UDP effects, but no Unix-domain socket
-connector or JSON codec, so this client uses its documented C foreign-effect
-mechanism. The build emits C from Bend and links it with json-c. Only the native
-target is supported; running `bend src/main.bend` directly uses the JavaScript
-target and will fail because these effects have no JavaScript implementation.
+- `src/bytes.bend`, `src/json.bend`, `src/reply.bend`: pure UTF-8, JSON, and message decoding.
+- `src/frame.bend`: bounded newline framing across read chunks.
+- `src/protocol.bend`: typed messages, current-turn selection, and safe rendering.
+- `src/session.bend`: pure transitions producing `Display`, `Send`, and `Stop` actions.
+- `src/main.bend`: CLI and structurally decreasing driver interpreting those actions with Base I/O.
+- `LAWS.bend`: 18 obligations for tool visibility, prompt submission, history selection,
+  ordering, nonempty agent output, request limits, failure/quit/EOF/budget behavior,
+  and terminal control filtering.
+- `PROOF.bend`: proofs by reduction, rewriting, case analysis, and induction.
 
-The host adapter depends on Bend 2.0.39's generated constructor layout; upgrading
-Bend requires reviewing that boundary and rerunning the socket tests. The
-externally driven session loop uses `@unsafe` recursion. Consequently, Bend's
-`--check-only` proof gate reports unsafe/foreign dependencies: this application
-is not claimed to be formally verified. Normal compilation still checks types.
-
-Tests launch a local mock Unix socket server; no API key or running Harness
-server is required. They cover multiple turns/tool cycles, fragmented Unicode,
-size boundaries and recovery, optional fields, malformed replies, disconnection,
-terminal controls, and CLI errors. Set `BEND_CLIENT` to test another built binary.
-
-## Proof status
+All 18 obligations pass both Bend's checker and the independent BendTT kernel
+with **ALL PROOFS CHECK**, without holes or unsafe proofs. Reproduce the kernel
+check using Lean **4.34.0** (`lean` and `leanc` on PATH, or its elan toolchain):
 
 ```sh
-nix develop path:. -c bend PROOF.bend
-# Request the independent kernel check as well:
-nix develop path:. -c bend PROOF.bend --verdict
+bend PROOF.bend --verdict
 ```
 
-All 15 proof bodies pass Bend's type checker with no holes or assumed helper
-laws. Eleven follow by reduction; the others use case analysis and induction.
-Formatting sanitizes and indents in one traversal so its safety proof follows
-each character decision directly.
+Bend builds and caches its kernel on the first invocation. Alternatively, set
+`BENDTT=/path/to/bendtt` to a kernel built from this Bend release's `bendtt.lean`.
+The ordinary build uses Bend's checker; independent verification is a separate
+command requiring Lean or the prebuilt kernel.
 
-**The certification gate still exits nonzero with `SOME PROOFS FAIL`.** It rejects
-the imported C effects and `@unsafe` session loop, including laws whose types
-refer to them. Neither command currently produces `ALL PROOFS CHECK`; the
-independent kernel check is blocked by that dependency gate. In particular,
-these proofs do not certify C JSON encoding, socket delivery, or termination of
-the interactive session. The I/O equalities describe client action sequences
-relative to those trusted definitions.
-
-Full certification requires separating a terminating, pure session transition
-model from the effect interpreter and expressing the I/O laws against that
-model. Do not remove dependencies from the checker, add `@unsafe` proofs, or
-weaken the laws to turn the gate green. Integration tests remain necessary for
-the native boundary.
+The laws refer to the pure state machine actually used by the driver and its
+renderer. They prove action sequences, byte-limit decisions, history exclusion,
+and sanitization. They do not prove JSON/UTF-8 codec round trips, physical socket
+delivery, OS resource cleanup, or eventual completion of blocking I/O. The
+compiler, Base runtime, and effect interpreter remain part of the trusted boundary.

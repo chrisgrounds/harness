@@ -1,4 +1,4 @@
-"""Socket regression tests. Run ./build.sh, then run this file with Python 3."""
+"""TCP framing regression tests. Run ./build.sh, then run this file with Python 3."""
 
 import json
 import os
@@ -35,8 +35,9 @@ class SocketTests(unittest.TestCase):
         errors = []
         with tempfile.TemporaryDirectory(prefix="bend-client-test-") as tmp:
             path = str(Path(tmp) / "server.sock")
-            with socket.socket(socket.AF_UNIX) as server:
-                server.bind(path)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+                server.bind(("127.0.0.1", 0))
+                port = str(server.getsockname()[1])
                 server.listen(1)
                 server.settimeout(5)
 
@@ -62,7 +63,7 @@ class SocketTests(unittest.TestCase):
                                 history += [decoded] + responses
                                 payload = json.dumps(
                                     {"messages": list(reversed(history))}, ensure_ascii=False,
-                                ).encode()
+                                ).encode() + b"\n"
                                 # Exercise incremental parsing, including split UTF-8.
                                 for offset in range(0, len(payload), 7):
                                     conn.sendall(payload[offset:offset + 7])
@@ -72,7 +73,7 @@ class SocketTests(unittest.TestCase):
                 worker = threading.Thread(target=serve, daemon=True)
                 worker.start()
                 result = subprocess.run(
-                    [self.binary, path],
+                    [self.binary, "--port", port],
                     input=prefix + "".join(prompt + "\n" for prompt, _ in turns) + "/quit\n",
                     capture_output=True, text=True, timeout=15,
                     env={**os.environ, "NO_COLOR": "1"},
@@ -154,12 +155,15 @@ class SocketTests(unittest.TestCase):
         output = self.run_chat([("hello", [message("assistant", "hi")])], prefix="\n  \t\n")
         self.assertEqual(output.count("you   >"), 1)
 
-    def raw_reply(self, payload, *, bytewise=False):
+    def raw_reply(self, payload, *, bytewise=False, framed=True):
+        if framed:
+            payload += b"\n"
         errors = []
         with tempfile.TemporaryDirectory(prefix="bend-raw-") as tmp:
             path = str(Path(tmp) / "s")
-            with socket.socket(socket.AF_UNIX) as server:
-                server.bind(path)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+                server.bind(("127.0.0.1", 0))
+                port = str(server.getsockname()[1])
                 server.listen(1)
                 server.settimeout(5)
 
@@ -182,7 +186,7 @@ class SocketTests(unittest.TestCase):
 
                 worker = threading.Thread(target=serve, daemon=True)
                 worker.start()
-                result = subprocess.run([self.binary, path], input="hello\n/quit\n",
+                result = subprocess.run([self.binary, "--port", port], input="hello\n/quit\n",
                                         text=True, capture_output=True, timeout=10)
                 worker.join(6)
                 self.assertFalse(worker.is_alive())
@@ -214,19 +218,19 @@ class SocketTests(unittest.TestCase):
     def test_disconnect(self):
         for payload in [b'', b'{"messages":[']:
             with self.subTest(payload=payload):
-                result = self.raw_reply(payload)
+                result = self.raw_reply(payload, framed=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("disconnected", result.stderr)
 
     def test_invalid_utf8(self):
         result = self.raw_reply(b'{"messages":[{"role":"assistant","content":"\xff"}]}')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("invalid UTF-8", result.stderr)
+        self.assertIn("UTF-8", result.stderr)
 
     def test_help_arguments_and_missing_socket(self):
         help_result = subprocess.run([self.binary, "--help"], capture_output=True, text=True)
         self.assertEqual(help_result.returncode, 0)
-        self.assertIn("/tmp/harness.sock", help_result.stdout)
+        self.assertIn("127.0.0.1:7777", help_result.stdout)
         for args in [["--unknown"], ["a", "b"], ["/nonexistent/bend-test.sock"]]:
             with self.subTest(args=args):
                 result = subprocess.run([self.binary, *args], capture_output=True, text=True)

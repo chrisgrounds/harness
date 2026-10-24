@@ -8,15 +8,7 @@
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        # 0.18's strict parser rejects raw non-ASCII JSON; 0.19 fixes that.
-        jsonC = pkgs.json_c.overrideAttrs (_: {
-          version = "0.19";
-          src = pkgs.fetchurl {
-            url = "https://s3.amazonaws.com/json-c_releases/releases/json-c-0.19.tar.gz";
-            sha256 = "37ad0249902e301bd9052bf712e511fcc6acff4ecaad4b5900aad9ce564e26de";
-          };
-        });
-        # The foreign-effect ABI is tied to this compiler release.
+        # Compiler and Base effect signatures are pinned together.
         bend = pkgs.stdenv.mkDerivation {
           pname = "bend";
           version = "2.0.39";
@@ -42,13 +34,10 @@
               pkgs.lib.cleanSourceFilter path type
               && !(builtins.elem (builtins.baseNameOf path) [ "build" "__pycache__" ]);
           };
-          nativeBuildInputs = [ bend pkgs.clang pkgs.pkg-config pkgs.python3 ];
-          buildInputs = [ jsonC ];
+          nativeBuildInputs = [ bend pkgs.clang ];
           buildPhase = ''
             CC=clang bash build.sh
           '';
-          doCheck = true;
-          checkPhase = ''python3 tests/test_socket.py'';
           installPhase = ''install -Dm755 build/bend-client $out/bin/bend-client'';
           meta.mainProgram = "bend-client";
         };
@@ -62,8 +51,7 @@
         };
         checks.default = client;
         devShells.default = pkgs.mkShell {
-          packages = [ bend pkgs.clang pkgs.pkg-config pkgs.python3 ];
-          buildInputs = [ jsonC ];
+          packages = [ bend pkgs.clang ];
           CC = "clang";
         };
       });

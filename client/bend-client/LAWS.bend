@@ -1,16 +1,14 @@
 import Base
 import ./src/protocol.bend as Protocol
-import ./src/main.bend as Client
+import ./src/session.bend as Client
+import ./src/bytes.bend as Bytes
+import ./src/json.bend as Json
 
-# Client contract. These are OPEN obligations, not completed proofs.
-# A future PROOF.bend should import this file and discharge each claim.
-#
-# Scope: the client receives newest-first history from Harness. Visibility
-# means producing terminal output, with control characters sanitized; it
-# does not mean showing earlier turns again or preserving unsafe escape codes.
-# I/O equalities specify the actions issued, not successful OS delivery.
-# Foreign encoding/socket effects and the unsafe session loop remain trusted
-# boundaries until they are replaced with, or connected to, a proved model.
+# Client contract over the pure state machine used by the executable.
+# PROOF.bend discharges these obligations with Bend's independent kernel.
+# The driver interprets Display/Send/Stop using Base I/O, which remains trusted.
+# Visibility means emitting sanitized output for the current turn, not replaying
+# older history. Send payloads are UTF-8 JSON followed by an LF frame delimiter.
 
 # 1. LAW: must show the tool calls made by the harness.
 # Each call contributes its name and arguments, in list order. In particular,
@@ -33,33 +31,28 @@ law tool_only_messages_show_calls:
       Protocol.render_speed(speed, color) : String}
 
 # 2. LAW: users must be able to enter prompts.
-# False/False is command's ordinary, nonblank, non-quit branch. The original
-# text is passed unchanged to the encoder exactly once, and the session resumes
-# after send returns. The following law specifies a single exchange for every
-# payload accepted by the encoder. JSON content preservation remains a contract
-# of the foreign encoder, exercised by the socket integration tests.
+# Ordinary input is encoded without changing the original text and checked
+# against the byte limit before a single Send action can be produced.
 law prompts_can_be_submitted:
   for text: String
-  for socket: Socket
-  for interactive: Bool
   for color: Bool
-  {Client.command(False{}, False{}, text, socket, interactive, color) ==
-    (do IO<Unit>:
-      Client.echo(interactive, color, text)
-      payload : Maybe<&2, String> <- Protocol.encode(text)
-      next : Socket <- Client.send(payload, socket, color)
-      Client.loop(next, interactive, color)
-    ) : IO(Unit)}
+  {Client.command(False{}, False{}, text, color) ==
+    Client.accepted(Client.fits(Client.encoded(text)), Client.encoded(text),
+      Protocol.line(color, "1;36", "you   ", text)) : Client.Decision}
 
 law accepted_prompts_are_sent_once:
-  for payload: String
-  for socket: Socket
-  for color: Bool
-  {Client.send(Some{payload}, socket, color) ==
-    (do IO<Socket>:
-      pair : Socket & Result<&1, &1, U32 & String, List<&2, Protocol.Message>> <- Protocol.exchange(socket, payload)
-      Client.unpack_reply(pair, color)
-    ) : IO(Socket)}
+  for bytes: List<&2, U32>
+  for echo: String
+  {Client.accepted(True{}, bytes, echo) ==
+    Client.Decision{Client.Waiting{}, [Client.Display{echo},
+      Client.Send{List.append(&2, U32, bytes, [10])}]} : Client.Decision}
+
+# The size decision is about encoded UTF-8 JSON bytes, excluding the LF frame.
+law prompt_encoding_and_size:
+  for text: String
+  {Client.encoded(text) == Bytes.encode(Json.request(text)) : List<&2, U32>} &
+  {Client.fits(Client.encoded(text)) ==
+    Nat.is_le(List.length(&2, U32, Bytes.encode(Json.request(text))), 1024n) : Bool}
 
 # 3. LAW: every tool result is visible, including missing-content placeholders.
 law tool_results_are_visible:
@@ -95,8 +88,16 @@ law older_history_is_excluded:
 law turns_are_displayed_chronologically:
   for messages: List<&2, Protocol.Message>
   for color: Bool
-  {Client.show_turn(True{}, messages, color) ==
-    IO.print(Protocol.render(List.reverse(&2, Protocol.Message, messages), color)) : IO(Unit)}
+  {Client.display_turn(messages, color) ==
+    Protocol.render(List.reverse(&2, Protocol.Message, messages), color) ++ "\n" : String}
+
+# The production state machine actually selects and renders the proven turn.
+law received_turns_use_the_renderer:
+  for messages: List<&2, Protocol.Message>
+  for color: Bool
+  {Client.step(Client.Waiting{}, Client.Received{messages}, color) ==
+    Client.reply(Protocol.has_agent(Protocol.current(messages)),
+      Protocol.current(messages), color) : Client.Decision}
 
 # 6. LAW: no assistant message is silently dropped.
 # The renderer emits text, calls, or a placeholder, even with absent/empty text.
@@ -109,48 +110,37 @@ law assistant_messages_are_not_silent:
     Protocol.Message{Protocol.Agent{}, text, calls, speed}, color)) == False{} : Bool}
 
 # 7. LAW: oversized prompts are never sent and the session stays usable.
-# None is the encoder's rejection of a request exceeding 1024 JSON bytes.
-# This must report the rejection and return the same open socket, with no
-# exchange. Measuring UTF-8 JSON bytes is a foreign-encoder obligation; this
-# law must not be read as a proof of that C implementation's size calculation.
+# The premise refers to the actual byte length, not an external encoder verdict.
 law oversized_prompts_are_rejected_without_sending:
-  for socket: Socket
-  for color: Bool
-  {Client.send(None{}, socket, color) ==
-    (do IO<Socket>:
-      IO.print("Message too long for the server (1024 encoded bytes maximum).")
-      return socket
-    ) : IO(Socket)}
+  for bytes: List<&2, U32>
+  for echo: String
+  for too_big: {Nat.is_le(List.length(&2, U32, bytes), 1024n) == False{} : Bool}
+  {Client.accepted(Client.fits(bytes), bytes, echo) ==
+    Client.Decision{Client.Idle{}, [Client.Display{echo},
+      Client.Display{Client.reject_message()}]} : Client.Decision}
 
-# 8. LAW: failures never trigger automatic resubmission.
-# An exchange failure closes the connection and exits; it cannot issue another
-# exchange, even if the server may already have processed the original request.
+# 8. LAW: a failed exchange closes the session without retrying the request.
 law failed_exchanges_are_not_retried:
-  for code: U32
   for message: String
-  for socket: Socket
   for color: Bool
-  {Client.reply(Fail{(code, message)}, socket, color) ==
-    (do IO<Socket>:
-      Socket.close(socket)
-      IO.die(Socket, 1, "bend-client: " ++ message)
-    ) : IO(Socket)}
+  {Client.step(Client.Waiting{}, Client.Failed{message}, color) ==
+    Client.Decision{Client.Stopped{}, [Client.Stop{1, message}]} : Client.Decision}
 
-# 9. LAW: quit and end-of-input close the session without sending a prompt.
-# State this at the input boundary so it covers command recognition as well.
+# 9. LAW: quit and EOF close without sending, including recognition of /quit.
 law quit_does_not_send:
-  for socket: Socket
-  for interactive: Bool
   for color: Bool
-  {Client.accept(Done{Some{"/quit"}}, socket, interactive, color) ==
-    Socket.close(socket) : IO(Unit)}
+  {Client.step(Client.Idle{}, Client.Entered{"/quit"}, color) ==
+    Client.Decision{Client.Stopped{}, [Client.Stop{0, ""}]} : Client.Decision}
 
 law end_of_input_does_not_send:
-  for socket: Socket
-  for interactive: Bool
   for color: Bool
-  {Client.accept(Done{None{}}, socket, interactive, color) ==
-    Socket.close(socket) : IO(Unit)}
+  {Client.step(Client.Idle{}, Client.EndOfInput{}, color) ==
+    Client.Decision{Client.Stopped{}, [Client.Stop{0, ""}]} : Client.Decision}
+
+law exhausted_budget_closes:
+  for color: Bool
+  {Client.step(Client.Waiting{}, Client.Exhausted{}, color) ==
+    Client.Decision{Client.Stopped{}, [Client.Stop{1, "session event budget exhausted"}]} : Client.Decision}
 
 # 10. LAW: server text cannot inject terminal control characters.
 # Test the plain output path: color mode intentionally adds trusted ANSI codes.

@@ -13,10 +13,10 @@ category: Console, Text
 build-type: Simple
 
 executable server
-  hs-source-dirs: src
+  hs-source-dirs: src, src/bendCompatibilityLayer
   main-is: server.hs
-  ghc-options: -Wall
-  other-modules: Chat, OpenAI, Tools
+  ghc-options: -Wall -threaded
+  other-modules: Chat, OpenAI, Tools, BendCompatibilityLayer
   build-depends:
       base >= 4.2 && < 5
     , req

@@ -1,6 +1,6 @@
 # Harness
 
-This is an LLM-harness written in Haskell. It is split into a client-server architecture. The server listens to a UNIX socket and any client can connect to it via that socket.
+This is an LLM-harness written in Haskell. It is split into a client-server architecture. The server listens on `/tmp/harness.sock` for the original Unix-socket clients and on `127.0.0.1:7777` for the Bend client. TCP requests and replies are UTF-8 JSON records terminated by a newline; requests are limited to 1024 JSON bytes, excluding the delimiter.
 
 The core type that clients need to follow is the `Chat` type which the server will send down the socket. It contains the entire history of messages and tool calls, along with tool definitions, and the model being used.
 
@@ -16,4 +16,4 @@ At the moment as well we hardcode the `Mercury3` model and to use it we need to 
 | hs-client-minimal/  | Hand-written Haskell test client code |
 | hs-tui-client/  | LLM-written Haskell client code |
 | rs-gui-client/  | LLM-written Rust + egui desktop client code |
-| bend-client/  | LLM-written Bend 2 terminal client with native socket/JSON effects |
+| bend-client/  | LLM-written pure Bend 2 terminal client with executable laws and proofs |
