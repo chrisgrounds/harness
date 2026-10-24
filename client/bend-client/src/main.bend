@@ -40,22 +40,26 @@ def actions(values: List<&2, Session.Action>, socket: Socket, input: File,
     case Con{Session.Stop{status, message}, rest}:
       stop(socket, input, status, message)
 
-def apply(decision: Session.Decision, socket: Socket, input: File,
+def ready(+state: Session.State, socket: Socket, input: File, color: Bool,
+  next: Socket -> File -> Session.State -> IO(Unit)) -> IO(Unit):
+  actions(Session.ready(state, color), socket, input, s => f => next(s, f, state))
+
+def apply(decision: Session.Decision, socket: Socket, input: File, color: Bool,
   next: Socket -> File -> Session.State -> IO(Unit)) -> IO(Unit):
   match decision:
     case Session.Decision{state, work}:
-      actions(work, socket, input, s => f => next(s, f, state))
+      actions(work, socket, input, s => f => ready(state, s, f, color, next))
 
 def fail(socket: Socket, input: File, message: String) -> IO(Unit):
   actions([Session.Stop{1, "bend-client: " ++ message}], socket, input,
     s => f => stop(s, f, 1, "unreachable"))
 
-def input_text(text: Maybe<&2, String>, socket: Socket, input: File, pending: List<&2, U32>, color: Bool, next: Next()) -> IO(Unit):
+def input_text(text: Maybe<&2, String>, socket: Socket, input: File, pending: List<&2, U32>, +color: Bool, next: Next()) -> IO(Unit):
   match text:
     case None{}:
       fail(socket, input, "invalid UTF-8 in prompt")
     case Some{text}:
-      apply(Session.step(Session.Idle{}, Session.Entered{text}, color), socket, input,
+      apply(Session.step(Session.Idle{}, Session.Entered{text}, color), socket, input, color,
         s => f => state => next(s, f, state, pending, Frame.start(1048576n), Frame.start(8388608n)))
 
 def prompt_feed(feed: Frame.Feed, socket: Socket, input: File, color: Bool, next: Next()) -> IO(Unit):
@@ -67,10 +71,10 @@ def prompt_feed(feed: Frame.Feed, socket: Socket, input: File, color: Bool, next
     case Frame.Full{bytes, rest}:
       input_text(Bytes.decode(bytes), socket, input, rest, color, next)
 
-def input_end(frame: Frame.Frame, socket: Socket, input: File, color: Bool, next: Next()) -> IO(Unit):
+def input_end(frame: Frame.Frame, socket: Socket, input: File, +color: Bool, next: Next()) -> IO(Unit):
   match frame:
     case Frame.Frame{remaining, Nil{}}:
-      apply(Session.step(Session.Idle{}, Session.EndOfInput{}, color), socket, input,
+      apply(Session.step(Session.Idle{}, Session.EndOfInput{}, color), socket, input, color,
         s => f => state => next(s, f, state, Nil{}, Frame.start(1048576n), Frame.start(8388608n)))
     case Frame.Frame{remaining, Con{h, t}}:
       input_text(Bytes.decode(List.reverse(&2, U32, h <> t)), socket, input, Nil{}, color, next)
@@ -102,12 +106,12 @@ def decode_reply(bytes: List<&2, U32>) -> Maybe<&2, List<&2, Protocol.Message>>:
     Reply.decode(text)
 
 def reply_decoded(result: Maybe<&2, List<&2, Protocol.Message>>, socket: Socket, input: File,
-  pending: List<&2, U32>, input_frame: Frame.Frame, color: Bool, next: Next()) -> IO(Unit):
+  pending: List<&2, U32>, input_frame: Frame.Frame, +color: Bool, next: Next()) -> IO(Unit):
   match result:
     case None{}:
       fail(socket, input, "invalid server response (JSON, UTF-8, or message schema)")
     case Some{messages}:
-      apply(Session.step(Session.Waiting{}, Session.Received{messages}, color), socket, input,
+      apply(Session.step(Session.Waiting{}, Session.Received{messages}, color), socket, input, color,
         s => f => state => next(s, f, state, pending, input_frame, Frame.start(8388608n)))
 
 def reply_feed(feed: Frame.Feed, socket: Socket, input: File, pending: List<&2, U32>, input_frame: Frame.Frame,
@@ -149,60 +153,62 @@ def run(fuel: Nat, socket: Socket, input: File, state: Session.State, pending: L
   input_frame: Frame.Frame, reply_frame: Frame.Frame, +color: Bool) -> IO(Unit):
   match fuel:
     case 0n:
-      apply(Session.step(state, Session.Exhausted{}, color), socket, input,
+      apply(Session.step(state, Session.Exhausted{}, color), socket, input, color,
         s => f => state => stop(s, f, 1, "session event budget exhausted"))
     case 1n+p:
       tick(state, socket, input, pending, input_frame, reply_frame, color,
         s => f => state2 => buffer => frame1 => frame2 => run(p, s, f, state2, buffer, frame1, frame2, color))
 
-def connected(result: Result<&1, &1, U32 & String, Socket>, input: File, fuel: Nat, color: Bool) -> IO(Unit):
+def connected(result: Result<&1, &1, U32 & String, Socket>, input: File, fuel: Nat, +color: Bool) -> IO(Unit):
   match result:
     case Fail{(code, message)}:
       do IO<Unit>:
         File.close(input)
         IO.die(Unit, 1, "bend-client: connect failed: " ++ message)
     case Done{socket}:
-      run(fuel, socket, input, Session.Idle{}, Nil{}, Frame.start(1048576n), Frame.start(8388608n), color)
+      do IO<Unit>:
+        IO.print("Connected. Enter a message; /quit exits.")
+        ready(Session.Idle{}, socket, input, color,
+          s => f => state => run(fuel, s, f, state, Nil{}, Frame.start(1048576n), Frame.start(8388608n), color))
 
-def session(port: U32, fuel: Nat, color: Bool) -> IO(Unit):
+def session(+port: U32, fuel: Nat, color: Bool) -> IO(Unit):
   do IO<Unit>:
+    IO.write(Session.startup(port))
     input : File <- IO.try(File, File.open("/dev/stdin", "r"))
     result : Result<&1, &1, U32 & String, Socket> <- TCP.connect("127.0.0.1", port)
     connected(result, input, fuel, color)
 
 def usage() -> String:
-  "Usage: bend-client [--port PORT] [--steps N] [--color]\nDefault: 127.0.0.1:7777, 100000 driver steps, plain text.\nEnter sends; /quit, Ctrl-D or Ctrl-C exits."
+  "Usage: bend-client [--port PORT] [--steps N]\nDefault: 127.0.0.1:7777, 100000 driver steps, color enabled.\nEnter sends; /quit, Ctrl-D or Ctrl-C exits."
 
 type Config is Data:
-  Config{port: U32, steps: Nat, color: Bool}
+  Config{port: U32, steps: Nat}
 
-def set_number(ok: Bool, port: U32, steps: Nat, color: Bool) -> Maybe<&2, Config>:
+def set_number(ok: Bool, port: U32, steps: Nat) -> Maybe<&2, Config>:
   match ok:
     case True{}:
-      Some{Config{port, steps, color}}
+      Some{Config{port, steps}}
     case False{}:
       None{}
 
 def set_port(value: String, config: Config) -> Maybe<&2, Config>:
   match config:
-    case Config{old, steps, color}:
+    case Config{old, steps}:
       do Maybe<&2, Config>:
         +port : U32 <- U32.read(value)
-        set_number(U32.is_ge(port, 1) && U32.is_le(port, 65535), port, steps, color)
+        set_number(U32.is_ge(port, 1) && U32.is_le(port, 65535), port, steps)
 
 def set_steps(value: String, config: Config) -> Maybe<&2, Config>:
   match config:
-    case Config{port, old, color}:
+    case Config{port, old}:
       do Maybe<&2, Config>:
         +steps : U32 <- U32.read(value)
-        set_number(U32.is_le(steps, 10000000), port, U32.to_nat(steps), color)
+        set_number(U32.is_le(steps, 10000000), port, U32.to_nat(steps))
 
 def parse_args(args: List<String>, config: Config) -> Maybe<&2, Config>:
   match args config:
     case Nil{} config:
       Some{config}
-    case Con{"--color", rest} Config{port, steps, color}:
-      parse_args(rest, Config{port, steps, True{}})
     case Con{"--port", Con{value, rest}} config:
       do Maybe<&2, Config>:
         next : Config <- set_port(value, config)
@@ -218,15 +224,15 @@ def start(config: Maybe<&2, Config>) -> IO(Unit):
   match config:
     case None{}:
       IO.die(Unit, 1, usage())
-    case Some{Config{port, steps, color}}:
-      session(port, steps, color)
+    case Some{Config{port, steps}}:
+      session(port, steps, True{})
 
 def args(values: List<String>) -> IO(Unit):
   match values:
     case Con{"--help", Nil{}}:
       IO.print(usage())
     case other:
-      start(parse_args(other, Config{7777, 100000n, False{}}))
+      start(parse_args(other, Config{7777, 100000n}))
 
 def main() -> IO(Unit):
   do IO<Unit>:

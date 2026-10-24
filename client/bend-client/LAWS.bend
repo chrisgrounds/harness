@@ -37,15 +37,12 @@ law prompts_can_be_submitted:
   for text: String
   for color: Bool
   {Client.command(False{}, False{}, text, color) ==
-    Client.accepted(Client.fits(Client.encoded(text)), Client.encoded(text),
-      Protocol.line(color, "1;36", "you   ", text)) : Client.Decision}
+    Client.accepted(Client.fits(Client.encoded(text)), Client.encoded(text)) : Client.Decision}
 
 law accepted_prompts_are_sent_once:
   for bytes: List<&2, U32>
-  for echo: String
-  {Client.accepted(True{}, bytes, echo) ==
-    Client.Decision{Client.Waiting{}, [Client.Display{echo},
-      Client.Send{List.append(&2, U32, bytes, [10])}]} : Client.Decision}
+  {Client.accepted(True{}, bytes) ==
+    Client.Decision{Client.Waiting{}, [Client.Send{List.append(&2, U32, bytes, [10])}]} : Client.Decision}
 
 # The size decision is about encoded UTF-8 JSON bytes, excluding the LF frame.
 law prompt_encoding_and_size:
@@ -113,11 +110,9 @@ law assistant_messages_are_not_silent:
 # The premise refers to the actual byte length, not an external encoder verdict.
 law oversized_prompts_are_rejected_without_sending:
   for bytes: List<&2, U32>
-  for echo: String
   for too_big: {Nat.is_le(List.length(&2, U32, bytes), 1024n) == False{} : Bool}
-  {Client.accepted(Client.fits(bytes), bytes, echo) ==
-    Client.Decision{Client.Idle{}, [Client.Display{echo},
-      Client.Display{Client.reject_message()}]} : Client.Decision}
+  {Client.accepted(Client.fits(bytes), bytes) ==
+    Client.Decision{Client.Idle{}, [Client.Display{Client.reject_message()}]} : Client.Decision}
 
 # 8. LAW: a failed exchange closes the session without retrying the request.
 law failed_exchanges_are_not_retried:
@@ -155,3 +150,49 @@ law plain_display_contains_no_unsafe_controls:
   for text: String
   {List.all(~&2, ~Char, ~Protocol.safe_char,
     String.to_list(Protocol.line(False{}, "", "agent ", text))) == True{} : Bool}
+
+# 11. LAW: startup begins with a red BEND CLIENT banner before connection status.
+# main writes this exact startup string before opening stdin or connecting.
+law startup_banner_is_first:
+  for port: U32
+  {Client.startup(port) ==
+    "\u{1b}[1;31mBEND CLIENT\u{1b}[0m\nConnecting to 127.0.0.1:" ++ U32.show(port) ++ "...\n" : String}
+
+# 12. LAW: the user prompt is visible whenever the driver becomes ready.
+# main interprets this action list on connection and after each transition.
+law idle_shows_user_prompt:
+  for color: Bool
+  {Client.ready(Client.Idle{}, color) ==
+    [Client.Display{Protocol.paint(color, "1;36", "user  ") ++ "> "}] : List<&2, Client.Action>}
+
+law waiting_does_not_prompt_for_input:
+  for color: Bool
+  {Client.ready(Client.Waiting{}, color) == Nil{} : List<&2, Client.Action>}
+
+law stopped_does_not_prompt_for_input:
+  for color: Bool
+  {Client.ready(Client.Stopped{}, color) == Nil{} : List<&2, Client.Action>}
+
+# The production renderers retain role labels in both plain and color modes.
+# Color wraps only the label; the body is still sanitized and line-terminated.
+# Terminal line discipline already echoes typing after user_prompt. Submission
+# must not emit Display or another prompt: exactly one Send enters Waiting.
+# The executable always enables color, so the command uses True{} directly.
+law submitted_prompts_are_not_echoed:
+  for text: String
+  for within_limit: {Client.fits(Client.encoded(text)) == True{} : Bool}
+  {Client.command(False{}, False{}, text, True{}) ==
+    Client.Decision{Client.Waiting{},
+      [Client.Send{List.append(&2, U32, Client.encoded(text), [10])}]} : Client.Decision}
+
+law agent_messages_have_a_visible_label:
+  for color: Bool
+  for text: String
+  {Protocol.agent_line(color, text) ==
+    Protocol.paint(color, "1;32", "agent ") ++ "> " ++ Protocol.format_body(text) ++ "\n" : String}
+
+law tool_messages_have_a_visible_label:
+  for color: Bool
+  for text: String
+  {Protocol.tool_line(color, text) ==
+    Protocol.paint(color, "33", "tool  ") ++ "> " ++ Protocol.format_body(text) ++ "\n" : String}

@@ -20,11 +20,11 @@ def Laws.tool_only_messages_show_calls(calls, speed, color):
 
 def Laws.prompts_can_be_submitted(text, color):
   # command(False, False) reduces to accepted with the encoded original text,
-  # its byte-limit decision, and the user echo, exactly matching the law.
+  # and its byte-limit decision, exactly matching the law.
   {==}
 
-def Laws.accepted_prompts_are_sent_once(bytes, echo):
-  # accepted(True) constructs Waiting with one Display and one Send, whose
+def Laws.accepted_prompts_are_sent_once(bytes):
+  # accepted(True) constructs Waiting with one Send and no Display. Its
   # payload is bytes followed by LF. Both sides construct the same Decision.
   {==}
 
@@ -90,8 +90,8 @@ def Laws.assistant_messages_are_not_silent(text, calls, speed, color):
     case Some{SCon{h, t}} calls True{}:
       {==}
 
-def Laws.oversized_prompts_are_rejected_without_sending(bytes, echo, too_big):
-  %too_big : {Client.accepted(Client.fits(bytes), bytes, echo) == Client.accepted(_, bytes, echo) : Client.Decision}
+def Laws.oversized_prompts_are_rejected_without_sending(bytes, too_big):
+  %too_big : {Client.accepted(Client.fits(bytes), bytes) == Client.accepted(_, bytes) : Client.Decision}
   {==}
 
 def Laws.failed_exchanges_are_not_retried(message, color):
@@ -237,4 +237,29 @@ def Laws.received_turns_use_the_renderer(messages, color):
   {==}
 
 def Laws.exhausted_budget_closes(color):
+  {==}
+
+# These equalities unfold the display functions used by the native driver.
+def Laws.startup_banner_is_first(port):
+  {==}
+
+def Laws.idle_shows_user_prompt(color):
+  {==}
+
+def Laws.waiting_does_not_prompt_for_input(color):
+  {==}
+
+def Laws.stopped_does_not_prompt_for_input(color):
+  {==}
+
+def Laws.submitted_prompts_are_not_echoed(text, within_limit):
+  %within_limit :
+    {Client.accepted(Client.fits(Client.encoded(text)), Client.encoded(text)) ==
+      Client.accepted(_, Client.encoded(text)) : Client.Decision}
+  {==}
+
+def Laws.agent_messages_have_a_visible_label(color, text):
+  {==}
+
+def Laws.tool_messages_have_a_visible_label(color, text):
   {==}

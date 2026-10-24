@@ -68,17 +68,29 @@ def format_body(text: String) -> String:
 def line(color: Bool, code: String, label: String, text: String) -> String:
   paint(color, code, label) ++ "> " ++ format_body(text) ++ "\n"
 
+def banner() -> String:
+  paint(True{}, "1;31", "BEND CLIENT") ++ "\n"
+
+def user_prompt(color: Bool) -> String:
+  paint(color, "1;36", "user  ") ++ "> "
+
+def agent_line(color: Bool, text: String) -> String:
+  line(color, "1;32", "agent ", text)
+
+def tool_line(color: Bool, text: String) -> String:
+  line(color, "33", "tool  ", text)
+
 def render_calls(calls: List<&2, Call>, +color: Bool) -> String:
   match calls:
     case Nil{}:
       ""
     case Con{Call{name, arguments}, rest}:
-      line(color, "33", "tool  ", name ++ " " ++ arguments) ++ render_calls(rest, color)
+      tool_line(color, name ++ " " ++ arguments) ++ render_calls(rest, color)
 
 def render_empty(calls: List<&2, Call>, color: Bool) -> String:
   match calls:
     case Nil{}:
-      line(color, "1;32", "agent ", "(no text reply)")
+      agent_line(color, "(no text reply)")
     case Con{call, rest}:
       ""
 
@@ -89,7 +101,7 @@ def render_text(text: Maybe<&2, String>, calls: List<&2, Call>, color: Bool) -> 
     case Some{SNil{}}:
       render_empty(calls, color)
     case Some{SCon{h, t}}:
-      line(color, "1;32", "agent ", SCon{h, t})
+      agent_line(color, SCon{h, t})
 
 def render_speed(speed: Maybe<&2, String>, color: Bool) -> String:
   match speed:
@@ -103,9 +115,9 @@ def render_message(message: Message, +color: Bool) -> String:
     case Message{Agent{}, text, +calls, speed}:
       render_text(text, calls, color) ++ render_calls(calls, color) ++ render_speed(speed, color)
     case Message{Tool{}, None{}, calls, speed}:
-      line(color, "33", "tool  ", "(no tool output)")
+      tool_line(color, "(no tool output)")
     case Message{Tool{}, Some{text}, calls, speed}:
-      line(color, "33", "tool  ", text)
+      tool_line(color, text)
     case Message{role, text, calls, speed}:
       ""
 

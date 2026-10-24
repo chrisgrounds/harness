@@ -9,8 +9,8 @@ Start the updated Harness server, then run from this directory:
 
 ```sh
 nix run path:.
-# Optional colors and driver budget:
-nix run path:. -- --color --steps 100000
+# Optional driver budget:
+nix run path:. -- --steps 100000
 # Connect to a different local port:
 nix run path:. -- --port 7777
 ```
@@ -19,11 +19,15 @@ The server now listens on `127.0.0.1:7777` for newline-delimited JSON and keeps
 its original Unix socket for existing clients. The Bend client requires this
 TCP endpoint; it cannot connect to the old Unix-only server.
 
+Startup displays `BEND CLIENT` in red above the connection status, then a `user  > `
+prompt when ready for input. Replies use `agent > ` and tool activity uses
+`tool  > ` labels.
 Enter sends a line; `/quit`, Ctrl-D at an empty line, or Ctrl-C exits.
 Whitespace-only lines are ignored. Input uses the terminal's standard line
-editing, without history or a multiline composer. Submitted input is displayed
-with a `you` label after Enter. Output is plain text by default; `--color` enables
-cyan user text, green agent replies, and yellow tool activity.
+editing, without history or a multiline composer. The terminal echoes typing
+after the `user` prompt; submission sends it without printing it again.
+Output always uses cyan user prompts, green agent replies, and yellow tool
+activity. There are no color-mode flags.
 
 The client displays each completed turn chronologically, including tool-only
 assistant messages, tool results, and multiple tool cycles. Earlier history is
@@ -69,12 +73,12 @@ remove the compiler's C backend or make networking mathematically pure.
 - `src/protocol.bend`: typed messages, current-turn selection, and safe rendering.
 - `src/session.bend`: pure transitions producing `Display`, `Send`, and `Stop` actions.
 - `src/main.bend`: CLI and structurally decreasing driver interpreting those actions with Base I/O.
-- `LAWS.bend`: 18 obligations for tool visibility, prompt submission, history selection,
+- `LAWS.bend`: 25 obligations for tool visibility, prompt submission, history selection,
   ordering, nonempty agent output, request limits, failure/quit/EOF/budget behavior,
-  and terminal control filtering.
+  terminal control filtering, the startup banner, visible role labels, and submission without duplicate echoes.
 - `PROOF.bend`: proofs by reduction, rewriting, case analysis, and induction.
 
-All 18 obligations pass both Bend's checker and the independent BendTT kernel
+All 25 obligations pass both Bend's checker and the independent BendTT kernel
 with **ALL PROOFS CHECK**, without holes or unsafe proofs. Reproduce the kernel
 check using Lean **4.34.0** (`lean` and `leanc` on PATH, or its elan toolchain):
 

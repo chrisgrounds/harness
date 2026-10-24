@@ -32,12 +32,12 @@ def fits(+bytes: List<&2, U32>) -> Bool:
 def reject_message() -> String:
   "Message too long for the server (1024 encoded bytes maximum).\n"
 
-def accepted(ok: Bool, bytes: List<&2, U32>, echo: String) -> Decision:
+def accepted(ok: Bool, bytes: List<&2, U32>) -> Decision:
   match ok:
     case True{}:
-      Decision{Waiting{}, [Display{echo}, Send{List.append(&2, U32, bytes, [10])}]}
+      Decision{Waiting{}, [Send{List.append(&2, U32, bytes, [10])}]}
     case False{}:
-      Decision{Idle{}, [Display{echo}, Display{reject_message()}]}
+      Decision{Idle{}, [Display{reject_message()}]}
 
 def command(quit: Bool, blank: Bool, +text: String, color: Bool) -> Decision:
   match quit blank:
@@ -47,7 +47,7 @@ def command(quit: Bool, blank: Bool, +text: String, color: Bool) -> Decision:
       Decision{Idle{}, Nil{}}
     case False{} False{}:
       +bytes = encoded(text)
-      accepted(fits(bytes), bytes, Protocol.line(color, "1;36", "you   ", text))
+      accepted(fits(bytes), bytes)
 
 def submit(+text: String, color: Bool) -> Decision:
   command(String.eq(String.trim(text), "/quit"), String.is_empty(String.trim(text)), text, color)
@@ -79,3 +79,15 @@ def step(state: State, event: InputEvent, color: Bool) -> Decision:
       reply(Protocol.has_agent(turn), turn, color)
     case state event:
       Decision{Stopped{}, [Stop{1, "unexpected session event"}]}
+
+# The driver writes startup before attempting any blocking connection or input.
+def startup(port: U32) -> String:
+  Protocol.banner() ++ "Connecting to 127.0.0.1:" ++ U32.show(port) ++ "...\n"
+
+# Only an idle session invites input; waiting/stopped sessions show no prompt.
+def ready(state: State, color: Bool) -> List<&2, Action>:
+  match state:
+    case Idle{}:
+      [Display{Protocol.user_prompt(color)}]
+    case state:
+      Nil{}
