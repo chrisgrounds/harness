@@ -1,96 +1,12 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module OpenAI
-  ( Role (..),
-    ToolRequest (..),
-    ToolCallId,
-    ToolRequestFunctionParams (..),
-    ToolType (..),
-    ToolName (..),
-    OpenAIChatCompletionResponse (..),
-    OpenAIChatResponseChoice (..),
-    OpenAIChatResponseMessage (..),
-    OpenAIChatResponseUsage (..),
-    OpenAIChatCompletionTokensDetails (..),
-    OpenAIChatPromptTokensDetails (..),
-  )
-where
+module OpenAI where
 
+import Core (Role, ToolRequest)
 import Data.Aeson
-import Data.Text
+import Data.Text (Text)
 import GHC.Generics (Generic)
-
-data Role = User | Assistant | System | Tool
-  deriving (Show, Generic)
-
-instance ToJSON Role where
-  toJSON User = String "user"
-  toJSON Assistant = String "assistant"
-  toJSON System = String "system"
-  toJSON Tool = String "tool"
-
-instance FromJSON Role where
-  parseJSON = withText "Role" $ \value ->
-    case value of
-      "user" -> pure User
-      "assistant" -> pure Assistant
-      "system" -> pure System
-      "tool" -> pure Tool
-      _ -> fail "unknown role"
-
-data ToolRequest = ToolRequest
-  { toolRequestId :: ToolCallId,
-    toolRequestType :: ToolType,
-    toolRequestFunction :: ToolRequestFunctionParams
-  }
-  deriving (Show, Generic)
-
-type ToolCallId = Text
-
-data ToolRequestFunctionParams = ToolRequestFunctionParams
-  { toolRequestFunctionParamsName :: ToolName,
-    toolRequestFunctionParamsArguments :: Text
-  }
-  deriving (Show, Generic)
-
-data ToolType = FunctionTool
-  deriving (Show)
-
-data ToolName = ReadFile | Discover
-  deriving (Eq, Show)
-
-instance FromJSON ToolName where
-  parseJSON = withText "ToolName" $ \value ->
-    case value of
-      "ReadFile" -> pure ReadFile
-      "Discover" -> pure Discover
-      _ -> fail "unknown tool name"
-
-instance ToJSON ToolName where
-  toJSON ReadFile = String "ReadFile"
-  toJSON Discover = String "Discover"
-
-instance FromJSON ToolType where
-  parseJSON = withText "ToolType" $ \value ->
-    case value of
-      "function" -> pure FunctionTool
-      _ -> fail "unknown type"
-
-instance ToJSON ToolType where
-  toJSON FunctionTool = String "function"
-
-instance FromJSON ToolRequest where
-  parseJSON = genericParseJSON (jsonOptions "toolRequest")
-
-instance ToJSON ToolRequest where
-  toJSON = genericToJSON (jsonOptions "toolRequest")
-
-instance FromJSON ToolRequestFunctionParams where
-  parseJSON = genericParseJSON (jsonOptions "toolRequestFunctionParams")
-
-instance ToJSON ToolRequestFunctionParams where
-  toJSON = genericToJSON (jsonOptions "toolRequestFunctionParams")
 
 data OpenAIChatCompletionResponse = OpenAIChatCompletionResponse
   { responseChoices :: [OpenAIChatResponseChoice],

@@ -1,7 +1,7 @@
-cabal-version: >= 1.10
+cabal-version: 2.2
 name: server
 version: 1.0.0.2
-license: BSD3
+license: BSD-3-Clause
 license-file: LICENSE
 copyright: (c) Simon Marlow
 author: Simon Marlow
@@ -11,14 +11,17 @@ homepage: http://www.haskell.org/server/
 synopsis: server World, an example package
 category: Console, Text
 build-type: Simple
+data-files: tools/read_file.json, tools/discover.json
 
 executable server
-  hs-source-dirs: src, src/bendCompatibilityLayer
+  hs-source-dirs: src
   main-is: server.hs
   ghc-options: -Wall -threaded
-  other-modules: Chat, OpenAI, Tools, BendCompatibilityLayer
+  other-modules: OpenAI, Tools, Socket, Paths_server
+  autogen-modules: Paths_server
   build-depends:
       base >= 4.2 && < 5
+    , core
     , req
     , text
     , network

@@ -7,8 +7,8 @@
 
 module Main (main) where
 
-import Chat
 import Control.Monad.IO.Class (liftIO)
+import Core
 import qualified Data.ByteString.Char8 as B
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -17,9 +17,9 @@ import GHC.Clock (getMonotonicTimeNSec)
 import LoadEnv
 import Network.HTTP.Req
 import OpenAI
+import qualified Socket
 import System.Environment
 import Tools
-import qualified BendCompatibilityLayer
 
 newtype BaseUrl = BaseUrl Text
   deriving (Show)
@@ -52,7 +52,7 @@ main = do
           llmModel
           toolDefinitions
 
-  BendCompatibilityLayer.serve socketPath chat (handleMessage apiKey)
+  Socket.serve socketPath chat (handleMessage apiKey)
 
 handleMessage :: ApiKey -> Chat -> Message -> IO Chat
 handleMessage apiKey chat message = do

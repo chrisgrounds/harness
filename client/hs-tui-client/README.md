@@ -1,49 +1,27 @@
-# hs-tui-client
+# Harness terminal client
 
-A small, scrollback-friendly terminal UI for harness. Cyan `you` prompts and
-green `agent` replies and yellow `tool` requests and results keep the conversation clear,
-with no panels or extra chrome.
-Multiline replies keep their indentation. Input supports editing and session history.
+A Brick interface using the `Chat`, `Message`, and tool types from the shared `core` package. The server's complete conversation is the UI's state, including model metadata, tool calls, tool results, and response speed.
 
-Start the harness server, then run from this directory:
+From the repository root, start the server and client in separate terminals:
 
 ```sh
+cabal run server
 cabal run hs-tui-client
-# Or use the pinned Nix environment:
-nix develop path:. -c cabal run hs-tui-client
 ```
 
-```text
-you   > explain this function
-agent > I'll read the file first.
-tool  > ReadFile {"path":"src/Main.hs"}
-tool  > module Main (main) where ...
-agent > This function connects to the harness server.
-        150.0 tokens/s
+Pass a socket path after `--` to override `/tmp/harness.sock`.
 
-you   >
-```
+The centered conversation view uses restrained colors, clear role labels, a scrollable transcript, compact tool previews, and a multiline composer. Network requests run in a worker thread; the interface remains usable while the waiting indicator animates. You can compose the next message while a reply is pending, then send it once the current turn completes.
 
-Enter sends a message; Up/Down recalls previous input. `/quit`, Ctrl-D on an
-empty prompt, or Ctrl-C exits. Pass a socket path with
-`cabal run hs-tui-client -- /path/to/harness.sock`; the default is `/tmp/harness.sock`.
-Set `NO_COLOR=1` for plain text. Redirected output also omits colour.
+| Key | Action |
+| --- | --- |
+| Enter / Alt-Enter | Send / newline |
+| Alt-Up / Alt-Down | Recall input history; restore the draft |
+| Page Up / Page Down | Scroll |
+| Ctrl-Home / Ctrl-End | First message / follow latest |
+| Ctrl-T | Expand or collapse tool output |
+| F1 | Toggle shortcut help |
+| Ctrl-C / Esc | Exit; Esc closes help first |
+| Ctrl-D | Exit with an empty composer |
 
-The client reads the server's JSON responses and displays all agent messages,
-tool requests, and tool results from the current turn in chronological order,
-including responses split across socket reads. Earlier conversation history
-and the echoed user message are not repeated.
-Each tool request shows its function name and arguments. Replies containing only
-tool requests display those requests without a missing-text placeholder.
-When an agent message includes `tokens_per_second`, its speed appears underneath
-the response with one decimal place. Missing or null speeds are omitted.
-The server currently reads
-requests in a single 1024-byte chunk, so larger encoded requests are rejected
-locally. Requests are still subject to that server framing limitation.
-
-Run the socket regression tests after building:
-
-```sh
-cabal build hs-tui-client
-python3 tests/test_socket.py
-```
+Set `NO_COLOR=1` for terminal default colors. Redirected input or output automatically uses a plain transcript. `/quit` exits in either mode. The client preserves fragmented socket responses, decodes the full shared `Chat`, and displays each turn once in plain mode.
