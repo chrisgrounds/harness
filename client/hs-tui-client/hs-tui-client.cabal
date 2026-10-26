@@ -5,19 +5,24 @@ synopsis: A Brick conversation interface for Harness
 license: BSD-3-Clause
 license-file: LICENSE
 build-type: Simple
+data-files: themes/orng.toml
 
 executable hs-tui-client
   hs-source-dirs: src
   main-is: Main.hs
-  other-modules: Client, Console, UI
+  other-modules: Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
+  autogen-modules: Paths_hs_tui_client
   build-depends:
       base >= 4.14 && < 5
+    , aeson
     , core
     , brick >= 2.0 && < 3
     , bytestring
+    , containers
     , mtl
     , network
     , text
+    , toml-parser >= 2.0 && < 3
     , vty >= 6
     , vty-crossplatform
   ghc-options: -Wall -threaded

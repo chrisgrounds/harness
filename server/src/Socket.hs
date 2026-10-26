@@ -1,4 +1,4 @@
-module Socket (serve, talk) where
+module Socket (serve) where
 
 import Control.Concurrent (forkFinally)
 import Control.Exception (IOException, bracket, finally, mask, onException, try)

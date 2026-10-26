@@ -4,7 +4,7 @@ module UI (runUI) where
 
 import Brick
 import Brick.BChan (newBChan, writeBChan)
-import Brick.Widgets.Border (borderWithLabel, hBorder)
+import Brick.Widgets.Border (borderWithLabel)
 import Brick.Widgets.Border.Style (unicodeRounded)
 import Brick.Widgets.Center (center, hCenter)
 import Brick.Widgets.Edit
@@ -15,13 +15,16 @@ import Control.Monad (forever, void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State.Strict (modify')
 import Core
+import qualified Data.Aeson as Aeson
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Graphics.Vty as V
+import qualified Graphics.Vty.Config as VC
 import Graphics.Vty.CrossPlatform (mkVty)
 import Network.Socket (Socket)
-import System.Environment (lookupEnv)
+import TerminalWidth (installTerminalWidths)
+import Theme (loadTheme, accent, muted, metadataAttr, borderAttr, userAttr, toolAttr, bodyAttr, danger, successAttr)
 import Text.Printf (printf)
 
 data Name = Transcript | Composer deriving (Eq, Ord, Show)
@@ -33,8 +36,6 @@ data UI = UI
     failure :: Maybe Text,
     frame :: Int,
     followLatest :: Bool,
-    expandedTools :: Bool,
-    helpVisible :: Bool,
     inputHistory :: [Text],
     historyIndex :: Maybe Int,
     savedDraft :: Text
@@ -44,24 +45,38 @@ runUI :: FilePath -> Socket -> IO ()
 runUI path sock = do
   events <- newBChan 16
   requests <- newChan
-  noColor <- lookupEnv "NO_COLOR"
-  let initial = UI (Chat [] Mercury3 []) (editorText Composer Nothing "") False Nothing 0 True False False [] Nothing ""
+  let initial = UI (Chat [] Mercury3 []) (editorText Composer Nothing "") False Nothing 0 True [] Nothing ""
       publish = writeBChan events
       ticker = forever (threadDelay 120000 >> publish Tick)
-      buildVty = mkVty V.defaultConfig
+      buildVty = do
+        let config =
+              VC.defaultConfig
+                { VC.configInputMap =
+                    [ (Nothing, inputBytes, V.EvKey V.KEnter [V.MShift])
+                    | inputBytes <- ["\ESC[13;2u", "\ESC[27;2;13~"]
+                    ]
+                }
+        vty <- mkVty config
+        installTerminalWidths
+        let output = V.outputIface vty
+        mapM_
+          (\mode -> when (V.supportsMode output mode) $ V.setMode output mode True)
+          [V.BracketedPaste, V.Mouse]
+        pure vty
+  attrs <- loadTheme
   bracket (forkIO (worker sock requests publish)) killThread $ \_ ->
     bracket (forkIO ticker) killThread $ \_ -> do
       vty <- buildVty
-      void $ customMain vty buildVty (Just events) (app path requests (noColor /= Nothing)) initial
+      void $ customMain vty buildVty (Just events) (app path requests attrs) initial
 
-app :: FilePath -> Chan Message -> Bool -> App UI NetworkEvent Name
-app path requests plain =
+app :: FilePath -> Chan Message -> AttrMap -> App UI NetworkEvent Name
+app path requests attrs =
   App
     { appDraw = drawUI path,
-      appChooseCursor = \s -> if helpVisible s then neverShowCursor s else showFirstCursor s,
+      appChooseCursor = showFirstCursor,
       appHandleEvent = handleEvent requests,
       appStartEvent = pure (),
-      appAttrMap = const (theme plain)
+      appAttrMap = const attrs
     }
 
 handleEvent :: Chan Message -> BrickEvent Name NetworkEvent -> EventM Name UI ()
@@ -75,23 +90,19 @@ handleEvent requests event = do
     AppEvent (Disconnected err) -> modify' (\s -> s {failure = Just err, waiting = False})
     VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl]) -> halt
     VtyEvent (V.EvKey (V.KChar 'd') [V.MCtrl]) | T.null (draft state) -> halt
-    VtyEvent (V.EvKey (V.KFun 1) []) -> modify' (\s -> s {helpVisible = not (helpVisible s)})
-    VtyEvent (V.EvKey V.KEsc []) ->
-      if helpVisible state then modify' (\s -> s {helpVisible = False}) else halt
-    _ | helpVisible state -> pure ()
+    VtyEvent (V.EvKey V.KEsc []) -> pure ()
+    MouseDown Transcript V.BScrollUp _ _ -> scrollBack (vScrollBy transcript (-3))
+    MouseDown Transcript V.BScrollDown _ _ -> scrollBack (vScrollBy transcript 3)
     VtyEvent (V.EvKey V.KPageUp []) -> scrollBack (vScrollPage transcript Up)
     VtyEvent (V.EvKey V.KPageDown []) -> scrollBack (vScrollPage transcript Down)
     VtyEvent (V.EvKey V.KHome [V.MCtrl]) -> scrollBack (vScrollToBeginning transcript)
     VtyEvent (V.EvKey V.KEnd [V.MCtrl]) -> do
       modify' (\s -> s {followLatest = True})
       scrollEnd
-    VtyEvent (V.EvKey (V.KChar 't') [V.MCtrl]) -> do
-      modify' (\s -> s {expandedTools = not (expandedTools s)})
-      when (followLatest state) scrollEnd
     VtyEvent (V.EvKey V.KUp [V.MMeta]) -> recall True
     VtyEvent (V.EvKey V.KDown [V.MMeta]) -> recall False
     VtyEvent (V.EvKey V.KEnter []) -> submit requests
-    VtyEvent (V.EvKey V.KEnter [V.MMeta]) -> edit (VtyEvent (V.EvKey V.KEnter []))
+    VtyEvent (V.EvKey V.KEnter [V.MShift]) -> edit (VtyEvent (V.EvKey V.KEnter []))
     VtyEvent (V.EvResize _ _) -> when (followLatest state) scrollEnd
     _ -> edit event
   where
@@ -156,7 +167,7 @@ recall older = do
       )
 
 drawUI :: FilePath -> UI -> [Widget Name]
-drawUI path state = (if helpVisible state then [helpPanel] else []) ++ [screen]
+drawUI path state = [screen]
   where
     chat = conversation state
     screen =
@@ -167,8 +178,12 @@ drawUI path state = (if helpVisible state then [helpPanel] else []) ++ [screen]
               vBox
                 [ padBottom (Pad 1) $
                     hBox
-                      [ withAttr accent (txt "●  H A R N E S S"),
-                        padLeft Max (withAttr muted (txt (modelLabel (model chat) <> "  ·  local session")))
+                      [ withAttr accent (txt "Harness"),
+                        padLeft Max $
+                          withAttr metadataAttr $
+                            txt ((case Aeson.toJSON (model chat) of
+                                   Aeson.String s -> s
+                                   _ -> error "modelLabel: expected a JSON string encoding") <> "  ·  local session")
                       ],
                   withAttr borderAttr $
                     borderWithLabel (txt " Conversation ") $
@@ -181,10 +196,12 @@ drawUI path state = (if helpVisible state then [helpPanel] else []) ++ [screen]
                                 hCenter $ withAttr muted (txt "Your conversation and tool activity will appear here.")
                               ]
                         else
-                          viewport Transcript Vertical $
-                            padAll 1 $
-                              vBox
-                                (map (drawMessage state) (reverse (messages chat))),
+                          withVScrollBars OnRight $
+                            clickable Transcript $
+                              viewport Transcript Vertical $
+                                padAll 1 $
+                                  vBox
+                                    (map (drawMessage state) (reverse (messages chat))),
                   padTop (Pad 1) $
                     hBox
                       [ status state,
@@ -204,7 +221,7 @@ drawUI path state = (if helpVisible state then [helpPanel] else []) ++ [screen]
                         padLeftRight 1 $
                           vLimit (min 5 (length (getEditContents (composer state)))) $
                             renderEditor (txt . T.intercalate "\n") True (composer state),
-                  padTop (Pad 1) $ withAttr muted $ txt "Enter send   Alt-Enter newline   PgUp/PgDn scroll   Ctrl-T tools   F1 help",
+                  padTop (Pad 1) $ withAttr muted $ txt "Enter send   Shift-Enter newline   Scroll/PgUp/PgDn history   Ctrl-C exit",
                   withAttr muted $ txt ("AF_UNIX  " <> safeText (T.pack path))
                 ]
 
@@ -213,7 +230,7 @@ status state = case failure state of
   Just err -> withAttr danger (txtWrap ("Disconnected · " <> safeText err <> "  ·  Ctrl-C to exit"))
   Nothing
     | waiting state -> withAttr accent $ txt (spinner <> "  Working" <> T.replicate (frame state `div` 8 `mod` 4) ".")
-    | otherwise -> withAttr muted (txt "●  Ready")
+    | otherwise -> withAttr successAttr (txt "●  Ready")
   where
     spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] !! (frame state `mod` 10)
 
@@ -232,15 +249,15 @@ drawMessage state message = padBottom (Pad 1) $ vBox (header : body ++ calls)
     header =
       hBox
         [ withAttr color (txt label),
-          padLeft Max $ withAttr muted $ txt $ maybe "" (T.pack . printf "%.1f tokens/s") (tokensPerSecond message)
+          padLeft Max $ withAttr metadataAttr $ txt $ maybe "" (T.pack . printf "%.1f tokens/s") (tokensPerSecond message)
         ]
     body = case content message of
       Just value
         | not (T.null value) ->
             [ padTop (Pad 1) $
                 padLeft (Pad 2) $
-                  withDefAttr (if role message == Tool then muted else bodyAttr) $
-                    if role message == Tool then toolOutput state value else txtWrap (safeText value)
+                  withAttr (if role message == Tool then muted else bodyAttr) $
+                    txtWrap (safeText value)
             ]
       _ -> []
     calls =
@@ -254,63 +271,3 @@ drawMessage state message = padBottom (Pad 1) $ vBox (header : body ++ calls)
       | call <- toolCalls message,
         let function = toolRequestFunction call
       ]
-
-toolOutput :: UI -> Text -> Widget Name
-toolOutput state value
-  | expandedTools state || length rows <= 5 = txtWrap (safeText value)
-  | otherwise =
-      vBox
-        [ txtWrap (T.unlines (take 5 rows)),
-          withAttr toolAttr $ txt ("… " <> T.pack (show (length rows - 5)) <> " more lines · Ctrl-T to expand")
-        ]
-  where
-    rows = T.lines (safeText value)
-
-helpPanel :: Widget Name
-helpPanel =
-  center $
-    hLimit 68 $
-      withBorderStyle unicodeRounded $
-        borderWithLabel (txt " Keyboard shortcuts ") $
-          padAll 2 $
-            vBox
-              [ txt "Enter          Send a message",
-                txt "Alt-Enter      Insert a newline",
-                txt "Alt-Up/Down    Recall sent messages (restores your draft)",
-                txt "PgUp/PgDn      Scroll conversation",
-                txt "Ctrl-Home/End  First message / follow latest",
-                txt "Ctrl-T         Expand or collapse tool results",
-                txt "Ctrl-C / Esc   Exit (Esc closes this help first)",
-                txt "Ctrl-D         Exit with an empty composer",
-                padTop (Pad 1) hBorder,
-                padTop (Pad 1) $ withAttr muted $ txt "F1 or Esc to close · Compose while Harness works."
-              ]
-
-modelLabel :: Model -> Text
-modelLabel Mercury3 = "mercury-3"
-
-accent, muted, borderAttr, userAttr, toolAttr, bodyAttr, danger :: AttrName
-accent = attrName "accent"
-muted = attrName "muted"
-borderAttr = attrName "border"
-userAttr = attrName "user"
-toolAttr = attrName "tool"
-bodyAttr = attrName "body"
-danger = attrName "danger"
-
-theme :: Bool -> AttrMap
-theme plain
-  | plain = attrMap V.defAttr []
-  | otherwise =
-      attrMap
-        (V.withForeColor V.defAttr (V.rgbColor (218 :: Int) 224 235))
-        [ (accent, V.withStyle (fg (V.rgbColor (112 :: Int) 211 208)) V.bold),
-          (muted, fg (V.rgbColor (139 :: Int) 151 172)),
-          (borderAttr, fg (V.rgbColor (72 :: Int) 85 108)),
-          (userAttr, V.withStyle (fg (V.rgbColor (173 :: Int) 185 237)) V.bold),
-          (toolAttr, fg (V.rgbColor (221 :: Int) 184 116)),
-          (bodyAttr, fg (V.rgbColor (218 :: Int) 224 235)),
-          (danger, fg (V.rgbColor (242 :: Int) 139 139)),
-          (editAttr, fg (V.rgbColor (218 :: Int) 224 235)),
-          (editFocusedAttr, fg (V.rgbColor (218 :: Int) 224 235))
-        ]

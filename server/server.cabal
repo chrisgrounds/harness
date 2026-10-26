@@ -8,7 +8,7 @@ author: Simon Marlow
 maintainer: Simon Marlow <marlowsd@gmail.com>
 stability: stable
 homepage: http://www.haskell.org/server/
-synopsis: server World, an example package
+synopsis: Harness AF_UNIX model and tool server
 category: Console, Text
 build-type: Simple
 data-files: tools/read_file.json, tools/discover.json
@@ -29,5 +29,4 @@ executable server
     , load-env
     , directory
     , bytestring
-    , process
   default-language: Haskell2010

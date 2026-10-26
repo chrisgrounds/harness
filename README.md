@@ -40,18 +40,16 @@ nix build 'path:.#hs-tui-client:exe:hs-tui-client'
 
 ## Interface
 
-The client shows the chronological conversation, distinct user/assistant/tool entries, model and tool metadata, and response speed. Long tool results start collapsed; Ctrl-T expands them. Requests run in the background, so scrolling and drafting remain responsive while the server works. The server returns a complete `Chat` after each turn, including any tool cycles.
+The client shows the chronological conversation, distinct user/assistant/tool entries, model and tool metadata, and response speed. Tool results display in full in the scrollable transcript. Requests run in the background, so scrolling and drafting remain responsive while the server works. The server returns a complete `Chat` after each turn, including any tool cycles.
 
 | Key | Action |
 | --- | --- |
 | Enter | Send |
-| Alt-Enter | Insert a newline |
+| Shift-Enter | Insert a newline |
 | Alt-Up / Alt-Down | Recall sent messages and restore the current draft |
-| Page Up / Page Down | Scroll the conversation |
+| Mouse wheel / Page Up / Page Down | Scroll the conversation |
 | Ctrl-Home / Ctrl-End | First message / follow latest |
-| Ctrl-T | Expand or collapse tool results |
-| F1 | Show shortcuts |
-| Ctrl-C / Esc | Exit; Esc closes help first |
+| Ctrl-C | Exit |
 | Ctrl-D | Exit when the composer is empty |
 
 The client accepts an optional socket path:
@@ -60,7 +58,7 @@ The client accepts an optional socket path:
 cabal run hs-tui-client -- /path/to/harness.sock
 ```
 
-`NO_COLOR=1` disables UI colors. Piped input or output uses a plain transcript through the same client and shared types. `/quit` exits in either mode.
+Piped input or output uses a plain transcript through the same client and shared types. `/quit` exits in either mode.
 
 ## Shared types and protocol
 

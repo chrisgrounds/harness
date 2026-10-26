@@ -17,7 +17,7 @@ main = do
     [path] | take 1 path /= "-" -> runClient path
     _ -> die help
   where
-    help = "Usage: hs-tui-client [SOCKET]\nDefault: /tmp/harness.sock\nEnter sends; Alt-Enter inserts a newline; F1 shows shortcuts; Ctrl-C exits."
+    help = "Usage: hs-tui-client [SOCKET]\nDefault: /tmp/harness.sock\nEnter sends; Shift-Enter inserts a newline; Ctrl-C exits."
 
 runClient :: FilePath -> IO ()
 runClient path = catch session reportError
