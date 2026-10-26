@@ -58,7 +58,7 @@ data ToolType = FunctionTool
   deriving (Show)
 
 data ToolName = ReadFile | Discover
-  deriving (Show)
+  deriving (Eq, Show)
 
 instance FromJSON ToolName where
   parseJSON = withText "ToolName" $ \value ->

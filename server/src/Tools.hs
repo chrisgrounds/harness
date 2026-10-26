@@ -43,40 +43,21 @@ instance FromJSON ReadFilePath where
   parseJSON = withObject "ReadFilePath" $ \value ->
     ReadFilePath <$> value .: "path"
 
-toolToApiDefinition :: ToolName -> ToolDefinition
-toolToApiDefinition toolName = case toolName of
-  ReadFile ->
-    ToolDefinition
-      { toolType = FunctionTool,
-        toolFunction =
-          ToolFunction
-            { toolFunctionName = ReadFile,
-              toolFunctionDescription = "Reads a file",
-              toolFunctionParameters = pathParams
-            }
-      }
-  Discover ->
-    ToolDefinition
-      { toolType = FunctionTool,
-        toolFunction =
-          ToolFunction
-            { toolFunctionName = Discover,
-              toolFunctionDescription = "Lists files in a directory",
-              toolFunctionParameters = pathParams
-            }
-      }
-  where
-    pathParams =
-      object
-        [ "type" .= ("string" :: Text),
-          "properties"
-            .= object
-              [ "path"
-                  .= object
-                    [ "type" .= ("string" :: Text),
-                      "description" .= ("Workspace relative path" :: Text)
-                    ]
-              ],
-          "required" .= (["path"] :: [Text]),
-          "additionalProperties" .= False
-        ]
+registerTool :: [(ToolName, FilePath)]
+registerTool = [
+    (ReadFile, "./tools/read_file.json"),
+    (Discover, "./tools/discover.json")
+  ]
+
+loadToolDefinition :: FilePath -> IO ToolDefinition
+loadToolDefinition path = do
+  fileContent <- TIO.readFile path
+  case eitherDecodeStrict (TE.encodeUtf8 fileContent) of
+    Left err -> fail ("Failed to parse ToolDefinition JSON from " <> path <> ": " <> err)
+    Right def -> pure def
+
+toolToApiDefinition :: ToolName -> IO ToolDefinition
+toolToApiDefinition toolName =
+  case lookup toolName registerTool of
+    Nothing -> fail ("No tool definition registered for " <> show toolName)
+    Just path -> loadToolDefinition path

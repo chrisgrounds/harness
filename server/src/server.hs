@@ -45,11 +45,12 @@ main = do
 
   -- Don't hardcode this
   let llmModel = Mercury3
+  toolDefinitions <- mapM toolToApiDefinition (map fst registerTool)
   let chat =
         Chat
           []
           llmModel
-          (map toolToApiDefinition [ReadFile, Discover])
+          toolDefinitions
 
   BendCompatibilityLayer.serve socketPath chat (handleMessage apiKey)
 
