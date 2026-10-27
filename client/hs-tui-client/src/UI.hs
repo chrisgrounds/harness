@@ -149,14 +149,14 @@ submit requests = do
 recall :: Bool -> EventM Name UI ()
 recall older = do
   state <- get
-  let history = inputHistory state
+  let sent = inputHistory state
       index =
         if older
-          then min (length history - 1) (maybe 0 (+ 1) (historyIndex state))
+          then min (length sent - 1) (maybe 0 (+ 1) (historyIndex state))
           else maybe (-1) (subtract 1) (historyIndex state)
-  when (not (null history)) $ do
+  when (not (null sent)) $ do
     let saved = if historyIndex state == Nothing then draft state else savedDraft state
-        value = if index < 0 then saved else history !! index
+        value = if index < 0 then saved else sent !! index
     modify'
       ( \s ->
           s
@@ -258,6 +258,9 @@ drawRun state run =
             ],
         padTop (Pad 1) $ padLeft (Pad 2) $ vBox (concatMap (drawStep state run) (steps run))
       ]
+        ++ [ padTop (Pad 1) $ padLeft (Pad 2) $ vBox [withAttr muted (txtWrap ("↺  " <> safeText note)) | note <- history run]
+           | not (null (history run))
+           ]
         ++ [ padTop (Pad 1) $ padLeft (Pad 2) $ withAttr danger $ txtWrap ("!  " <> safeText warning)
            | warning <- warnings run
            ]

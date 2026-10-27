@@ -101,7 +101,9 @@ data Run = Run
     targetModule :: Maybe ModuleName,
     -- | Files the run created or edited, relative to the working directory.
     touchedFiles :: [FilePath],
-    warnings :: [Text]
+    warnings :: [Text],
+    -- | Why the run looped back or gave up, oldest first.
+    history :: [Text]
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
@@ -131,7 +133,8 @@ newRun req =
       targetPackage = Nothing,
       targetModule = Nothing,
       touchedFiles = [],
-      warnings = []
+      warnings = [],
+      history = []
     }
 
 setStep :: Step -> StepStatus -> Run -> Run

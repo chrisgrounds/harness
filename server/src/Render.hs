@@ -13,7 +13,8 @@ import qualified Data.Text as T
 type Span = (Int, Int)
 
 -- | Renders the module, with @undefined@ for functions not yet implemented,
--- and where each function ends up.
+-- and where each function ends up: its signature and definition, and any
+-- import line it was the first to need.
 renderModule :: ModuleName -> Artefact -> (Text, [(FunctionName, Span)])
 renderModule (ModuleName name) art = (T.unlines (header ++ concat blocks), spans)
   where
@@ -22,7 +23,8 @@ renderModule (ModuleName name) art = (T.unlines (header ++ concat blocks), spans
       map pragma (extensions art)
         ++ ["module " <> name <> " where", ""]
         ++ (if null importLines then [] else importLines ++ [""])
-        ++ [T.stripEnd (typesSource art), ""]
+        ++ T.lines (T.stripEnd (typesSource art))
+        ++ [""]
     rendered = map renderFunction (functions art)
     blocks = map (\(_, docLines, defLines) -> docLines ++ defLines ++ [""]) rendered
     starts = scanl (+) (length header + 1) (map length blocks)
@@ -30,6 +32,11 @@ renderModule (ModuleName name) art = (T.unlines (header ++ concat blocks), spans
       [ (fnName f, (start + length docLines, start + length docLines + length defLines - 1))
       | (f, (_, docLines, defLines), start) <- zip3 (functions art) rendered starts
       ]
+        ++ [ (owner, (line, line))
+           | (importLine, line) <- zip importLines [length (extensions art) + 3 ..],
+             importLine `notElem` map T.strip (imports art),
+             owner : _ <- [[fnName f | f <- functions art, importLine `elem` map T.strip (fnImports f)]]
+           ]
 
 renderFunction :: FunctionSpec -> (FunctionName, [Text], [Text])
 renderFunction f = (fnName f, docLines, signature ++ definition)

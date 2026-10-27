@@ -12,6 +12,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Core
 import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.List (nub)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -20,8 +21,9 @@ import Progress (Progress, readRun, tryUpdate, update)
 import Project (Package, findPackages)
 import Prompts
 import Tools (readOnlyTool)
-import Render (renderModule)
-import Verify (buildSuite, mentions, propertyReport, runSuite, summarise)
+import Policy
+import Render (Span, renderModule)
+import Verify
 import Workspace
 
 data Config = Config
@@ -54,19 +56,86 @@ runHoley cfg prog = do
     Left err -> failCurrent prog ("Internal error: " <> T.pack (displayException (err :: SomeException)))
     Right () -> pure ()
 
--- | Each stage records its own failure on the run before stopping the pipeline.
+-- | Each stage records its result on the run. Failed verifications loop back
+-- as 'decide' says; any other failure stops the run.
 pipeline :: Env -> ExceptT () IO ()
 pipeline env = do
   req <- liftIO (requirement <$> readRun (progress env))
-  let chat = Chat [systemMessage designSystemPrompt] (llmModel (config env)) []
-  chat1 <- designStep env DesignTypes SetTypes (typesInstruction req (packages env)) chat
-  chat2 <- designStep env DesignSignatures SetFunctions functionsInstruction chat1
-  _ <- designStep env WriteProperties SetProperties propertiesInstruction chat2
-  _ <- verifyBuild env CheckSkeleton
-  functionNames <- liftIO (map fnName . functions . artefact <$> readRun (progress env))
-  implementStep env [(name, Nothing) | name <- functionNames]
-  _ <- verifyBuild env TypeCheck
-  propertiesStep env
+  let typesStep = typesInstruction req (packages env)
+  design typesStep (Chat [systemMessage designSystemPrompt] (llmModel (config env)) [])
+  where
+    design :: Text -> Chat -> ExceptT () IO ()
+    design typesStep chat = do
+      chat1 <- designStep env DesignTypes SetTypes typesStep chat
+      chat2 <- designStep env DesignSignatures SetFunctions functionsInstruction chat1
+      chat3 <- designStep env WriteProperties SetProperties propertiesInstruction chat2
+      skeleton <- verifyBuild env CheckSkeleton
+      case skeleton of
+        Left (output, _) -> loopBack typesStep chat3 [] (SkeletonFailed (summarise output))
+        Right () -> do
+          names <- liftIO (functionNames env)
+          build typesStep chat3 [] [(name, Nothing) | name <- names]
+
+    build :: Text -> Chat -> [Text] -> [(FunctionName, Maybe Text)] -> ExceptT () IO ()
+    build typesStep chat previouslyFailed work = do
+      missing <- implementStep env work
+      if not (null missing)
+        then loopBack typesStep chat previouslyFailed (ImplementationMissing missing)
+        else do
+          typed <- verifyBuild env TypeCheck
+          case typed of
+            Left (output, spans) -> do
+              file <- liftIO (maybe "" targetModulePath . resolveTarget (packages env) <$> readRun (progress env))
+              let (attributed, unattributed) = attributeErrors file spans (ghcErrors output)
+                  rest = if null attributed && null unattributed then [summarise output] else unattributed
+              loopBack typesStep chat previouslyFailed (TypeErrors attributed rest)
+            Right () -> do
+              checked <- propertiesStep env
+              case checked of
+                Right () -> pure ()
+                Left output -> do
+                  art <- liftIO (artefact <$> readRun (progress env))
+                  let failed = failedProperties output
+                      suspects =
+                        nub
+                          [ fnName f
+                          | p <- properties art,
+                            propName p `elem` failed,
+                            f <- functions art,
+                            mentions (fnName f) (propSource p)
+                          ]
+                  loopBack typesStep chat previouslyFailed (PropertiesFailed failed suspects (propertyReport output))
+
+    loopBack :: Text -> Chat -> [Text] -> Outcome -> ExceptT () IO ()
+    loopBack typesStep chat previouslyFailed outcome = do
+      run <- liftIO (readRun (progress env))
+      names <- liftIO (functionNames env)
+      let current = iteration run
+          record text = liftIO (update (progress env) (\r -> r {history = history r ++ [text]}))
+          failedNow = case outcome of
+            PropertiesFailed failed _ _ -> failed
+            _ -> []
+      case decide current names previouslyFailed outcome of
+        GiveUp reason -> record reason >> throwE ()
+        Redesign feedback -> do
+          record ("Iteration " <> T.pack (show current) <> ": " <> describeOutcome outcome <> ", so redesigning.")
+          liftIO (update (progress env) (restartFrom DesignTypes))
+          design typesStep (addMessage (userMessage (revisionNote (current + 1) feedback)) chat)
+        Reimplement work -> do
+          record
+            ( "Iteration "
+                <> T.pack (show current)
+                <> ": "
+                <> describeOutcome outcome
+                <> ", so reimplementing "
+                <> T.intercalate ", " (map (functionNameText . fst) work)
+                <> "."
+            )
+          liftIO (update (progress env) (restartFrom Implement))
+          build typesStep chat failedNow work
+
+functionNames :: Env -> IO [FunctionName]
+functionNames env = map fnName . functions . artefact <$> readRun (progress env)
 
 -- | Runs one design step in the shared design conversation. The step passes
 -- once the model's call to the step's tool is accepted.
@@ -111,8 +180,8 @@ designTool env tool onAccepted request =
               else pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". Choose a new module name."))
 
 -- | Writes the artefact and builds the property suite, which also builds the
--- library. Returns the module's function spans.
-verifyBuild :: Env -> Step -> ExceptT () IO ()
+-- library. A failed build returns its output and where each function is.
+verifyBuild :: Env -> Step -> ExceptT () IO (Either (Text, [(FunctionName, Span)]) ())
 verifyBuild env step = do
   liftIO (update (progress env) (setStep step Running))
   run <- liftIO (readRun (progress env))
@@ -120,12 +189,14 @@ verifyBuild env step = do
   written <- liftIO (writeArtefact (projectRoot (config env)) target run)
   case written of
     Left err -> stepFailed env step err
-    Right (touched, _) -> do
-      liftIO (update (progress env) (\r -> r {touchedFiles = touched}))
-      built <- liftIO (buildSuite (projectRoot (config env)) (targetSuite target))
+    Right (touched, spans) -> liftIO $ do
+      update (progress env) (\r -> r {touchedFiles = touched})
+      built <- buildSuite (projectRoot (config env)) (targetSuite target)
       case built of
-        Left output -> stepFailed env step (summarise output)
-        Right () -> liftIO (update (progress env) (setStep step Passed))
+        Left output -> do
+          update (progress env) (setStep step (Failed (brief (summarise output))))
+          pure (Left (output, spans))
+        Right () -> update (progress env) (setStep step Passed) >> pure (Right ())
 
 -- | Runs an agent until the handler accepts a call to the tool, reminding the
 -- model to call it up to twice. The handler is given the action that records
@@ -150,8 +221,9 @@ definitionsFor env = mapMaybe (`lookup` toolDefinitions (config env))
 -- | Implements the given functions in parallel, each by its own agent that
 -- sees only the skeleton, its signature and documentation, the properties
 -- that mention it, and any feedback from a failed attempt. Functions not
--- listed keep their current definitions.
-implementStep :: Env -> [(FunctionName, Maybe Text)] -> ExceptT () IO ()
+-- listed keep their current definitions. Returns the functions whose agents
+-- did not submit an implementation.
+implementStep :: Env -> [(FunctionName, Maybe Text)] -> ExceptT () IO [FunctionName]
 implementStep env work = do
   run <- liftIO (readRun (progress env))
   target <- maybe (stepFailed env Implement "No module was chosen.") pure (resolveTarget (packages env) run)
@@ -174,9 +246,12 @@ implementStep env work = do
           fn : _ -> implementOne env skeleton fn [p | p <- properties art, mentions (fnName fn) (propSource p)] feedback
           [] -> update (progress env) (setTask name (TaskFailed "Unknown function"))
   after <- liftIO (readRun (progress env))
-  case [functionNameText n | (n, TaskFailed _) <- tasks after] of
-    [] -> liftIO (update (progress env) (setStep Implement Passed))
-    failed -> stepFailed env Implement ("Could not implement " <> T.intercalate ", " failed <> ".")
+  let missing = [n | (n, TaskFailed _) <- tasks after]
+  liftIO $ update (progress env) $ setStep Implement $
+    if null missing
+      then Passed
+      else Failed ("No implementation for " <> T.intercalate ", " (map functionNameText missing) <> ".")
+  pure missing
 
 implementOne :: Env -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> IO ()
 implementOne env skeleton fn props feedback = do
@@ -204,16 +279,18 @@ implementOne env skeleton fn props feedback = do
     Right (False, _) -> TaskFailed "The model did not submit an implementation."
     Left err -> TaskFailed (T.pack (displayException (err :: SomeException)))
 
--- | Runs the property suite.
-propertiesStep :: Env -> ExceptT () IO ()
+-- | Runs the property suite. A failed run returns its output.
+propertiesStep :: Env -> ExceptT () IO (Either Text ())
 propertiesStep env = do
   liftIO (update (progress env) (setStep RunProperties Running))
   run <- liftIO (readRun (progress env))
   target <- maybe (stepFailed env RunProperties "No module was chosen.") pure (resolveTarget (packages env) run)
   result <- liftIO (runSuite (projectRoot (config env)) (targetSuite target))
-  case result of
-    Right _ -> liftIO (update (progress env) (setStep RunProperties Passed))
-    Left output -> stepFailed env RunProperties (propertyReport output)
+  liftIO $ case result of
+    Right _ -> update (progress env) (setStep RunProperties Passed) >> pure (Right ())
+    Left output -> do
+      update (progress env) (setStep RunProperties (Failed (brief (propertyReport output))))
+      pure (Left output)
 
 stepFailed :: Env -> Step -> Text -> ExceptT () IO a
 stepFailed env step reason = do

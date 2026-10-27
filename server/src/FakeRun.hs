@@ -16,7 +16,7 @@ fakeRun progress = do
   implementAll
   passStep TypeCheck
   failStep RunProperties "prop_mergeAssociative failed after 12 tests"
-  update progress (restartFrom Implement)
+  update progress (\run -> (restartFrom Implement run) {history = ["Iteration 1: properties failed: prop_mergeAssociative, so reimplementing merge."]})
   implementAll
   passStep TypeCheck
   passStep RunProperties

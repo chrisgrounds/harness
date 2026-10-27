@@ -12,6 +12,7 @@ module Verify
     propertyReport,
     mentions,
     summarise,
+    brief,
   )
 where
 
@@ -133,3 +134,11 @@ propertyReport output = case failedProperties output of
 -- | Whether the source uses the function's name as an identifier.
 mentions :: FunctionName -> Text -> Bool
 mentions (FunctionName name) source = name `elem` T.split (\c -> not (isAlphaNum c || c == '_' || c == '\'')) source
+
+-- | The first lines of a report, for showing under a failed step.
+brief :: Text -> Text
+brief report
+  | length ls > 8 = T.unlines (take 8 ls) <> "…"
+  | otherwise = T.stripEnd report
+  where
+    ls = T.lines (T.strip report)

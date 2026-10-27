@@ -12,9 +12,16 @@ Each message is a requirement and starts a *holey run*, which moves through thes
 6. Type checking
 7. Running properties
 
-A failed verification loops back to an earlier step and starts a new iteration. The client shows the current step, per-function progress during implementation, and the iteration count.
+A failed verification loops back and starts a new iteration:
 
-> A failed step currently ends the run; looping back to an earlier step is not wired up yet.
+| Failure | Next |
+| --- | --- |
+| The skeleton does not type check | Redesign from step 1 with the errors |
+| An agent submits no implementation | Reimplement that function |
+| Type errors | Reimplement the functions whose lines (or added imports) the errors are in, each with its own errors; all functions if none can be blamed |
+| Properties fail | Reimplement the functions the failing properties mention, with the counterexamples; redesign if the same properties failed last iteration too |
+
+After four iterations the run gives up, leaving its files in place. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back.
 
 A run writes into the project the server is started in:
 
