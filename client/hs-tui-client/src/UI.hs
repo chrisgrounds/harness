@@ -15,8 +15,7 @@ import Control.Monad (forever, void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State.Strict (modify')
 import Core
-import qualified Data.Aeson as Aeson
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Graphics.Vty as V
@@ -24,13 +23,13 @@ import qualified Graphics.Vty.Config as VC
 import Graphics.Vty.CrossPlatform (mkVty)
 import Network.Socket (Socket)
 import TerminalWidth (installTerminalWidths)
-import Theme (loadTheme, accent, muted, metadataAttr, borderAttr, userAttr, toolAttr, bodyAttr, danger, successAttr)
-import Text.Printf (printf)
+import Theme (loadTheme, accent, muted, metadataAttr, borderAttr, userAttr, bodyAttr, danger, successAttr)
 
 data Name = Transcript | Composer deriving (Eq, Ord, Show)
 
 data UI = UI
-  { conversation :: Chat,
+  { -- | Newest first; the head is the run for the latest requirement.
+    runs :: [Run],
     composer :: Editor Text Name,
     waiting :: Bool,
     failure :: Maybe Text,
@@ -45,7 +44,7 @@ runUI :: FilePath -> Socket -> IO ()
 runUI path sock = do
   events <- newBChan 16
   requests <- newChan
-  let initial = UI (Chat [] Mercury3 []) (editorText Composer Nothing "") False Nothing 0 True [] Nothing ""
+  let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing ""
       publish = writeBChan events
       ticker = forever (threadDelay 120000 >> publish Tick)
       buildVty = do
@@ -69,7 +68,7 @@ runUI path sock = do
       vty <- buildVty
       void $ customMain vty buildVty (Just events) (app path requests attrs) initial
 
-app :: FilePath -> Chan Message -> AttrMap -> App UI NetworkEvent Name
+app :: FilePath -> Chan Requirement -> AttrMap -> App UI NetworkEvent Name
 app path requests attrs =
   App
     { appDraw = drawUI path,
@@ -79,14 +78,15 @@ app path requests attrs =
       appAttrMap = const attrs
     }
 
-handleEvent :: Chan Message -> BrickEvent Name NetworkEvent -> EventM Name UI ()
+handleEvent :: Chan Requirement -> BrickEvent Name NetworkEvent -> EventM Name UI ()
 handleEvent requests event = do
   state <- get
   case event of
     AppEvent Tick -> when (waiting state) $ modify' (\s -> s {frame = (frame s + 1) `mod` 80})
-    AppEvent (Received chat) -> do
-      modify' (\s -> s {conversation = chat, waiting = False})
+    AppEvent (RunChanged run) -> do
+      modify' (\s -> s {runs = run : drop 1 (runs s)})
       when (followLatest state) scrollEnd
+    AppEvent TurnDone -> modify' (\s -> s {waiting = False})
     AppEvent (Disconnected err) -> modify' (\s -> s {failure = Just err, waiting = False})
     VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl]) -> halt
     VtyEvent (V.EvKey (V.KChar 'd') [V.MCtrl]) | T.null (draft state) -> halt
@@ -122,19 +122,19 @@ edit event = do
   (updated, ()) <- nestEventM current (handleEditorEvent event)
   modify' (\s -> s {composer = updated, historyIndex = Nothing})
 
-submit :: Chan Message -> EventM Name UI ()
+submit :: Chan Requirement -> EventM Name UI ()
 submit requests = do
   state <- get
   let value = draft state
   if T.strip value == "/quit"
     then halt
     else when (not (waiting state) && failure state == Nothing && not (T.null (T.strip value))) $ do
-      let message = userMessage value
-      liftIO $ writeChan requests message
+      let req = Requirement value
+      liftIO $ writeChan requests req
       modify'
         ( \s ->
             s
-              { conversation = addMessage message (conversation s),
+              { runs = newRun req : runs s,
                 composer = editorText Composer Nothing "",
                 waiting = True,
                 frame = 0,
@@ -169,7 +169,6 @@ recall older = do
 drawUI :: FilePath -> UI -> [Widget Name]
 drawUI path state = [screen]
   where
-    chat = conversation state
     screen =
       withBorderStyle unicodeRounded $
         padAll 1 $
@@ -181,19 +180,17 @@ drawUI path state = [screen]
                       [ withAttr accent (txt "Harness"),
                         padLeft Max $
                           withAttr metadataAttr $
-                            txt ((case Aeson.toJSON (model chat) of
-                                   Aeson.String s -> s
-                                   _ -> error "modelLabel: expected a JSON string encoding") <> "  ·  local session")
+                            txt "holey  ·  local session"
                       ],
                   withAttr borderAttr $
                     borderWithLabel (txt " Conversation ") $
-                      if null (messages chat)
+                      if null (runs state)
                         then
                           center $
                             vBox
-                              [ hCenter $ withAttr accent (txt "A little space to think."),
-                                padTop (Pad 1) $ hCenter $ withAttr muted (txt "Ask a question, explore a file, or work through an idea."),
-                                hCenter $ withAttr muted (txt "Your conversation and tool activity will appear here.")
+                              [ hCenter $ withAttr accent (txt "Describe what to build."),
+                                padTop (Pad 1) $ hCenter $ withAttr muted (txt "Each message starts a run: types, functions, properties,"),
+                                hCenter $ withAttr muted (txt "then parallel implementation, type checking and property tests.")
                               ]
                         else
                           withVScrollBars OnRight $
@@ -201,17 +198,15 @@ drawUI path state = [screen]
                               viewport Transcript Vertical $
                                 padAll 1 $
                                   vBox
-                                    (map (drawMessage state) (reverse (messages chat))),
+                                    (map (drawRun state) (reverse (runs state))),
                   padTop (Pad 1) $
                     hBox
                       [ status state,
                         padLeft Max $
                           withAttr muted $
                             txt
-                              ( T.pack (show (length (messages chat)))
-                                  <> " messages  ·  "
-                                  <> T.pack (show (length (tools chat)))
-                                  <> " tools"
+                              ( T.pack (show (length (runs state)))
+                                  <> (if length (runs state) == 1 then " run" else " runs")
                                   <> if followLatest state then "" else "  ·  scrollback"
                               )
                       ],
@@ -225,49 +220,65 @@ drawUI path state = [screen]
                   withAttr muted $ txt ("AF_UNIX  " <> safeText (T.pack path))
                 ]
 
+
 status :: UI -> Widget Name
 status state = case failure state of
   Just err -> withAttr danger (txtWrap ("Disconnected · " <> safeText err <> "  ·  Ctrl-C to exit"))
-  Nothing
-    | waiting state -> withAttr accent $ txt (spinner <> "  Working" <> T.replicate (frame state `div` 8 `mod` 4) ".")
-    | otherwise -> withAttr successAttr (txt "●  Ready")
+  Nothing -> case (waiting state, latest) of
+    (True, Just (step, _)) -> withAttr accent $ txt (spinner state <> "  " <> stepLabel step <> progress step <> iterationNote)
+    (True, Nothing) -> withAttr accent $ txt (spinner state <> "  Starting" <> T.replicate (frame state `div` 8 `mod` 4) ".")
+    (False, Just (step, Failed _)) -> withAttr danger $ txt ("✗  Stopped at " <> stepLabel step)
+    _ -> withAttr successAttr (txt "●  Ready")
   where
-    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] !! (frame state `mod` 10)
+    run = listToMaybe (runs state)
+    latest = run >>= currentStep
+    progress step = maybe "" (implementProgress step) run
+    iterationNote = case run of
+      Just r | iteration r > 1 -> "  ·  iteration " <> T.pack (show (iteration r))
+      _ -> ""
 
-drawMessage :: UI -> Message -> Widget Name
-drawMessage state message = padBottom (Pad 1) $ vBox (header : body ++ calls)
-  where
-    (label, color) = case role message of
-      User -> ("YOU", userAttr)
-      Assistant -> ("HARNESS", accent)
-      System -> ("SYSTEM", muted)
-      Tool -> (toolLabel, toolAttr)
-    toolLabel = fromMaybe "TOOL RESULT" $ do
-      callId <- toolCallId message
-      call <- listToMaybe [c | m <- messages (conversation state), c <- toolCalls m, toolRequestId c == callId]
-      pure ("↳ " <> T.pack (show (toolRequestFunctionParamsName (toolRequestFunction call))))
-    header =
-      hBox
-        [ withAttr color (txt label),
-          padLeft Max $ withAttr metadataAttr $ txt $ maybe "" (T.pack . printf "%.1f tokens/s") (tokensPerSecond message)
-        ]
-    body = case content message of
-      Just value
-        | not (T.null value) ->
-            [ padTop (Pad 1) $
-                padLeft (Pad 2) $
-                  withAttr (if role message == Tool then muted else bodyAttr) $
-                    txtWrap (safeText value)
-            ]
-      _ -> []
-    calls =
-      [ padTop (Pad 1) $
-          padLeft (Pad 2) $
-            withAttr toolAttr $
-              vBox
-                [ txt ("↳ " <> T.pack (show (toolRequestFunctionParamsName function))),
-                  withAttr muted $ txtWrap (safeText (toolRequestFunctionParamsArguments function))
-                ]
-      | call <- toolCalls message,
-        let function = toolRequestFunction call
+spinner :: UI -> Text
+spinner state = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] !! (frame state `mod` 10)
+
+implementProgress :: Step -> Run -> Text
+implementProgress Implement run | (done, total) <- taskProgress run, total > 0 = "  " <> T.pack (show done) <> "/" <> T.pack (show total)
+implementProgress _ _ = ""
+
+drawRun :: UI -> Run -> Widget Name
+drawRun state run =
+  padBottom (Pad 1) $
+    vBox
+      [ withAttr userAttr (txt "YOU"),
+        padTop (Pad 1) $ padLeft (Pad 2) $ withAttr bodyAttr $ txtWrap (safeText (requirementText (requirement run))),
+        padTop (Pad 1) $
+          hBox
+            [ withAttr accent (txt "HOLEY"),
+              padLeft Max $ withAttr metadataAttr $ txt ("iteration " <> T.pack (show (iteration run)))
+            ],
+        padTop (Pad 1) $ padLeft (Pad 2) $ vBox (concatMap (drawStep state run) (steps run))
       ]
+
+drawStep :: UI -> Run -> (Step, StepStatus) -> [Widget Name]
+drawStep state run (step, stepStatus) = row : details
+  where
+    row = withAttr (stepAttr stepStatus) $ txt (icon <> "  " <> stepLabel step <> implementProgress step run)
+    icon = if stepStatus == Running then spinner state else statusIcon stepStatus
+    details = case stepStatus of
+      Failed reason -> [padLeft (Pad 3) $ withAttr danger $ txtWrap (safeText reason)]
+      Running | step == Implement -> map (padLeft (Pad 3) . drawTask state) (tasks run)
+      _ -> []
+
+drawTask :: UI -> (FunctionName, TaskStatus) -> Widget Name
+drawTask state (name, taskStatus) = case taskStatus of
+  Queued -> withAttr muted $ txt ("○  " <> label)
+  Working -> withAttr accent $ txt (spinner state <> "  " <> label)
+  Done -> withAttr successAttr $ txt ("✓  " <> label)
+  TaskFailed reason -> withAttr danger $ txtWrap ("✗  " <> label <> ": " <> safeText reason)
+  where
+    label = safeText (functionNameText name)
+
+stepAttr :: StepStatus -> AttrName
+stepAttr Pending = muted
+stepAttr Running = accent
+stepAttr Passed = successAttr
+stepAttr (Failed _) = danger

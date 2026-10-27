@@ -11,9 +11,11 @@ library
   exposed-modules:
       Core
     , Core.Chat
+    , Core.Event
     , Core.Message
     , Core.Model
     , Core.Role
+    , Core.Run
     , Core.Tool
     , Core.Protocol
   build-depends:

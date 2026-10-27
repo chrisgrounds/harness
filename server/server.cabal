@@ -17,10 +17,11 @@ executable server
   hs-source-dirs: src
   main-is: server.hs
   ghc-options: -Wall -threaded
-  other-modules: OpenAI, Tools, Socket, Paths_server
+  other-modules: Agent, FakeRun, OpenAI, Progress, Tools, Socket, Paths_server
   autogen-modules: Paths_server
   build-depends:
       base >= 4.2 && < 5
+    , async
     , core
     , req
     , text
