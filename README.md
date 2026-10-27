@@ -14,7 +14,7 @@ Each message is a requirement and starts a *holey run*, which moves through thes
 
 A failed verification loops back to an earlier step and starts a new iteration. The client shows the current step, per-function progress during implementation, and the iteration count.
 
-> The design steps and the skeleton check are backed by the model; implementation, type checking and running properties are not wired up yet.
+> A failed step currently ends the run; looping back to an earlier step is not wired up yet.
 
 A run writes into the project the server is started in:
 
@@ -53,7 +53,7 @@ In a second terminal:
 cabal run hs-tui-client
 ```
 
-The server uses Mercury 3. During design the model can use `ReadFile`, `Discover` and `Search` (a fixed-string grep over `.hs` and `.cabal` files), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Tool paths resolve against the server's working directory. Tool schemas are packaged with the server.
+The server uses Mercury 3. During design the model can use `ReadFile`, `Discover` and `Search` (a fixed-string grep over `.hs` and `.cabal` files), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Each function is then implemented by its own agent, up to four at a time, which sees only the module's types, signatures and documentation, the properties that mention the function, and any feedback from a failed attempt; it submits its definition with `ImplementFunction`. Tool paths resolve against the server's working directory. Tool schemas are packaged with the server.
 
 `cabal test server-tests` runs requirements end to end against a throwaway cabal project, with a scripted model in place of Mercury 3. Set `HOLEY_KEEP_PROJECT=1` to keep the generated project.
 

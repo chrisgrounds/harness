@@ -9,6 +9,7 @@ import Data.Aeson (Value, object, (.=))
 import Data.IORef
 import Data.List (isInfixOf)
 import Data.Text (Text)
+import qualified Data.Text as T
 import GHC.Clock (getMonotonicTimeNSec)
 import Holey (Config (..), runHoley)
 import Progress (newProgress, readRun)
@@ -20,10 +21,10 @@ import Tools (registerTool, toolToApiDefinition)
 
 -- | Returns failure messages; an empty list means every check passed.
 endToEndTests :: IO [String]
-endToEndTests = sortedMergeDesign
+endToEndTests = sortedMerge
 
-sortedMergeDesign :: IO [String]
-sortedMergeDesign = withProject $ \root -> do
+sortedMerge :: IO [String]
+sortedMerge = withProject $ \root -> do
   counter <- newIORef 0
   definitions <- mapM (\(name, _) -> (,) name <$> toolToApiDefinition name) registerTool
   events <- newIORef []
@@ -42,13 +43,14 @@ sortedMergeDesign = withProject $ \root -> do
   published <- readIORef events
   pure $
     concat
-      [ expect "design steps and skeleton passed" $
-          all (\s -> lookup s (steps run) == Just Passed) [DesignTypes, DesignSignatures, WriteProperties, CheckSkeleton],
+      [ expect ("every step passed: " <> show (steps run)) $ all ((== Passed) . snd) (steps run),
+        expect "every function implemented" $ map snd (tasks run) == [Done, Done, Done],
         expect ("touched files: " <> show (touchedFiles run)) $
           touchedFiles run == ["src/Sorted/Merge.hs", "test/HoleySortedMergeProperties.hs", "demo.cabal"],
         expect "module listed in the library" ("exposed-modules: Sorted.Merge" `isInfixOf` cabal),
         expect "property suite added" ("test-suite holey-sorted-merge" `isInfixOf` cabal),
-        expect "skeleton has holes" ("merge = undefined" `isInfixOf` source),
+        expect "no holes left" (not ("undefined" `isInfixOf` source)),
+        expect "implementation imports added" ("import Data.List (sort)" `isInfixOf` source),
         expect "every change published" (case published of RunUpdated latest : _ -> latest == run; _ -> False)
       ]
 
@@ -87,6 +89,10 @@ designer chat = case latestText chat of
                        ]
                    ]
             ]
+    | ImplementFunction `elem` tools' -> case implementing chat >>= (`lookup` implementations) of
+        Just (definition, extraImports) ->
+          CallTool ImplementFunction (object ["definition" .= definition, "imports" .= extraImports])
+        Nothing -> Say "I do not know that function."
     | otherwise -> Say "Nothing to do."
   where
     tools' = availableTools chat
@@ -123,3 +129,35 @@ withProject test = do
 
 expect :: String -> Bool -> [String]
 expect label ok = [label | not ok]
+
+implementations :: [(Text, (Text, [Text]))]
+implementations =
+  [ ("fromList", ("fromList = Sorted . sort", ["import Data.List (sort)"])),
+    ("toList", ("toList (Sorted xs) = xs", [])),
+    ( "merge",
+      ( T.unlines
+          [ "merge (Sorted xs) (Sorted ys) = Sorted (go xs ys)",
+            "  where",
+            "    go [] bs = bs",
+            "    go as' [] = as'",
+            "    go (a : as') (b : bs)",
+            "      | a <= b = a : go as' (b : bs)",
+            "      | otherwise = b : go (a : as') bs"
+          ],
+        []
+      )
+    )
+  ]
+
+-- | The function an implementation agent was asked for, from its instructions.
+implementing :: Chat -> Maybe Text
+implementing chat =
+  case [ T.takeWhile (/= ' ') rest
+       | m <- messages chat,
+         role m == User,
+         Just text <- [content m],
+         line <- T.lines text,
+         Just rest <- [T.stripPrefix "Implement " line]
+       ] of
+    name : _ -> Just name
+    [] -> Nothing

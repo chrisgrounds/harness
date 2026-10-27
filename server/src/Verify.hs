@@ -9,11 +9,13 @@ module Verify
     ghcErrors,
     attributeErrors,
     failedProperties,
+    propertyReport,
+    mentions,
     summarise,
   )
 where
 
-import Data.Char (isDigit)
+import Data.Char (isAlphaNum, isDigit)
 import Data.List (isSuffixOf, nub)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
@@ -23,7 +25,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath (normalise)
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import System.Timeout (timeout)
-import Core (FunctionName)
+import Core (FunctionName (..))
 
 -- | Builds the suite, and with it the library. 'Left' holds the build output.
 buildSuite :: FilePath -> Text -> IO (Either Text ())
@@ -113,3 +115,21 @@ summarise output = T.take 6000 $ case ghcErrors output of
   errors -> T.intercalate "\n" (map errorText errors)
   where
     lastN n xs = drop (length xs - n) xs
+
+-- | The output of the failed properties, with their counterexamples.
+propertyReport :: Text -> Text
+propertyReport output = case failedProperties output of
+  [] -> summarise output
+  names -> T.take 6000 (T.intercalate "\n" [section | (name, section) <- sections, name `elem` names])
+  where
+    sections = go (T.lines output)
+    go [] = []
+    go (l : rest) = case T.stripPrefix "=== " l of
+      Just name ->
+        let (body, rest') = break ("=== " `T.isPrefixOf`) rest
+         in (T.strip name, T.unlines (l : body)) : go rest'
+      Nothing -> go rest
+
+-- | Whether the source uses the function's name as an identifier.
+mentions :: FunctionName -> Text -> Bool
+mentions (FunctionName name) source = name `elem` T.split (\c -> not (isAlphaNum c || c == '_' || c == '\'')) source

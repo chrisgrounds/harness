@@ -4,7 +4,9 @@
 module Holey (Config (..), runHoley) where
 
 import Agent (Llm, runAgent)
-import Control.Exception (SomeException, displayException, try)
+import Control.Concurrent (newQSem, signalQSem, waitQSem)
+import Control.Concurrent.Async (forConcurrently_)
+import Control.Exception (SomeException, bracket_, displayException, try)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
@@ -18,7 +20,8 @@ import Progress (Progress, readRun, tryUpdate, update)
 import Project (Package, findPackages)
 import Prompts
 import Tools (readOnlyTool)
-import Verify (buildSuite, summarise)
+import Render (renderModule)
+import Verify (buildSuite, mentions, propertyReport, runSuite, summarise)
 import Workspace
 
 data Config = Config
@@ -60,26 +63,18 @@ pipeline env = do
   chat2 <- designStep env DesignSignatures SetFunctions functionsInstruction chat1
   _ <- designStep env WriteProperties SetProperties propertiesInstruction chat2
   _ <- verifyBuild env CheckSkeleton
-  pure ()
+  functionNames <- liftIO (map fnName . functions . artefact <$> readRun (progress env))
+  implementStep env [(name, Nothing) | name <- functionNames]
+  _ <- verifyBuild env TypeCheck
+  propertiesStep env
 
 -- | Runs one design step in the shared design conversation. The step passes
 -- once the model's call to the step's tool is accepted.
 designStep :: Env -> Step -> ToolName -> Text -> Chat -> ExceptT () IO Chat
 designStep env step tool instruction chat = do
   liftIO (update (progress env) (setStep step Running))
-  accepted <- liftIO (newIORef False)
-  let available = [ReadFile, Discover, Search, tool]
-      prepared = addMessage (userMessage instruction) chat {tools = mapMaybe (`lookup` toolDefinitions (config env)) available}
-      handler = designTool env tool (writeIORef accepted True)
-      attempt :: Int -> Chat -> IO Chat
-      attempt remaining c = do
-        c' <- runAgent (llm (config env)) 30 handler c
-        done <- readIORef accepted
-        if done || remaining <= 1
-          then pure c'
-          else attempt (remaining - 1) (addMessage (userMessage (callToolNudge tool)) c')
-  final <- liftIO (attempt 3 prepared)
-  done <- liftIO (readIORef accepted)
+  let prepared = addMessage (userMessage instruction) chat {tools = definitionsFor env [ReadFile, Discover, Search, tool]}
+  (done, final) <- liftIO (untilAccepted env 30 tool (designTool env tool) prepared)
   if done
     then liftIO (update (progress env) (setStep step Passed)) >> pure final
     else stepFailed env step ("The model did not call " <> toolNameText tool <> ".")
@@ -131,6 +126,94 @@ verifyBuild env step = do
       case built of
         Left output -> stepFailed env step (summarise output)
         Right () -> liftIO (update (progress env) (setStep step Passed))
+
+-- | Runs an agent until the handler accepts a call to the tool, reminding the
+-- model to call it up to twice. The handler is given the action that records
+-- acceptance.
+untilAccepted :: Env -> Int -> ToolName -> (IO () -> ToolRequest -> IO Text) -> Chat -> IO (Bool, Chat)
+untilAccepted env budget tool handler chat = do
+  accepted <- newIORef False
+  let attempt :: Int -> Chat -> IO Chat
+      attempt remaining c = do
+        c' <- runAgent (llm (config env)) budget (handler (writeIORef accepted True)) c
+        done <- readIORef accepted
+        if done || remaining <= 1
+          then pure c'
+          else attempt (remaining - 1) (addMessage (userMessage (callToolNudge tool)) c')
+  final <- attempt 3 chat
+  done <- readIORef accepted
+  pure (done, final)
+
+definitionsFor :: Env -> [ToolName] -> [ToolDefinition]
+definitionsFor env = mapMaybe (`lookup` toolDefinitions (config env))
+
+-- | Implements the given functions in parallel, each by its own agent that
+-- sees only the skeleton, its signature and documentation, the properties
+-- that mention it, and any feedback from a failed attempt. Functions not
+-- listed keep their current definitions.
+implementStep :: Env -> [(FunctionName, Maybe Text)] -> ExceptT () IO ()
+implementStep env work = do
+  run <- liftIO (readRun (progress env))
+  target <- maybe (stepFailed env Implement "No module was chosen.") pure (resolveTarget (packages env) run)
+  let art = artefact run
+      skeleton = fst (renderModule (targetName target) art {functions = [f {fnBody = Nothing, fnImports = []} | f <- functions art]})
+      queued = map fst work
+  liftIO $
+    update
+      (progress env)
+      ( \r ->
+          (setStep Implement Running r)
+            { tasks = [(fnName f, if fnName f `elem` queued then Queued else Done) | f <- functions art]
+            }
+      )
+  slots <- liftIO (newQSem 4)
+  liftIO $
+    forConcurrently_ work $ \(name, feedback) ->
+      bracket_ (waitQSem slots) (signalQSem slots) $
+        case [f | f <- functions art, fnName f == name] of
+          fn : _ -> implementOne env skeleton fn [p | p <- properties art, mentions (fnName fn) (propSource p)] feedback
+          [] -> update (progress env) (setTask name (TaskFailed "Unknown function"))
+  after <- liftIO (readRun (progress env))
+  case [functionNameText n | (n, TaskFailed _) <- tasks after] of
+    [] -> liftIO (update (progress env) (setStep Implement Passed))
+    failed -> stepFailed env Implement ("Could not implement " <> T.intercalate ", " failed <> ".")
+
+implementOne :: Env -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> IO ()
+implementOne env skeleton fn props feedback = do
+  update (progress env) (setTask (fnName fn) Working)
+  let chat =
+        Chat
+          [ userMessage (implementInstruction skeleton fn props feedback),
+            systemMessage implementSystemPrompt
+          ]
+          (llmModel (config env))
+          (definitionsFor env [ImplementFunction])
+      handler onAccepted request
+        | toolRequestFunctionParamsName (toolRequestFunction request) /= ImplementFunction =
+            pure "Only ImplementFunction is available."
+        | otherwise = do
+            result <- case decodeArgs (toolRequestFunctionParamsArguments (toolRequestFunction request)) of
+              Left err -> pure (Left err)
+              Right args -> tryUpdate (progress env) (applyImplementation (fnName fn) args)
+            case result of
+              Left err -> pure ("Rejected: " <> err)
+              Right () -> onAccepted >> pure "Accepted."
+  outcome <- try (untilAccepted env 6 ImplementFunction handler chat)
+  update (progress env) $ setTask (fnName fn) $ case outcome of
+    Right (True, _) -> Done
+    Right (False, _) -> TaskFailed "The model did not submit an implementation."
+    Left err -> TaskFailed (T.pack (displayException (err :: SomeException)))
+
+-- | Runs the property suite.
+propertiesStep :: Env -> ExceptT () IO ()
+propertiesStep env = do
+  liftIO (update (progress env) (setStep RunProperties Running))
+  run <- liftIO (readRun (progress env))
+  target <- maybe (stepFailed env RunProperties "No module was chosen.") pure (resolveTarget (packages env) run)
+  result <- liftIO (runSuite (projectRoot (config env)) (targetSuite target))
+  case result of
+    Right _ -> liftIO (update (progress env) (setStep RunProperties Passed))
+    Left output -> stepFailed env RunProperties (propertyReport output)
 
 stepFailed :: Env -> Step -> Text -> ExceptT () IO a
 stepFailed env step reason = do
