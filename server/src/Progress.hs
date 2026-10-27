@@ -1,6 +1,6 @@
-module Progress (Progress, newProgress, update) where
+module Progress (Progress, newProgress, update, tryUpdate, readRun) where
 
-import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
 import Core (Run, ServerEvent (..))
 
 -- | The state of one run, shared by every thread working on it. Each update
@@ -19,3 +19,13 @@ update (Progress state publish) f = modifyMVar_ state $ \run -> do
   let run' = f run
   publish (RunUpdated run')
   pure run'
+
+-- | Applies a change that may be rejected; only accepted changes are published.
+tryUpdate :: Progress -> (Run -> Either e Run) -> IO (Either e ())
+tryUpdate (Progress state publish) f = modifyMVar state $ \run ->
+  case f run of
+    Left err -> pure (run, Left err)
+    Right run' -> publish (RunUpdated run') >> pure (run', Right ())
+
+readRun :: Progress -> IO Run
+readRun (Progress state _) = readMVar state

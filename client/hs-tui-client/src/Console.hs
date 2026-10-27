@@ -37,7 +37,10 @@ runConsole sock = loop B.empty
           when (maybe False ((/= iteration run) . iteration) previous) $
             TIO.putStrLn (renderLine "holey" ("iteration " <> T.pack (show (iteration run))))
           mapM_ (TIO.putStrLn . renderStep) (stepChanges previous run)
+          mapM_ (TIO.putStrLn . renderLine "holey" . ("warning: " <>)) (newItems warnings previous run)
+          mapM_ (TIO.putStrLn . renderLine "holey" . ("wrote " <>) . T.pack) (newItems touchedFiles previous run)
           follow (Just run) rest
+    newItems field previous run = filter (`notElem` maybe [] field previous) (field run)
 
 renderStep :: (Step, StepStatus) -> Text
 renderStep (step, status) =

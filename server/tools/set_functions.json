@@ -1,0 +1,29 @@
+{
+  "type": "function",
+  "function": {
+    "name": "SetFunctions",
+    "description": "Sets every function the module exports, as signatures and documentation only. Call again to replace them.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "functions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "Function name" },
+              "signature": { "type": "string", "description": "The type only, without the name or ::, e.g. \"[Row] -> Either ParseError Table\"" },
+              "doc": { "type": "string", "description": "What the function does, precisely enough to implement from the types and this text alone" }
+            },
+            "required": ["name", "signature", "doc"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "functions"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

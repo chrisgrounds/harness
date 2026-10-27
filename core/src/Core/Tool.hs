@@ -4,6 +4,7 @@
 module Core.Tool
   ( ToolCallId,
     ToolName (..),
+    toolNameText,
     ToolType (..),
     ToolRequestFunctionParams (..),
     ToolRequest (..),
@@ -14,23 +15,32 @@ where
 
 import Data.Aeson
 import Data.Text (Text)
+import qualified Data.Text as T
 import GHC.Generics (Generic)
 
 type ToolCallId = Text
 
-data ToolName = ReadFile | Discover
-  deriving (Eq, Show)
+data ToolName
+  = ReadFile
+  | Discover
+  | Search
+  | SetTypes
+  | SetFunctions
+  | SetProperties
+  | ImplementFunction
+  deriving (Eq, Show, Enum, Bounded)
 
 instance FromJSON ToolName where
   parseJSON = withText "ToolName" $ \value ->
-    case value of
-      "ReadFile" -> pure ReadFile
-      "Discover" -> pure Discover
-      _ -> fail "unknown tool name"
+    case lookup value [(toolNameText name, name) | name <- [minBound .. maxBound]] of
+      Just name -> pure name
+      Nothing -> fail "unknown tool name"
 
 instance ToJSON ToolName where
-  toJSON ReadFile = String "ReadFile"
-  toJSON Discover = String "Discover"
+  toJSON = String . toolNameText
+
+toolNameText :: ToolName -> Text
+toolNameText = T.pack . show
 
 data ToolType = FunctionTool
   deriving (Eq, Show)

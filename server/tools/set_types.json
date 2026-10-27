@@ -1,0 +1,42 @@
+{
+  "type": "function",
+  "function": {
+    "name": "SetTypes",
+    "description": "Sets the new module's location, imports and type declarations. Call again to replace them.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "description": "Name of the library package the module belongs to"
+        },
+        "module": {
+          "type": "string",
+          "description": "Name of the new module, e.g. Billing.Invoice. It must not already exist."
+        },
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "LANGUAGE extensions, e.g. DerivingStrategies"
+        },
+        "imports": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Complete import lines, e.g. \"import qualified Data.Map.Strict as Map\""
+        },
+        "types": {
+          "type": "string",
+          "description": "Type declarations and instances only: no module header, imports or functions"
+        }
+      },
+      "required": [
+        "package",
+        "module",
+        "extensions",
+        "imports",
+        "types"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

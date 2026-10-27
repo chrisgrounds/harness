@@ -60,8 +60,11 @@ data FunctionSpec = FunctionSpec
   { fnName :: FunctionName,
     fnSignature :: Text,
     fnDoc :: Text,
-    -- | 'Nothing' is rendered as @undefined@.
-    fnBody :: Maybe Text
+    -- | The complete definition (every equation, no signature). 'Nothing' is
+    -- rendered as @undefined@.
+    fnBody :: Maybe Text,
+    -- | Extra import lines the implementation needs.
+    fnImports :: [Text]
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
@@ -72,8 +75,16 @@ data PropertySpec = PropertySpec
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data Artefact = Artefact
-  { typesSource :: Text,
+  { extensions :: [Text],
+    -- | Import lines for the new module.
+    imports :: [Text],
+    -- | Type declarations and instances, without imports or a module header.
+    typesSource :: Text,
     functions :: [FunctionSpec],
+    -- | Import lines for the property module, beyond the new module and QuickCheck.
+    propertyImports :: [Text],
+    -- | Arbitrary instances and generators used by the properties.
+    propertyHelpers :: Text,
     properties :: [PropertySpec]
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
@@ -86,8 +97,11 @@ data Run = Run
     -- | One entry per function being implemented, in declaration order.
     tasks :: [(FunctionName, TaskStatus)],
     artefact :: Artefact,
+    targetPackage :: Maybe Text,
     targetModule :: Maybe ModuleName,
-    touchedFiles :: [FilePath]
+    -- | Files the run created or edited, relative to the working directory.
+    touchedFiles :: [FilePath],
+    warnings :: [Text]
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
@@ -104,7 +118,7 @@ stepLabel TypeCheck = "Type checking"
 stepLabel RunProperties = "Running properties"
 
 emptyArtefact :: Artefact
-emptyArtefact = Artefact "" [] []
+emptyArtefact = Artefact [] [] "" [] [] "" []
 
 newRun :: Requirement -> Run
 newRun req =
@@ -114,8 +128,10 @@ newRun req =
       steps = [(s, Pending) | s <- allSteps],
       tasks = [],
       artefact = emptyArtefact,
+      targetPackage = Nothing,
       targetModule = Nothing,
-      touchedFiles = []
+      touchedFiles = [],
+      warnings = []
     }
 
 setStep :: Step -> StepStatus -> Run -> Run

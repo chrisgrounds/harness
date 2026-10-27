@@ -2,10 +2,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Agent
-  ( ApiKey (..),
-    loadAgentConfig,
-    handleMessage,
-    callLLM,
+  ( ApiKey,
+    Llm,
+    loadApiKey,
+    inceptionLlm,
+    runAgent,
+    toolMessage,
   )
 where
 
@@ -14,80 +16,51 @@ import Core
 import qualified Data.ByteString.Char8 as B
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
 import GHC.Clock (getMonotonicTimeNSec)
 import LoadEnv
 import Network.HTTP.Req
 import OpenAI
 import System.Environment
-import Tools
-
-newtype BaseUrl = BaseUrl Text
-  deriving (Show)
-
-newtype Uri = Uri Text
-  deriving (Show)
 
 newtype ApiKey = ApiKey String
-  deriving (Show)
+
+-- | Sends a chat to a model and returns it with the model's reply added.
+type Llm = Chat -> IO Chat
 
 data ApiDefinition = ApiDefinition (Url 'Https)
-  deriving (Show)
 
 toApiDefinition :: Model -> ApiDefinition
 toApiDefinition Mercury3 = ApiDefinition (https "api.inceptionlabs.ai" /: "v1" /: "chat" /: "completions")
 
--- | Reads the API key and builds an empty chat with the registered tools.
-loadAgentConfig :: IO (ApiKey, Chat)
-loadAgentConfig = do
-  loadEnv
-  apiKey <- ApiKey <$> getEnv "INCEPTION_API_KEY"
-  -- Don't hardcode this
-  let llmModel = Mercury3
-  toolDefinitions <- mapM toolToApiDefinition (map fst registerTool)
-  pure (apiKey, Chat [] llmModel toolDefinitions)
+-- | Reads @INCEPTION_API_KEY@ from the environment or a @.env@ file.
+loadApiKey :: IO ApiKey
+loadApiKey = loadEnv >> ApiKey <$> getEnv "INCEPTION_API_KEY"
 
-handleMessage :: ApiKey -> Chat -> Message -> IO Chat
-handleMessage apiKey chat message = do
-  let newChat = addMessage message chat
-  newerChat <- callLLM apiKey newChat
-  talkWithToolRequests apiKey (getLatestToolRequests newerChat) newerChat
+inceptionLlm :: ApiKey -> Llm
+inceptionLlm = callLLM
 
-talkWithToolRequests :: ApiKey -> [ToolRequest] -> Chat -> IO Chat
-talkWithToolRequests _ [] chat = pure chat
-talkWithToolRequests apiKey toolRequests chat = do
-  -- can we run these in parallel?
-  toolCallResults <- mapM runToolRequest toolRequests
+-- | Runs the model, answering its tool requests with the handler, until it
+-- replies without requesting tools or has used its turn budget.
+runAgent :: Llm -> Int -> (ToolRequest -> IO Text) -> Chat -> IO Chat
+runAgent llm budget handle chat
+  | budget <= 0 = pure chat
+  | otherwise = do
+      replied <- llm chat
+      case getLatestToolRequests replied of
+        [] -> pure replied
+        requests -> do
+          results <- mapM (\r -> toolMessage (toolRequestId r) <$> handle r) requests
+          runAgent llm (budget - 1) handle (addMessages (reverse results) replied)
 
-  if length toolCallResults == 0
-    then pure chat
-    else do
-      let toolMessages =
-            [ Message
-                { role = Tool,
-                  content = Just toolResult,
-                  toolCalls = [],
-                  toolCallId = Just tCallId,
-                  tokensPerSecond = Nothing
-                }
-            | (tCallId, toolResult) <- toolCallResults
-            ]
-
-      let newChat = addMessages toolMessages chat
-
-      chatWithAgentResponse <- callLLM apiKey newChat
-
-      talkWithToolRequests apiKey (getLatestToolRequests chatWithAgentResponse) chatWithAgentResponse
-
-runToolRequest :: ToolRequest -> IO (ToolCallId, Text)
-runToolRequest tool = do
-  let toolDetails = toolRequestFunction tool
-  res <- runTool (toolRequestFunctionParamsName toolDetails) toolDetails
-
-  case res of
-    -- this error message is specific for ReadFile and does not apply to Discover, for example
-    Left err -> pure (toolRequestId tool, "Could not read file: " <> T.pack (show err))
-    Right contents -> pure (toolRequestId tool, contents)
+toolMessage :: ToolCallId -> Text -> Message
+toolMessage callId result =
+  Message
+    { role = Tool,
+      content = Just result,
+      toolCalls = [],
+      toolCallId = Just callId,
+      tokensPerSecond = Nothing
+    }
 
 callLLM :: ApiKey -> Chat -> IO Chat
 callLLM (ApiKey apiKey) chat = do

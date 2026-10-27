@@ -14,7 +14,15 @@ Each message is a requirement and starts a *holey run*, which moves through thes
 
 A failed verification loops back to an earlier step and starts a new iteration. The client shows the current step, per-function progress during implementation, and the iteration count.
 
-> Runs are currently scripted by the server (`FakeRun`) to exercise the protocol and client; the steps are not yet backed by the model.
+> The design steps and the skeleton check are backed by the model; implementation, type checking and running properties are not wired up yet.
+
+A run writes into the project the server is started in:
+
+- the new module, in the first source directory of the library package chosen in step 1;
+- `test/Holey<Module>Properties.hs`, a QuickCheck suite with one `prop_` per invariant;
+- the package's cabal file: an `exposed-modules` line for the module and a `test-suite holey-<module>` stanza.
+
+It refuses to overwrite files it did not create, warns when the git tree has uncommitted changes, and lists every file it touched. Verification uses the project's own `cabal`, so start the server inside the project's development shell.
 
 | Package | Purpose |
 | --- | --- |
@@ -30,11 +38,14 @@ Build from the repository root with GHC and Cabal:
 cabal build all
 ```
 
-Set `INCEPTION_API_KEY` in your environment or the root `.env` file, then start the server from the repository root:
+Set `INCEPTION_API_KEY` in your environment or a `.env` file, then start the server from the root of the Haskell project you want to work on:
 
 ```sh
-cabal run server
+cd ~/src/my-project
+cabal run --project-dir ~/src/harness server
 ```
+
+`server --demo` plays a scripted run without calling the model or touching any files.
 
 In a second terminal:
 
@@ -42,7 +53,9 @@ In a second terminal:
 cabal run hs-tui-client
 ```
 
-The server uses Mercury 3 and provides `ReadFile` and `Discover`. Tool paths resolve against the server's working directory. Tool schemas are packaged with the server.
+The server uses Mercury 3. During design the model can use `ReadFile`, `Discover` and `Search` (a fixed-string grep over `.hs` and `.cabal` files), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Tool paths resolve against the server's working directory. Tool schemas are packaged with the server.
+
+`cabal test server-tests` runs requirements end to end against a throwaway cabal project, with a scripted model in place of Mercury 3. Set `HOLEY_KEEP_PROJECT=1` to keep the generated project.
 
 The root Nix flake includes all three packages and a shared development shell:
 

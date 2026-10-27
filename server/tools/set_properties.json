@@ -1,0 +1,39 @@
+{
+  "type": "function",
+  "function": {
+    "name": "SetProperties",
+    "description": "Sets the QuickCheck properties for invariants the types cannot express. Call again to replace them.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "imports": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extra complete import lines. The new module and Test.QuickCheck are already imported."
+        },
+        "helpers": {
+          "type": "string",
+          "description": "Arbitrary instances and generators for the new types"
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "Starts with prop_" },
+              "source": { "type": "string", "description": "The property's signature and definition" }
+            },
+            "required": ["name", "source"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "imports",
+        "helpers",
+        "properties"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

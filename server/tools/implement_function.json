@@ -1,0 +1,26 @@
+{
+  "type": "function",
+  "function": {
+    "name": "ImplementFunction",
+    "description": "Submits the implementation of the function you were asked to implement. Call again to replace it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "type": "string",
+          "description": "The complete definition: every equation and any where clause, without the type signature"
+        },
+        "imports": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Complete import lines the definition needs beyond the module's existing imports"
+        }
+      },
+      "required": [
+        "definition",
+        "imports"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

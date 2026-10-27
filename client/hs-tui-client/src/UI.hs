@@ -247,16 +247,30 @@ implementProgress _ _ = ""
 drawRun :: UI -> Run -> Widget Name
 drawRun state run =
   padBottom (Pad 1) $
-    vBox
+    vBox $
       [ withAttr userAttr (txt "YOU"),
         padTop (Pad 1) $ padLeft (Pad 2) $ withAttr bodyAttr $ txtWrap (safeText (requirementText (requirement run))),
         padTop (Pad 1) $
           hBox
             [ withAttr accent (txt "HOLEY"),
+              withAttr metadataAttr $ txt (maybe "" ("  →  " <>) (target run)),
               padLeft Max $ withAttr metadataAttr $ txt ("iteration " <> T.pack (show (iteration run)))
             ],
         padTop (Pad 1) $ padLeft (Pad 2) $ vBox (concatMap (drawStep state run) (steps run))
       ]
+        ++ [ padTop (Pad 1) $ padLeft (Pad 2) $ withAttr danger $ txtWrap ("!  " <> safeText warning)
+           | warning <- warnings run
+           ]
+        ++ [ padTop (Pad 1) $
+               padLeft (Pad 2) $
+                 vBox (withAttr muted (txt "Files") : [withAttr metadataAttr (txt ("   " <> safeText (T.pack file))) | file <- touchedFiles run])
+           | not (null (touchedFiles run))
+           ]
+
+target :: Run -> Maybe Text
+target run = do
+  ModuleName name <- targetModule run
+  pure (maybe name (\p -> p <> ":" <> name) (targetPackage run))
 
 drawStep :: UI -> Run -> (Step, StepStatus) -> [Widget Name]
 drawStep state run (step, stepStatus) = row : details

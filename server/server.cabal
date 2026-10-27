@@ -11,14 +11,10 @@ homepage: http://www.haskell.org/server/
 synopsis: Harness AF_UNIX model and tool server
 category: Console, Text
 build-type: Simple
-data-files: tools/read_file.json, tools/discover.json
+data-files: tools/*.json
 
-executable server
-  hs-source-dirs: src
-  main-is: server.hs
+common shared
   ghc-options: -Wall -threaded
-  other-modules: Agent, FakeRun, OpenAI, Progress, Tools, Socket, Paths_server
-  autogen-modules: Paths_server
   build-depends:
       base >= 4.2 && < 5
     , async
@@ -30,4 +26,23 @@ executable server
     , load-env
     , directory
     , bytestring
+    , Cabal-syntax
+    , filepath
+    , process
+    , transformers
   default-language: Haskell2010
+
+executable server
+  import: shared
+  hs-source-dirs: src
+  main-is: server.hs
+  other-modules: Agent, Edits, FakeRun, Holey, OpenAI, Progress, Project, Prompts, Render, Socket, Tools, Verify, Workspace, Paths_server
+  autogen-modules: Paths_server
+
+test-suite server-tests
+  import: shared
+  type: exitcode-stdio-1.0
+  hs-source-dirs: src, test
+  main-is: Main.hs
+  other-modules: Agent, Edits, Holey, OpenAI, Progress, Project, Prompts, Render, Tools, Verify, Workspace, Paths_server, EndToEnd, ScriptedModel
+  autogen-modules: Paths_server
