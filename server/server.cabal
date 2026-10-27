@@ -44,5 +44,6 @@ test-suite server-tests
   type: exitcode-stdio-1.0
   hs-source-dirs: src, test
   main-is: Main.hs
-  other-modules: Agent, Edits, Holey, OpenAI, Policy, Progress, Project, Prompts, Render, Tools, Verify, Workspace, Paths_server, EndToEnd, ScriptedModel
+  other-modules: Agent, Edits, Holey, OpenAI, Policy, Progress, Project, Prompts, Render, Tools, Verify, Workspace, Paths_server, EndToEnd, Properties, ScriptedModel
   autogen-modules: Paths_server
+  build-depends: QuickCheck

@@ -62,7 +62,14 @@ cabal run hs-tui-client
 
 The server uses Mercury 3. During design the model can use `ReadFile`, `Discover` and `Search` (a fixed-string grep over `.hs` and `.cabal` files), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Each function is then implemented by its own agent, up to four at a time, which sees only the module's types, signatures and documentation, the properties that mention the function, and any feedback from a failed attempt; it submits its definition with `ImplementFunction`. Tool paths resolve against the server's working directory. Tool schemas are packaged with the server.
 
-`cabal test server-tests` runs requirements end to end against a throwaway cabal project, with a scripted model in place of Mercury 3. Set `HOLEY_KEEP_PROJECT=1` to keep the generated project.
+## Tests
+
+```sh
+cabal test all
+```
+
+- `core-tests`: JSON round-trips for the protocol types and the laws of the `Run` helpers.
+- `server-tests`: properties of the pure parts of the server (function spans in rendered modules, attributing GHC errors to functions, reading QuickCheck output, the loop-back policy, and cabal file edits checked with Cabal-syntax), then end-to-end runs against a throwaway cabal project using the real `cabal` and GHC with a scripted model in place of Mercury 3: a first-time pass, a failed property, a type error, and a run that gives up. Set `HOLEY_KEEP_PROJECT=1` to keep the generated projects.
 
 The root Nix flake includes all three packages and a shared development shell:
 
