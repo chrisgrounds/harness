@@ -110,3 +110,5 @@ The only listener is `/tmp/harness.sock`, an `AF_UNIX` stream socket. Requests a
 ## TODO
 
 - **User checkpoints in holey runs.** Pause after the signatures and properties steps so the user can approve or edit the design before the parallel implementation step starts. Runs currently go straight through without stopping.
+- **Changing existing modules.** A run can only add a new module. Extending existing types or wiring the new functions into existing call sites is left to the user.
+- **A cheaper model for implementation.** Every step uses Mercury 3; implementation agents should use a cheaper model once one is configured.
