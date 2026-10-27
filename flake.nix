@@ -26,7 +26,11 @@
         pkgs = import (if system == "x86_64-darwin" then nixpkgs-2605 else nixpkgs)
           { inherit system overlays; inherit (haskellNix) config; };
         flake = pkgs.hixProject.flake {};
-      in flake // {
+      in {
+        # Named explicitly rather than `flake // { ... }` so that eachSystem
+        # can see the output names without evaluating the project (IFD) for
+        # every supported system.
+        inherit (flake) apps checks devShells ciJobs hydraJobs;
         legacyPackages = pkgs;
 
         packages = flake.packages // { default = flake.packages."server:exe:server"; };

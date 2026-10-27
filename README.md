@@ -65,3 +65,7 @@ Piped input or output uses a plain transcript through the same client and shared
 Server and client both depend on the local `core` library and `import Core`. `Chat` contains the full message history, model, and available tools. Its messages are stored newest first; the UI reverses them for display. Tool results retain their call IDs, and assistant messages retain tool requests and optional throughput metadata.
 
 The only listener is `/tmp/harness.sock`, an `AF_UNIX` stream socket. Requests are `Message` JSON objects and replies are complete `Chat` JSON objects, encoded as UTF-8 without newline framing. Incremental parsing handles split JSON/UTF-8, large messages, and adjacent values while preserving unread bytes. Each connection has its own conversation.
+
+## TODO
+
+- **User checkpoints in holey runs.** Pause after the signatures and properties steps so the user can approve or edit the design before the parallel implementation step starts. Runs currently go straight through without stopping.
