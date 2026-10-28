@@ -35,5 +35,6 @@ test-suite holey-ui
   main-is: HoleyUIProperties.hs
   build-depends: base, QuickCheck, aeson, core, brick, bytestring, containers, directory, mtl, network, text, toml-parser, vty, vty-crossplatform
   default-language: Haskell2010
+  ghc-options: -Wall
   other-modules: Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
   autogen-modules: Paths_hs_tui_client

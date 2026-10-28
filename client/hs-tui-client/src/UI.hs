@@ -207,7 +207,7 @@ drawUI path dir state = [screen]
                       [ status state,
                         padLeft Max $
                           withAttr muted $
-                            txt (safeText (runsSummary (serverModel state) (length (runs state)) (followLatest state)))
+                            txt (safeText (runsSummary (serverModel state) (length (runs state))))
                       ],
                   padTop (Pad 1) $
                     withAttr borderAttr $
@@ -362,12 +362,10 @@ stepAttr Running = accent
 stepAttr Passed = successAttr
 stepAttr (Failed _) = danger
 
--- | The text at the right of the status line: the server's model if known,
--- the number of runs, and whether the transcript is scrolled back, e.g.
--- @claude-opus-5-5  ·  3 runs  ·  scrollback@.
-runsSummary :: Maybe Model -> Int -> Bool -> Text
-runsSummary known count following =
+-- | The text at the right of the status line: the server's model if known
+-- and the number of runs, e.g. @claude-opus-5-5  ·  3 runs@.
+runsSummary :: Maybe Model -> Int -> Text
+runsSummary known count =
   maybe "" (\m -> modelId m <> "  ·  ") known
     <> T.pack (show count)
     <> (if count == 1 then " run" else " runs")
-    <> (if following then "" else "  ·  scrollback")
