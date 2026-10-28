@@ -119,16 +119,21 @@ fixUpInstruction tool errors =
 
 -- | Asks for the run's functions to be checked against the requirement, and
 -- for gaps and duplication to be refactored away.
-reviewInstruction :: Requirement -> [(ModuleName, [FunctionSpec])] -> Text
-reviewInstruction req written =
+reviewInstruction :: Requirement -> [ModulePlan] -> [ComponentName] -> [(ModuleName, [FunctionSpec])] -> Text
+reviewInstruction req plans untouched written =
   T.unlines $
     [ "Step 4: review. The run's code type checks and its properties pass, but the properties cannot check everything the requirement asks for.",
       "The requirement was:",
       requirementText req,
       "",
-      "These are the functions the run wrote:",
-      ""
+      "The run changed only these modules:"
     ]
+      ++ ["- " <> moduleNameText (planModule p) <> " in " <> componentNameText (planComponent p) <> (if planIsNew p then " (new)" else "") | p <- plans]
+      ++ ["It changed nothing in: " <> T.intercalate ", " (map componentNameText untouched) <> "." | not (null untouched)]
+      ++ [ "",
+           "These are the functions the run wrote:",
+           ""
+         ]
       ++ concat
         [ ["```haskell", "-- " <> moduleNameText m]
             ++ concat [[functionNameText (fnName f) <> " :: " <> fnSignature f | not (T.null (fnSignature f))] ++ maybe [] T.lines (fnBody f) ++ [""] | f <- fns]
@@ -138,9 +143,11 @@ reviewInstruction req written =
       ++ [ "First, check them against the requirement, phrase by phrase: does the code do everything it asks, where and when it asks?",
            "Pay attention to what properties cannot test, such as when something happens, what reaches the user, and which code path is taken.",
            "Then look for duplication: logic repeated across these functions, or code that already exists elsewhere in the codebase (use ReadFile and Search).",
-           "If anything falls short or is duplicated, call Refactor with new definitions for the functions that should change, and any helpers they should share.",
+           "If anything falls short or is duplicated and new definitions of these functions can fix it, call Refactor with them, and any helpers they should share.",
            "Each definition must define only its function. The refactor is kept only if the code still builds and the properties still pass.",
-           "If the code meets the requirement and nothing is duplicated, reply without calling Refactor."
+           "If the requirement is not met and fixing it needs more than that, such as changes to other modules or components, call RequirementNotMet",
+           "saying what is missing and where; the run then goes back to design.",
+           "If the code meets the requirement and nothing is duplicated, reply with a one-line summary of your review without calling a tool."
          ]
 
 callToolNudge :: ToolName -> Text

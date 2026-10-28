@@ -10,6 +10,7 @@ module Edits
     PropertiesArgs (..),
     ImplementArgs (..),
     RefactorArgs (..),
+    GapArgs (..),
     RefactorArg (..),
     decodeArgs,
     checkModules,
@@ -208,6 +209,12 @@ definitionOf name definition = do
         || ("`" <> n <> "`") `elem` infixPosition line
         || maybe False (`elem` infixPosition line) (T.stripPrefix "(" n >>= T.stripSuffix ")")
     infixPosition = take 1 . drop 1 . T.words
+
+-- | What a review found the code does not do.
+newtype GapArgs = GapArgs Text
+
+instance FromJSON GapArgs where
+  parseJSON = withObject "RequirementNotMet" $ \o -> GapArgs <$> o .: "reason"
 
 newtype RefactorArgs = RefactorArgs [RefactorArg]
 

@@ -1,0 +1,20 @@
+{
+  "type": "function",
+  "function": {
+    "name": "RequirementNotMet",
+    "description": "Says the code does not meet the requirement in a way redefining the run's functions cannot fix, such as needing another module or component. The run goes back to design with the reason.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "What the requirement asks for that the code does not do, and where it would need to change"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

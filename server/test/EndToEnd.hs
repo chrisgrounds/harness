@@ -9,6 +9,7 @@ import Data.Aeson (Value (..), object, (.=))
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.IORef
 import Data.List (isInfixOf, isPrefixOf)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Clock (getMonotonicTimeNSec)
@@ -38,7 +39,8 @@ endToEndTests =
         scenario "new main module" (firstDraft (sortedMerge libraryProject)) (const correctMerge) dropsOldSuite,
         scenario "fixed properties" (brokenProperties (sortedMerge libraryProject)) (const correctMerge) fixesProperties,
         scenario "refactor" (refactored mergeLists (sortedMerge libraryProject)) (const correctMerge) keepsRefactor,
-        scenario "bad refactor" (refactored "merge (Sorted xs) (Sorted ys) = xs ++ ys" (sortedMerge libraryProject)) (const correctMerge) undoesRefactor
+        scenario "bad refactor" (refactored "merge (Sorted xs) (Sorted ys) = xs ++ ys" (sortedMerge libraryProject)) (const correctMerge) undoesRefactor,
+        scenario "requirement not met" ((sortedMerge libraryProject) {unmet = Just "Nothing shows the merge."}) (const correctMerge) redesignsAfterReview
       ]
 
 -- | A throwaway cabal package, and what the scripted model designs in it.
@@ -60,6 +62,8 @@ data Layout = Layout
     draftUntil :: Text,
     -- | What the review refactors, if anything.
     refactoring :: Maybe Value,
+    -- | Why the first review finds the requirement not met, if it does.
+    unmet :: Maybe Text,
     -- | Each function's definition and imports, given how to define @merge@.
     implementations :: Text -> [(Text, (Text, [Text]))]
   }
@@ -123,6 +127,7 @@ sortedMerge package =
       draft = Nothing,
       draftUntil = "",
       refactoring = Nothing,
+      unmet = Nothing,
       implementations = \mergeDefinition ->
         [ ("fromList", ("fromList = Sorted . sort", ["import Data.List (sort)"])),
           ("toList", ("toList (Sorted xs) = xs", [])),
@@ -205,6 +210,7 @@ changedGreeting =
       draft = Nothing,
       draftUntil = "",
       refactoring = Nothing,
+      unmet = Nothing,
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = \"hi \" ++ n", [])),
@@ -248,6 +254,7 @@ dependentPackage =
       draft = Nothing,
       draftUntil = "",
       refactoring = Nothing,
+      unmet = Nothing,
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = Just (\"hi \" ++ n)", [])),
@@ -537,7 +544,7 @@ keepsRefactor _ run source =
   pure $
     allPassed run
       ++ concat
-        [ expect ("refactor kept: " <> show (history run)) (history run == ["Review: refactored merge, mergeLists to remove duplication."]),
+        [ expect ("refactor kept: " <> show (history run)) (history run == ["Review: refactored merge, mergeLists."]),
           expect "merge uses the helper" ("merge (Sorted xs) (Sorted ys) = Sorted (mergeLists xs ys)" `isInfixOf` source),
           expect "helper added with its documentation" ("-- | Merges two ascending lists.\nmergeLists :: [Int] -> [Int] -> [Int]" `isInfixOf` source)
         ]
@@ -549,6 +556,20 @@ undoesRefactor _ run source =
       ++ concat
         [ expect ("refactor undone: " <> show (history run)) (case history run of [n] -> "Review: undid the refactor of merge, mergeLists, because " `T.isPrefixOf` n; _ -> False),
           expect "the implemented merge is back" ("a <= b" `isInfixOf` source && not ("mergeLists" `isInfixOf` source))
+        ]
+
+-- | The review's gap sends the run back to design once, with the reason,
+-- and the second review passes.
+redesignsAfterReview :: FilePath -> Run -> String -> IO [String]
+redesignsAfterReview root run _ = do
+  logged <- readFile (root </> "dist-newstyle/holey/last-run.log")
+  pure $
+    allPassed run
+      ++ concat
+        [ expect ("redesigned once, saying why: " <> show (history run)) (history run == ["Iteration 1: the review found the requirement not met: Nothing shows the merge."]),
+          expect "two iterations" (iteration run == 2),
+          expect "the verdicts are logged" $
+            all (`isInfixOf` logged) ["== Iteration 1, Reviewing against the requirement: requirement not met ==\nNothing shows the merge.", "== Iteration 2, Reviewing against the requirement: requirement met =="]
         ]
 
 -- | One request for corrected properties fixes the skeleton, with no redesign.
@@ -596,9 +617,13 @@ designer layout strategy chat = case latestText chat of
         Just SetTypes -> CallTool SetTypes types
         Just SetFunctions -> CallTool SetFunctions functions'
         Just SetProperties -> CallTool SetProperties properties'
-        _ -> case refactoring layout of
-          Just changes | "Step 4: review" `T.isInfixOf` instructions chat -> CallTool Refactor changes
-          _ -> Say "Nothing to do."
+        _
+          | reviewing -> case (refactoring layout, unmet layout) of
+              (Just changes, _) -> CallTool Refactor changes
+              (_, Just reason) | not ("does not meet the requirement" `T.isInfixOf` instructions chat) -> CallTool RequirementNotMet (object ["reason" .= reason])
+              -- An empty conclusion, so the review adds nothing to the history.
+              _ -> Say ""
+          | otherwise -> Say "Nothing to do."
   where
     tools' = availableTools chat
     -- Every design step offers all the design tools; the latest instruction
@@ -609,6 +634,7 @@ designer layout strategy chat = case latestText chat of
         [] -> Nothing
       [] -> Nothing
     revised = draftUntil layout `T.isInfixOf` instructions chat
+    reviewing = maybe False ("Step 4: review" `T.isInfixOf`) (listToMaybe [text | m <- messages chat, role m == User, Just text <- [content m]])
     (types, functions', properties') = case draft layout of
       Just first | not revised -> first
       _ -> (typesArgs layout, functionsArgs layout, propertiesArgs layout)

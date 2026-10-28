@@ -19,6 +19,8 @@ data Outcome
     TypeErrors [(FunctionRef, Text)] [Text]
   | -- | The failed properties, the functions they mention, and their output.
     PropertiesFailed [Text] [FunctionRef] Text
+  | -- | The review found the code does not do what the requirement asks.
+    RequirementUnmet Text
   deriving (Eq, Show)
 
 data Decision
@@ -55,6 +57,7 @@ decide iterationNumber allFunctions previouslyFailed outcome
                   <> T.unlines (map snd attributed ++ unattributed)
               )
         | otherwise -> Reimplement [(name, Just (T.unlines (errors : unattributed))) | (name, errors) <- attributed]
+      RequirementUnmet reason -> Redesign ("The review found that the code does not meet the requirement: " <> reason)
       PropertiesFailed failed suspects report
         | any (`elem` previouslyFailed) failed ->
             Redesign
@@ -91,6 +94,7 @@ describeOutcome (TypeErrors attributed unattributed)
   | null attributed = "the build failed outside the run's functions: " <> fromMaybe "no error was reported" (firstProblem (T.unlines unattributed))
   | otherwise = "type errors in " <> list (map fst attributed)
 describeOutcome (PropertiesFailed failed _ _) = "properties failed: " <> T.intercalate ", " failed
+describeOutcome (RequirementUnmet _) = "the review found the requirement not met"
 
 -- | Why an outcome sends the run back to design, in one sentence.
 redesignReason :: Outcome -> Text
@@ -99,6 +103,7 @@ redesignReason (SkeletonFailed errors) =
     first : _ | "The signatures of these existing functions" `T.isPrefixOf` first -> first
     lines' -> fromMaybe (fromMaybe "the build failed without a GHC error." (listToMaybe lines')) (firstProblem errors)
 redesignReason (PropertiesFailed {}) = "they still fail after the functions they mention were reimplemented, so the properties or the design may be wrong."
+redesignReason (RequirementUnmet reason) = reason
 redesignReason (TypeErrors [] _) = "it came back after every function was reimplemented, so the design has to change."
 redesignReason (TypeErrors {}) = "they came back in the same functions after those were reimplemented, so the cause is probably elsewhere."
 redesignReason _ = "it could not be fixed by reimplementing functions."

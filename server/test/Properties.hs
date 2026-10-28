@@ -65,6 +65,7 @@ propertyTests =
         check "a broken skeleton is redesigned" prop_skeletonRedesigned,
         check "only known functions are reimplemented" prop_reimplementsKnownFunctions,
         check "repeated property failures are redesigned" prop_repeatedFailureRedesigned,
+        check "an unmet requirement is redesigned with the review's reason" prop_unmetRequirementRedesigned,
         check "cabal edits keep the file valid and list the module and its suite" prop_cabalEditsParse,
         check "cabal edits are idempotent" prop_cabalEditsIdempotent,
         check "a module already listed, on any line, is not listed again" prop_moduleListedOnce,
@@ -486,7 +487,8 @@ anyOutcome refs =
     [ SkeletonFailed <$> paragraph,
       ImplementationMissing <$> sublistOf refs,
       TypeErrors <$> (map (\n -> (n, "error")) <$> sublistOf refs) <*> resize 2 (listOf paragraph),
-      PropertiesFailed <$> resize 3 (listOf (("prop_" <>) <$> identifier)) <*> sublistOf refs <*> paragraph
+      PropertiesFailed <$> resize 3 (listOf (("prop_" <>) <$> identifier)) <*> sublistOf refs <*> paragraph,
+      RequirementUnmet <$> paragraph
     ]
 
 prop_givesUpAtCap :: Property
@@ -520,6 +522,14 @@ prop_repeatedFailureRedesigned = forAll functionRefs $ \refs ->
       case decide i refs [failing] (PropertiesFailed [failing] refs "report") of
         Redesign _ -> True
         _ -> False
+
+prop_unmetRequirementRedesigned :: Property
+prop_unmetRequirementRedesigned = forAll functionRefs $ \refs ->
+  forAll paragraph $ \why ->
+    forAll (chooseInt (1, maxIterations - 1)) $ \i ->
+      case decide i refs [] (RequirementUnmet why) of
+        Redesign feedback -> counterexample (T.unpack feedback) (why `T.isInfixOf` feedback && redesignReason (RequirementUnmet why) == why)
+        other -> counterexample (show other) False
 
 -- Project
 

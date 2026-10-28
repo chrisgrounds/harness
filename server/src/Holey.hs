@@ -7,7 +7,7 @@ import Agent (Llm, runAgent)
 import Control.Concurrent (newQSem, signalQSem, waitQSem)
 import Control.Concurrent.Async (forConcurrently_)
 import Control.Exception (Exception, SomeException, bracket_, displayException, fromException, throwIO, try)
-import Control.Monad (forM, unless, when)
+import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Reader (ReaderT, ask, asks, runReaderT)
 import Core
@@ -167,7 +167,9 @@ pipeline = do
                             mentions (fnName f) (propSource p)
                           ]
                   loopBack typesStep chat previouslyFailed (PropertiesFailed failed suspects (propertyReport output))
-                Right () -> reviewStep chat
+                Right () -> do
+                  (gap, reviewed) <- reviewStep chat
+                  forM_ gap (loopBack typesStep reviewed previouslyFailed . RequirementUnmet)
 
     loopBack :: Text -> Chat -> [Text] -> Outcome -> Holey ()
     loopBack typesStep chat previouslyFailed outcome = do
@@ -242,7 +244,7 @@ designStep step tool instruction chat = do
 -- | The tools the design conversation offers at every step, the review's
 -- included.
 designTools :: [ToolName]
-designTools = [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties, Refactor]
+designTools = [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties, Refactor, RequirementNotMet]
 
 -- | What a tool call did: answered the model, or tried to record the step's
 -- result, which was rejected with a reason or accepted.
@@ -461,7 +463,9 @@ untilAccepted budget attempts tool handler chat = do
           Recorded (Right ()) -> writeIORef accepted True >> pure "Accepted."
       reporting c = do
         replied <- llm (config env) c
-        mapM_ (publishEvent (progress env) . TokenRate) (listToMaybe (messages replied) >>= tokensPerSecond)
+        let reply = listToMaybe (messages replied)
+        mapM_ (publishEvent (progress env) . TokenRate) (reply >>= tokensPerSecond)
+        mapM_ (TIO.appendFile (buildLog env) . logReply) reply
         pure replied
       attempt :: Int -> Chat -> IO Chat
       attempt remaining c = do
@@ -474,6 +478,14 @@ untilAccepted budget attempts tool handler chat = do
     final <- attempt attempts chat
     done <- readIORef accepted
     pure (done, final)
+
+-- | A model reply as it appears in the build log.
+logReply :: Message -> Text
+logReply m =
+  T.unlines $
+    ["-- Model reply --"]
+      ++ maybe [] (\t -> [t | not (T.null (T.strip t))]) (content m)
+      ++ ["Calls " <> toolNameText (toolRequestFunctionParamsName f) <> ": " <> toolRequestFunctionParamsArguments f | r <- toolCalls m, let f = toolRequestFunction r]
 
 -- | Implements the given functions in parallel, each by its own agent that
 -- sees the design, its module with the run's functions as holes, its
@@ -539,31 +551,59 @@ runProperties = do
     Nothing -> pure (Left "No module was chosen.")
     Just suite -> fmap (const ()) <$> liftIO (runSuite root (suiteCabalTarget suite))
 
--- | Asks the design conversation to refactor duplication out of the run's
--- functions. A refactor is kept only if everything still builds and the
--- properties still pass; otherwise it is undone. The step never fails the
--- run.
-reviewStep :: Chat -> Holey ()
+-- | Asks the design conversation to check the run's functions against the
+-- requirement and for duplication. A refactor is kept only if everything
+-- still builds and the properties still pass, and is otherwise undone. If
+-- the review finds the requirement unmet in a way a refactor cannot fix,
+-- returns its reason, to redesign; the review's conclusion is noted either
+-- way. Returns the conversation with the review in it.
+reviewStep :: Chat -> Holey (Maybe Text, Chat)
 reviewStep chat = do
   modifyRun (setStep Review Running)
   run0 <- getRun
+  cs <- asks (components . project)
   let before = artefact run0
-  let written = [(planModule p, [f | f <- functions before, refPath (fnRef f) == planPath p]) | p <- modules before]
+      written = [(planModule p, [f | f <- functions before, refPath (fnRef f) == planPath p]) | p <- modules before]
       repaired = [f | f <- functions before, refPath (fnRef f) `notElem` map planPath (modules before)]
-      instruction = reviewInstruction (requirement run0) (written ++ [(ModuleName (T.pack (refPath (fnRef f))), [f]) | f <- repaired])
+      untouched = [componentName c | c <- cs, componentName c `notElem` map planComponent (modules before)]
+      instruction = reviewInstruction (requirement run0) (modules before) untouched (written ++ [(ModuleName (T.pack (refPath (fnRef f))), [f]) | f <- repaired])
   definitions <- definitionsFor designTools
-  (refactored, _) <- untilAccepted 30 1 Refactor (designTool Refactor) (addMessage (textMessage User instruction) chat {tools = definitions})
-  when refactored $ do
-    after <- artefact <$> getRun
-    let changed = describeWork (map fnRef (functions after)) [fnRef f | f <- functions after, f `notElem` functions before]
-    checked <- writeFiles >>= either (pure . Left) (const (buildProject Review)) >>= either (pure . Left) (const runProperties)
-    case checked of
-      Right () -> note ("Review: refactored " <> changed <> " to remove duplication.")
-      Left output -> do
-        modifyRun (overArtefact (const before))
-        _ <- writeFiles
-        note ("Review: undid the refactor of " <> changed <> ", because " <> maybe "the properties failed" (<> ".") (firstProblem output))
-  modifyRun (setStep Review Passed)
+  gap <- liftIO (newIORef Nothing)
+  let handler request = case toolRequestFunctionParamsName (toolRequestFunction request) of
+        RequirementNotMet ->
+          Recorded <$> case decodeArgs (toolRequestFunctionParamsArguments (toolRequestFunction request)) of
+            Left err -> pure (Left err)
+            Right (GapArgs reason) -> liftIO (writeIORef gap (Just (T.strip reason))) >> pure (Right ())
+        _ -> designTool Refactor request
+  (recorded, reviewed) <- untilAccepted 30 1 Refactor handler (addMessage (textMessage User instruction) chat {tools = definitions})
+  found <- liftIO (readIORef gap)
+  current <- iteration <$> getRun
+  logPath <- asks buildLog
+  liftIO . TIO.appendFile logPath $
+    "== Iteration " <> T.pack (show current) <> ", " <> stepLabel Review <> ": "
+      <> maybe "requirement met ==\n" (\reason -> "requirement not met ==\n" <> reason <> "\n") found
+      <> "\n"
+  case found of
+    Just reason -> do
+      modifyRun (setStep Review (Failed reason))
+      pure (Just reason, reviewed)
+    Nothing -> do
+      if recorded
+        then do
+          after <- artefact <$> getRun
+          let changed = describeWork (map fnRef (functions after)) [fnRef f | f <- functions after, f `notElem` functions before]
+          checked <- writeFiles >>= either (pure . Left) (const (buildProject Review)) >>= either (pure . Left) (const runProperties)
+          case checked of
+            Right () -> note ("Review: refactored " <> changed <> ".")
+            Left output -> do
+              modifyRun (overArtefact (const before))
+              _ <- writeFiles
+              note ("Review: undid the refactor of " <> changed <> ", because " <> maybe "the properties failed" (<> ".") (firstProblem output))
+        else case [t | m <- takeWhile ((/= Just instruction) . content) (messages reviewed), role m == Assistant, Just t <- [content m], not (T.null (T.strip t))] of
+          conclusion : _ -> note ("Review: " <> T.strip (T.takeWhile (/= '\n') conclusion))
+          [] -> pure ()
+      modifyRun (setStep Review Passed)
+      pure (Nothing, reviewed)
 
 -- | Marks the running step (or the first step) as failed.
 failCurrent :: Progress -> Text -> IO ()

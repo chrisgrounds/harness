@@ -29,6 +29,7 @@ data ToolName
   | SetProperties
   | ImplementFunction
   | Refactor
+  | RequirementNotMet
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 instance FromJSON ToolName where
