@@ -21,7 +21,7 @@ data ChangeKind
     NewFile
   | -- | The file existed before the run; the run edited it.
     ExistingFile
-  deriving (Eq, Ord, Show, Generic, ToJSON, FromJSON)
+  deriving (Eq, Ord, Show, Enum, Bounded, Generic, ToJSON, FromJSON)
 
 -- | A file the run touched, with whether it was new.
 data ChangedFile = ChangedFile
@@ -37,6 +37,9 @@ changeLabel NewFile = "write"
 changeLabel ExistingFile = "edit"
 
 -- | A changed file as shown in transcripts and panels, as @[write] path@ or
--- @[edit] path@.
+-- @[edit]  path@, padded so the paths line up.
 changeTag :: ChangedFile -> Text
-changeTag (ChangedFile path kind) = "[" <> changeLabel kind <> "] " <> T.pack path
+changeTag (ChangedFile path kind) = T.justifyLeft width ' ' (bracketed kind) <> " " <> T.pack path
+  where
+    bracketed k = "[" <> changeLabel k <> "]"
+    width = maximum [T.length (bracketed k) | k <- [minBound .. maxBound]]

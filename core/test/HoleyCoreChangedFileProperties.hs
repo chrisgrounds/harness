@@ -9,7 +9,11 @@ prop_newFileTag :: FilePath -> Bool
 prop_newFileTag path = changeTag (ChangedFile path NewFile) == T.pack ("[write] " <> path)
 
 prop_existingFileTag :: FilePath -> Bool
-prop_existingFileTag path = changeTag (ChangedFile path ExistingFile) == T.pack ("[edit] " <> path)
+prop_existingFileTag path = changeTag (ChangedFile path ExistingFile) == T.pack ("[edit]  " <> path)
+
+prop_pathsLineUp :: FilePath -> Bool
+prop_pathsLineUp path =
+  T.length (changeTag (ChangedFile path NewFile)) == T.length (changeTag (ChangedFile path ExistingFile))
 
 main :: IO ()
 main = do
@@ -17,5 +21,6 @@ main = do
     sequence
       [ putStrLn "=== prop_newFileTag" >> HoleyQuickCheck.quickCheckResult prop_newFileTag
       , putStrLn "=== prop_existingFileTag" >> HoleyQuickCheck.quickCheckResult prop_existingFileTag
+      , putStrLn "=== prop_pathsLineUp" >> HoleyQuickCheck.quickCheckResult prop_pathsLineUp
       ]
   if all HoleyQuickCheck.isSuccess results then HoleyExit.exitSuccess else HoleyExit.exitFailure
