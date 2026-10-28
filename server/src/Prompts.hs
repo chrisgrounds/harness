@@ -6,6 +6,7 @@ module Prompts
     functionsInstruction,
     propertiesInstruction,
     revisionNote,
+    brokenSignaturesNote,
     callToolNudge,
     implementSystemPrompt,
     implementInstruction,
@@ -21,12 +22,15 @@ designSystemPrompt :: Text
 designSystemPrompt =
   T.unlines
     [ "You are holey, a type-driven Haskell assistant working in the user's codebase (the current directory).",
-      "You turn a requirement into a new Haskell module in three design steps: types, then function signatures, then QuickCheck properties.",
-      "You never implement functions. After design, each function is implemented by a separate, cheaper agent that sees only the types, the signatures and documentation of the module's functions, and the properties. So:",
+      "You turn a requirement into changes to the codebase in three design steps: types, then function signatures, then QuickCheck properties.",
+      "The changes can create new modules and change existing ones: add types and functions, change existing types, and change or rewrite existing functions.",
+      "Integrate the work: if the requirement needs existing code to use the new code (a key binding, a call site, a new case), change those existing functions too.",
+      "You never implement functions. After design, each function is implemented by a separate, cheaper agent that sees only its module, the design, its signature and documentation, and the properties. So:",
       "- Make the types as precise as possible: newtypes for distinct values, sum types for alternatives, no stringly-typed data. An implementer must be able to rely on the types alone.",
       "- Prefer small pure functions; keep IO at the edges and only where the requirement needs it.",
-      "- Write each function's documentation precisely enough to implement from it and the types alone.",
+      "- Write each function's documentation precisely enough to implement from it and the types alone. For a changed existing function, say what changes.",
       "- Express every invariant the types cannot capture as a property.",
+      "Existing functions that stop type checking because of your changes are found and repaired automatically, keeping their signatures.",
       "Use ReadFile, Discover and Search to understand the existing code before designing, and reuse its types where they fit.",
       "Each step tells you which tool records its result. Call it, then finish your turn with a one-line summary."
     ]
@@ -37,21 +41,25 @@ typesInstruction req components =
     [ "Requirement:",
       requirementText req,
       "",
-      "Components in this project that can hold the new module:",
+      "Components in this project:",
       T.unlines (map describeComponent components),
-      "Step 1: types. Explore the code as needed, then call SetTypes with:",
-      "- the component the new module belongs to, named exactly as listed: the library or executable whose code the requirement concerns;",
-      "- a new module name that does not exist yet;",
-      "- any LANGUAGE extensions;",
-      "- import lines, using only packages the component already depends on (the build cannot add dependencies);",
-      "- the type declarations and instances only, without functions."
+      "Step 1: types. Explore the code as needed, then call SetTypes with every module the requirement needs to create or change,",
+      "including modules where you will only add or change functions. For each module give:",
+      "- its component, named exactly as listed;",
+      "- its module name: an existing module to change it, or a new name to create it;",
+      "- any LANGUAGE extensions and import lines to add, using only packages the component already depends on (the build cannot add dependencies);",
+      "- type declarations and instances only, without functions. In an existing module, give only new types and the complete new",
+      "  declaration of each type you change; a declaration replaces the existing one of the same name. Leave out unchanged types.",
+      "The first module is the main one: the property suite is named after it and built against its component."
     ]
 
 functionsInstruction :: Text
 functionsInstruction =
   T.unlines
-    [ "Step 2: functions. Call SetFunctions with every function the module needs to meet the requirement:",
+    [ "Step 2: functions. Call SetFunctions with every function to add or change, each with its module (from step 1),",
       "its name, its signature (the type only), and documentation stating exactly what it does.",
+      "Naming an existing function in its module replaces it: its implementer sees the previous definition.",
+      "Include existing functions whose behaviour must change even if their signature does not. Leave out functions that stay as they are.",
       "Functions may use each other. Do not implement them."
     ]
 
@@ -59,10 +67,11 @@ propertiesInstruction :: Text
 propertiesInstruction =
   T.unlines
     [ "Step 3: properties. Call SetProperties with QuickCheck properties for the invariants the types cannot express.",
-      "The property module already imports the new module and Test.QuickCheck. Put any other imports in imports,",
-      "and Arbitrary instances or generators for the new types in helpers.",
+      "The property module already imports every module from step 1 (except executables' Main modules) and Test.QuickCheck.",
+      "Put any other imports in imports, and Arbitrary instances or generators for the new types in helpers.",
       "Each property needs a name starting with prop_ and its full source: signature and definition.",
-      "Properties may only use the types and the functions from step 2."
+      "Test the requirement's behaviour, not definitions restated: a property that only repeats a constant or a function body checks nothing.",
+      "Properties may only use the types and the functions from step 2, and existing code."
     ]
 
 -- | Prepended to a design step's instruction when a previous attempt failed.
@@ -75,32 +84,54 @@ revisionNote iterationNumber feedback =
       ""
     ]
 
+-- | Why a skeleton cannot be repaired: existing functions whose signatures
+-- no longer type check.
+brokenSignaturesNote :: [FunctionRef] -> Text
+brokenSignaturesNote refs =
+  T.unlines
+    [ "The signatures of these existing functions no longer type check with the new design: "
+        <> T.intercalate ", " [functionNameText (refName r) <> " (" <> T.pack (refPath r) <> ")" | r <- refs]
+        <> ".",
+      "Add them to SetFunctions with new signatures, or keep the design compatible with them."
+    ]
+
 callToolNudge :: ToolName -> Text
 callToolNudge name = "You have not called " <> toolNameText name <> " successfully yet. Call it now to complete this step."
 
 implementSystemPrompt :: Text
 implementSystemPrompt =
   T.unlines
-    [ "You implement exactly one Haskell function in an existing module.",
-      "You are given the module (types, imports, and every function's signature and documentation; other bodies may still be undefined),",
-      "the function to implement, and the QuickCheck properties it must satisfy.",
-      "Do not change any type or signature. You may use the module's other functions.",
+    [ "You implement exactly one Haskell function in a module of an existing codebase.",
+      "You are given the design (every new and changed type and the signature and documentation of every designed function),",
+      "the module the function is in (other functions being implemented may be undefined), the function to implement,",
+      "its previous definition if it existed, and the QuickCheck properties it must satisfy.",
+      "Do not change any type or signature. You may use the module's other functions and anything it imports.",
       "Call ImplementFunction with the complete definition (every equation, no type signature) and any import lines it needs",
       "beyond the module's imports, using only packages the module already uses. Then finish your turn."
     ]
 
-implementInstruction :: Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> Text
-implementInstruction skeleton fn props feedback =
+implementInstruction :: Text -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> Text
+implementInstruction design moduleSource fn props feedback =
   T.unlines $
-    [ "The module:",
+    [ "The design:",
       "```haskell",
-      skeleton,
+      design,
       "```",
       "",
-      "Implement " <> functionNameText (fnName fn) <> " :: " <> fnSignature fn,
-      fnDoc fn,
+      "The module, " <> T.pack (refPath (fnRef fn)) <> ":",
+      "```haskell",
+      moduleSource,
+      "```",
+      "",
+      "Implement " <> functionNameText (fnName fn) <> case fnKind fn of
+        Designed -> " :: " <> fnSignature fn
+        Repair -> " again, keeping its signature in the module",
+      case fnKind fn of
+        Designed -> fnDoc fn
+        Repair -> "This existing function stopped type checking because the design changed. Keep what it did, adapted to the new design.",
       ""
     ]
+      ++ maybe [] (\previous -> ["Its previous definition:", "```haskell", T.stripEnd previous, "```", ""]) (fnPrevious fn)
       ++ ( if null props
              then []
              else ["Properties it must satisfy:", "```haskell", T.unlines (map propSource props), "```", ""]

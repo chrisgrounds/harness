@@ -4,10 +4,12 @@
 -- reading the results.
 module Verify
   ( GhcError (..),
-    buildSuite,
+    Blame (..),
+    buildAll,
+    buildTarget,
     runSuite,
     ghcErrors,
-    attributeErrors,
+    blame,
     failedProperties,
     propertyReport,
     mentions,
@@ -16,25 +18,27 @@ module Verify
   )
 where
 
+import Core (FunctionName (..), FunctionRef (..), FunctionSpec (..))
 import Data.Char (isAlphaNum, isDigit)
-import Data.List (isSuffixOf, nub)
-import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Render (Span)
+import Decls
 import System.Exit (ExitCode (..))
-import System.FilePath (normalise)
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import System.Timeout (timeout)
-import Core (FunctionName (..))
 
--- | Builds the suite, and with it the library. 'Left' holds the build output.
-buildSuite :: FilePath -> Text -> IO (Either Text ())
-buildSuite root target = fmap (const ()) <$> cabal root ["build", T.unpack target]
+-- | Builds every package in the project with its test suites, so code that
+-- uses what the run changed is type checked too. One job at a time keeps
+-- each package's errors after its "Building" line. 'Left' holds the output.
+buildAll :: FilePath -> IO (Either Text ())
+buildAll root = fmap (const ()) <$> cabal root ["build", "all", "--enable-tests", "-j1"]
 
--- | Runs the suite. 'Left' holds the output of a failed run.
+buildTarget :: FilePath -> Text -> IO (Either Text ())
+buildTarget root target = fmap (const ()) <$> cabal root ["build", "--enable-tests", T.unpack target]
+
+-- | Runs the run's property suite. 'Left' holds the output of a failed run.
 runSuite :: FilePath -> Text -> IO (Either Text Text)
-runSuite root target = cabal root ["run", "-v1", T.unpack target]
+runSuite root target = cabal root ["run", "--enable-tests", "-v1", T.unpack target]
 
 cabal :: FilePath -> [String] -> IO (Either Text Text)
 cabal root args = do
@@ -45,26 +49,42 @@ cabal root args = do
     Just (ExitFailure _, out, err) -> Left (T.pack (out <> err))
 
 data GhcError = GhcError
-  { errorFile :: FilePath,
+  { -- | As GHC reports it: usually relative to the package's directory.
+    errorFile :: FilePath,
     errorLine :: Int,
-    errorText :: Text
+    errorText :: Text,
+    -- | The package cabal was building when the error was reported.
+    errorPackage :: Maybe Text
   }
   deriving (Eq, Show)
 
 -- | GHC errors in build output. Each starts with a @file:line:col: error@
 -- header and runs to the next blank line.
 ghcErrors :: Text -> [GhcError]
-ghcErrors = go . T.lines
+ghcErrors = go Nothing . T.lines
   where
-    go [] = []
-    go (l : rest) = case header l of
+    go _ [] = []
+    go package (l : rest) = case header l of
       Just (file, line) ->
         let (body, rest') = break (T.null . T.strip) rest
-         in GhcError file line (T.unlines (l : body)) : go rest'
-      Nothing -> go rest
+         in GhcError file line (T.unlines (l : body)) package : go package rest'
+      Nothing -> go (maybe package Just (building l)) rest
     header l = case T.breakOn ": error" l of
       (location, suffix) | not (T.null suffix) -> parseLocation location
       _ -> Nothing
+
+-- | The package in a line such as @Building library for core-0.1.0.0..@.
+building :: Text -> Maybe Text
+building l
+  | any (`T.isPrefixOf` l) ["Building ", "Preprocessing "], (_, rest) <- T.breakOnEnd " for " l, not (T.null rest) =
+      case T.words (T.dropWhileEnd (== '.') rest) of
+        packageId : _ -> Just (withoutVersion packageId)
+        [] -> Nothing
+  | otherwise = Nothing
+  where
+    withoutVersion packageId = case T.breakOnEnd "-" packageId of
+      (name, version) | not (T.null name), T.all (\c -> isDigit c || c == '.') version -> T.dropEnd 1 name
+      _ -> packageId
 
 -- | @file:line:col@ or @file:(line,col)-(line,col)@.
 parseLocation :: Text -> Maybe (FilePath, Int)
@@ -82,21 +102,31 @@ parseLocation location
       digits | not (T.null digits) -> Just (read (T.unpack digits))
       _ -> Nothing
 
--- | Assigns errors in the module to the functions whose spans contain them.
--- Everything else (types, imports, the property suite) is unattributed.
-attributeErrors :: FilePath -> [(FunctionName, Span)] -> [GhcError] -> ([(FunctionName, Text)], [Text])
-attributeErrors file spans errors = (attributed, [errorText e | e <- errors, owner e == Nothing])
-  where
-    attributed =
-      [ (name, T.unlines [errorText e | e <- errors, owner e == Just name])
-      | name <- nub (mapMaybe owner errors)
-      ]
-    owner e
-      | normalise file `isSuffixOf` normalise (errorFile e) || normalise (errorFile e) `isSuffixOf` normalise file =
-          case [name | (name, (from, to)) <- spans, errorLine e >= from, errorLine e <= to] of
-            name : _ -> Just name
-            [] -> Nothing
-      | otherwise = Nothing
+-- | Where an error is.
+data Blame
+  = -- | In a function the run designed or is repairing, or in an import line
+    -- one of them added.
+    InPlanned FunctionRef
+  | -- | In another function in the project, which the design broke.
+    InOther FunctionRef
+  | -- | In a type, an instance, the property suite, or outside the project.
+    Unblamed
+  deriving (Eq, Show)
+
+-- | Blames an error on the line of a file, given the run's functions and the
+-- file as written.
+blame :: [FunctionSpec] -> FilePath -> SourceFile -> Int -> Blame
+blame fns path source line = case declAt line source of
+  Just d
+    | declKind d == ValueDecl,
+      Just key <- declKey d ->
+        let ref = FunctionRef path (FunctionName key)
+         in if ref `elem` map fnRef fns then InPlanned ref else InOther ref
+  Just _ -> Unblamed
+  Nothing -> case importAt line source of
+    Just imported
+      | f : _ <- [f | f <- fns, refPath (fnRef f) == path, imported `elem` map (T.unwords . T.words) (fnImports f)] -> InPlanned (fnRef f)
+    _ -> Unblamed
 
 -- | Properties reported as failed (or given up on) in the suite's output.
 failedProperties :: Text -> [Text]

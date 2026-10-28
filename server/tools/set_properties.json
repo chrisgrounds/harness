@@ -9,7 +9,7 @@
         "imports": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Extra complete import lines. The new module and Test.QuickCheck are already imported."
+          "description": "Extra complete import lines. The modules from SetTypes and Test.QuickCheck are already imported."
         },
         "helpers": {
           "type": "string",

@@ -4,15 +4,18 @@
 -- 'Run'. Rejections are returned to the model so it can correct itself.
 module Edits
   ( TypesArgs (..),
+    ModuleArg (..),
     FunctionArg (..),
     FunctionsArgs (..),
     PropertiesArgs (..),
     ImplementArgs (..),
     decodeArgs,
-    applyTypes,
+    checkModules,
+    applyModules,
     applyFunctions,
     applyProperties,
     applyImplementation,
+    addRepairs,
   )
 where
 
@@ -26,23 +29,29 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Project (Component, componentName, validModuleName)
 
-data TypesArgs = TypesArgs
-  { typesComponent :: Text,
-    typesModule :: Text,
-    typesExtensions :: [Text],
-    typesImports :: [Text],
-    typesBody :: Text
-  }
+newtype TypesArgs = TypesArgs [ModuleArg]
 
 instance FromJSON TypesArgs where
-  parseJSON = withObject "SetTypes" $ \o ->
-    TypesArgs <$> o .: "component" <*> o .: "module" <*> o .:? "extensions" .!= [] <*> o .:? "imports" .!= [] <*> o .: "types"
+  parseJSON = withObject "SetTypes" $ \o -> TypesArgs <$> o .: "modules"
 
-data FunctionArg = FunctionArg Text Text Text
+data ModuleArg = ModuleArg
+  { argComponent :: Text,
+    argModule :: Text,
+    argExtensions :: [Text],
+    argImports :: [Text],
+    argTypes :: Text
+  }
+
+instance FromJSON ModuleArg where
+  parseJSON = withObject "module" $ \o ->
+    ModuleArg <$> o .: "component" <*> o .: "module" <*> o .:? "extensions" .!= [] <*> o .:? "imports" .!= [] <*> o .:? "types" .!= ""
+
+-- | A function's module, name, signature and documentation.
+data FunctionArg = FunctionArg Text Text Text Text
 
 instance FromJSON FunctionArg where
   parseJSON = withObject "function" $ \o ->
-    FunctionArg <$> o .: "name" <*> o .: "signature" <*> o .:? "doc" .!= ""
+    FunctionArg <$> o .: "module" <*> o .: "name" <*> o .: "signature" <*> o .:? "doc" .!= ""
 
 newtype FunctionsArgs = FunctionsArgs [FunctionArg]
 
@@ -66,50 +75,68 @@ instance FromJSON ImplementArgs where
 decodeArgs :: (FromJSON a) => Text -> Either Text a
 decodeArgs args = either (Left . ("Invalid arguments: " <>) . T.pack) Right (eitherDecodeStrict (TE.encodeUtf8 args))
 
--- | Sets the module's location, imports and types. Once a run has written its
--- module, it cannot move it.
-applyTypes :: [Component] -> TypesArgs -> Run -> Either Text Run
-applyTypes components args run = do
-  component <-
-    maybe
-      (Left ("Unknown component " <> typesComponent args <> ". Choose one of: " <> T.intercalate ", " (map componentName components)))
-      Right
-      (find ((== T.strip (typesComponent args)) . componentName) components)
-  let name = T.strip (typesModule args)
-  unless (validModuleName name) $ Left ("Invalid module name: " <> name)
-  case (targetModule run, targetComponent run) of
-    (Just (ModuleName existing), Just existingComponent)
-      | not (null (touchedFiles run)) && (existing, existingComponent) /= (name, componentName component) ->
-          Left ("This run has already written " <> existing <> " in " <> existingComponent <> "; keep that component and module.")
-    _ -> pure ()
-  importLines <- traverse checkImport (typesImports args)
-  when (any (("import " `T.isPrefixOf`) . T.strip) (T.lines (typesBody args))) $
-    Left "Put imports in the imports field, not in types."
-  when (any (("module " `T.isPrefixOf`) . T.strip) (T.lines (typesBody args))) $
-    Left "Leave out the module header; it is generated."
-  let art = artefact run
-  pure
-    run
-      { targetComponent = Just (componentName component),
-        targetModule = Just (ModuleName name),
-        artefact = art {extensions = map T.strip (typesExtensions args), imports = importLines, typesSource = typesBody args}
-      }
+-- | The component and name of each module, checked, for the caller to
+-- find on disk.
+checkModules :: [Component] -> TypesArgs -> Either Text [(Component, ModuleName, ModuleArg)]
+checkModules components (TypesArgs args) = do
+  when (null args) $ Left "List at least one module."
+  checked <- traverse check args
+  let names = [name | (_, name, _) <- checked]
+  when (length (nub names) /= length names) $ Left "List each module once."
+  pure checked
+  where
+    check arg = do
+      component <-
+        maybe
+          (Left ("Unknown component " <> argComponent arg <> ". Choose one of: " <> T.intercalate ", " (map componentName components)))
+          Right
+          (find ((== T.strip (argComponent arg)) . componentName) components)
+      let name = T.strip (argModule arg)
+      unless (validModuleName name) $ Left ("Invalid module name: " <> name)
+      when (any (("import " `T.isPrefixOf`) . T.strip) (T.lines (argTypes arg))) $
+        Left ("Put the imports of " <> name <> " in its imports field, not in types.")
+      when (any (("module " `T.isPrefixOf`) . T.strip) (T.lines (argTypes arg))) $
+        Left ("Leave out the module header of " <> name <> "; it is generated or kept.")
+      _ <- traverse checkImport (argImports arg)
+      pure (component, ModuleName name, arg)
 
--- | Replaces the function list. Every body is cleared, since the design changed.
-applyFunctions :: FunctionsArgs -> Run -> Either Text Run
-applyFunctions (FunctionsArgs args) run = do
+-- | Sets the modules the run creates or changes and their imports and
+-- types, dropping the repairs found for the previous design. A run cannot
+-- drop a module it has already created.
+applyModules :: [ModulePlan] -> Run -> Either Text Run
+applyModules plans run = do
+  let paths = map planPath plans
+  when (length (nub paths) /= length paths) $ Left "Two modules have the same file."
+  case [planPath p | p <- modules (artefact run), planIsNew p, planPath p `elem` touchedFiles run, planPath p `notElem` paths] of
+    [] -> pure ()
+    dropped -> Left ("This run has already created " <> T.intercalate ", " (map T.pack dropped) <> "; keep those modules.")
+  let art = artefact run
+      tidy p = p {planExtensions = map T.strip (planExtensions p), planImports = map T.strip (planImports p)}
+  pure run {artefact = art {modules = map tidy plans, functions = [f | f <- functions art, fnKind f == Designed]}}
+
+-- | Replaces the function list. Every body is cleared, since the design
+-- changed. A function named like an existing one in its module replaces it;
+-- the previous declaration is kept for its implementer.
+applyFunctions :: (FunctionRef -> Maybe Text) -> FunctionsArgs -> Run -> Either Text Run
+applyFunctions previous (FunctionsArgs args) run = do
   when (null args) $ Left "Declare at least one function."
   specs <- traverse spec args
-  let names = map fnName specs
-  when (length (nub names) /= length names) $ Left "Function names must be unique."
+  let refs = map fnRef specs
+  when (length (nub refs) /= length refs) $ Left "Each function may be declared once per module."
   pure run {artefact = (artefact run) {functions = specs}}
   where
-    spec (FunctionArg name signature doc) = do
+    plans = modules (artefact run)
+    spec (FunctionArg moduleName name signature doc) = do
       let n = T.strip name
+          m = T.strip moduleName
+      plan <- case [p | p <- plans, moduleNameText (planModule p) == m] of
+        p : _ -> Right p
+        [] -> Left ("Unknown module " <> m <> " for " <> n <> ". Use one of the modules from SetTypes: " <> T.intercalate ", " (map (moduleNameText . planModule) plans))
       unless (validFunctionName n) $ Left ("Invalid function name: " <> n)
       let sig = stripPrefixes [n <> " ::", n <> "::", "::"] (T.strip signature)
       when (T.null sig) $ Left ("Missing signature for " <> n)
-      pure (FunctionSpec (FunctionName n) sig (T.strip doc) Nothing [])
+      let ref = FunctionRef (planPath plan) (FunctionName n)
+      pure (FunctionSpec ref Designed sig (T.strip doc) Nothing [] (if planIsNew plan then Nothing else previous ref))
 
 applyProperties :: PropertiesArgs -> Run -> Either Text Run
 applyProperties (PropertiesArgs importLines helpers props) run = do
@@ -126,21 +153,36 @@ applyProperties (PropertiesArgs importLines helpers props) run = do
       pure (PropertySpec n source)
 
 -- | Sets one function's definition, dropping any type signature the model repeated.
-applyImplementation :: FunctionName -> ImplementArgs -> Run -> Either Text Run
-applyImplementation name (ImplementArgs definition importLines) run = do
+applyImplementation :: FunctionRef -> ImplementArgs -> Run -> Either Text Run
+applyImplementation ref (ImplementArgs definition importLines) run = do
   checkedImports <- traverse checkImport importLines
-  let n = functionNameText name
+  let n = functionNameText (refName ref)
       body = T.unlines (filter (not . isSignature n) (T.lines definition))
-  unless (any ((n `T.isPrefixOf`) . T.stripStart) (T.lines body)) $
+  unless (any (defines n . T.stripStart) (T.lines body)) $
     Left ("The definition must define " <> n <> ".")
-  unless (any ((== name) . fnName) (functions (artefact run))) $
+  unless (any ((== ref) . fnRef) (functions (artefact run))) $
     Left ("Unknown function " <> n)
   let set f
-        | fnName f == name = f {fnBody = Just (T.stripEnd body), fnImports = checkedImports}
+        | fnRef f == ref = f {fnBody = Just (T.stripEnd body), fnImports = checkedImports}
         | otherwise = f
   pure run {artefact = (artefact run) {functions = map set (functions (artefact run))}}
   where
     isSignature n line = any (`T.isPrefixOf` T.strip line) [n <> " ::", n <> "::"]
+    -- An equation of the function, prefix or infix.
+    defines n line =
+      n `T.isPrefixOf` line
+        || ("`" <> n <> "`") `elem` infixPosition line
+        || maybe False (`elem` infixPosition line) (T.stripPrefix "(" n >>= T.stripSuffix ")")
+    infixPosition = take 1 . drop 1 . T.words
+
+-- | Adds existing functions the design broke, as holes, given each one's
+-- declaration before the run. Functions already in the run are skipped.
+addRepairs :: [(FunctionRef, Text)] -> Run -> Run
+addRepairs broken run =
+  run {artefact = art {functions = functions art ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef (functions art)]}}
+  where
+    art = artefact run
+    repair ref previous = FunctionSpec ref Repair "" "" Nothing [] (Just previous)
 
 checkImport :: Text -> Either Text Text
 checkImport line

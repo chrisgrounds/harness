@@ -30,15 +30,24 @@ instance Arbitrary FunctionName where
 instance Arbitrary ModuleName where
   arbitrary = ModuleName <$> arbitrary
 
+instance Arbitrary FunctionRef where
+  arbitrary = FunctionRef <$> arbitrary <*> arbitrary
+
+instance Arbitrary FunctionKind where
+  arbitrary = elements [Designed, Repair]
+
 instance Arbitrary FunctionSpec where
-  arbitrary = FunctionSpec <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = FunctionSpec <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary ModulePlan where
+  arbitrary = ModulePlan <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary PropertySpec where
   arbitrary = PropertySpec <$> arbitrary <*> arbitrary
 
 instance Arbitrary Artefact where
   arbitrary =
-    Artefact <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+    Artefact <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 -- | Runs reachable from 'newRun', plus arbitrary contents in the other fields.
 instance Arbitrary Run where
@@ -46,10 +55,8 @@ instance Arbitrary Run where
     base <- newRun <$> arbitrary
     statuses <- vectorOf (length allSteps) arbitrary
     run <-
-      (\i ts art pkg m files ws h -> base {iteration = i, tasks = ts, artefact = art, targetComponent = pkg, targetModule = m, touchedFiles = files, warnings = ws, history = h})
+      (\i ts art files ws h -> base {iteration = i, tasks = ts, artefact = art, touchedFiles = files, warnings = ws, history = h})
         <$> chooseInt (1, 5)
-        <*> arbitrary
-        <*> arbitrary
         <*> arbitrary
         <*> arbitrary
         <*> arbitrary
@@ -84,7 +91,7 @@ prop_setStepChangesOnlyThatStep step status run =
     | ((s, old), (_, new)) <- zip (steps run) (steps (setStep step status run))
     ]
 
-prop_setTaskSetsAndKeepsOrder :: FunctionName -> TaskStatus -> Run -> Bool
+prop_setTaskSetsAndKeepsOrder :: FunctionRef -> TaskStatus -> Run -> Bool
 prop_setTaskSetsAndKeepsOrder name status run =
   let after = setTask name status run
       known = any ((== name) . fst) (tasks run)

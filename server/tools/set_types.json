@@ -2,40 +2,44 @@
   "type": "function",
   "function": {
     "name": "SetTypes",
-    "description": "Sets the new module's location, imports and type declarations. Call again to replace them.",
+    "description": "Sets the modules to create or change, with their imports and type declarations. The first module is the main one. Call again to replace them all.",
     "parameters": {
       "type": "object",
       "properties": {
-        "component": {
-          "type": "string",
-          "description": "The component the module belongs to, exactly as listed: a package name for its library, or package:exe:name for an executable"
-        },
-        "module": {
-          "type": "string",
-          "description": "Name of the new module, e.g. Billing.Invoice. It must not already exist."
-        },
-        "extensions": {
+        "modules": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "LANGUAGE extensions, e.g. DerivingStrategies"
-        },
-        "imports": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Complete import lines, e.g. \"import qualified Data.Map.Strict as Map\""
-        },
-        "types": {
-          "type": "string",
-          "description": "Type declarations and instances only: no module header, imports or functions"
+          "items": {
+            "type": "object",
+            "properties": {
+              "component": {
+                "type": "string",
+                "description": "The component the module belongs to, exactly as listed: a package name for its library, or package:exe:name for an executable"
+              },
+              "module": {
+                "type": "string",
+                "description": "Module name, e.g. Billing.Invoice: an existing module to change it, or a new name to create it"
+              },
+              "extensions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "LANGUAGE extensions to add, e.g. DerivingStrategies"
+              },
+              "imports": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Complete import lines to add, e.g. \"import qualified Data.Map.Strict as Map\""
+              },
+              "types": {
+                "type": "string",
+                "description": "Type declarations and instances only: no module header, imports or functions. In an existing module, only new types and complete replacements for changed ones"
+              }
+            },
+            "required": ["component", "module", "extensions", "imports", "types"],
+            "additionalProperties": false
+          }
         }
       },
-      "required": [
-        "component",
-        "module",
-        "extensions",
-        "imports",
-        "types"
-      ],
+      "required": ["modules"],
       "additionalProperties": false
     }
   }

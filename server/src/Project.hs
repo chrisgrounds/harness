@@ -3,10 +3,12 @@
 -- | The user's cabal project: finding the components a run can add a module
 -- to, where a run's files go, and the edits a run makes to a cabal file.
 module Project
-  ( Component (..),
+  ( ProjectInfo (..),
+    Component (..),
     ComponentKind (..),
     componentName,
-    findComponents,
+    findProject,
+    locateModule,
     describeComponent,
     validModuleName,
     modulePath,
@@ -14,7 +16,7 @@ module Project
     suiteName,
     suiteTarget,
     addModule,
-    addTestSuite,
+    upsertTestSuite,
   )
 where
 
@@ -23,7 +25,7 @@ import Core (ModuleName (..))
 import qualified Data.ByteString as B
 import Data.Char (isAlphaNum, isSpace, isUpper, toLower)
 import Data.List (isPrefixOf, nub)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Distribution.Package (depPkgName, pkgName, unPackageName)
@@ -35,11 +37,18 @@ import Distribution.Types.BuildInfo (BuildInfo (..))
 import Distribution.Types.CondTree (condTreeData)
 import Distribution.Types.UnqualComponentName (unUnqualComponentName)
 import Distribution.Utils.Path (getSymbolicPath)
-import System.Directory (doesDirectoryExist, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (normalise, takeDirectory, takeExtension, (<.>), (</>))
 
--- | Where a run can add a module: a package's main library or one of its
--- executables.
+-- | The cabal packages under the project root.
+data ProjectInfo = ProjectInfo
+  { components :: [Component],
+    -- | Each package's name and directory, relative to the project root.
+    packages :: [(Text, FilePath)]
+  }
+
+-- | Where a run can add or change modules: a package's main library or one
+-- of its executables.
 data Component = Component
   { componentPackage :: Text,
     componentKind :: ComponentKind,
@@ -52,7 +61,11 @@ data Component = Component
     -- | The stanza's @default-extensions@ and @default-language@, which an
     -- executable's property suite needs to compile its modules the same way.
     componentExtensions :: [Text],
-    componentLanguage :: Maybe Text
+    componentLanguage :: Maybe Text,
+    -- | The stanza's @other-modules@ and @autogen-modules@, which an
+    -- executable's property suite lists so it can compile them.
+    componentModules :: [Text],
+    componentAutogen :: [Text]
   }
   deriving (Eq, Show)
 
@@ -66,10 +79,24 @@ componentName c = case componentKind c of
   Lib -> componentPackage c
   Exe exe -> componentPackage c <> ":exe:" <> exe
 
-findComponents :: FilePath -> IO [Component]
-findComponents root = do
+findProject :: FilePath -> IO ProjectInfo
+findProject root = do
   files <- findCabalFiles root "." (3 :: Int)
-  concat <$> mapM (readComponents root) files
+  found <- mapM (readPackage root) files
+  pure
+    ProjectInfo
+      { components = concat [cs | Just (_, _, cs) <- found],
+        packages = [(name, dir) | Just (name, dir, _) <- found]
+      }
+
+-- | The file of an existing module in one of the component's source
+-- directories, relative to the project root.
+locateModule :: FilePath -> Component -> ModuleName -> IO (Maybe FilePath)
+locateModule root c (ModuleName name) = do
+  let candidates = [normalise (packageDir c </> d </> T.unpack (T.replace "." "/" name) <.> "hs") | d <- sourceDirs c]
+  existing <- filterM (doesFileExist . (root </>)) candidates
+  pure (listToMaybe existing)
+
 
 findCabalFiles :: FilePath -> FilePath -> Int -> IO [FilePath]
 findCabalFiles root dir depth = do
@@ -84,12 +111,13 @@ findCabalFiles root dir depth = do
   where
     visible name = not ("." `isPrefixOf` name) && name `notElem` ["dist-newstyle", "node_modules"]
 
-readComponents :: FilePath -> FilePath -> IO [Component]
-readComponents root file = do
+-- | A package's name, directory and components.
+readPackage :: FilePath -> FilePath -> IO (Maybe (Text, FilePath, [Component]))
+readPackage root file = do
   bytes <- B.readFile (root </> file)
   pure $ case parseGenericPackageDescriptionMaybe bytes of
-    Nothing -> []
-    Just description ->
+    Nothing -> Nothing
+    Just description -> Just $
       let name = T.pack (unPackageName (pkgName (package (packageDescription description))))
           component kind info =
             let dirs = map getSymbolicPath (hsSourceDirs info)
@@ -101,12 +129,17 @@ readComponents root file = do
                     sourceDirs = if null dirs then ["."] else dirs,
                     dependencies = nub [T.pack (unPackageName (depPkgName d)) | d <- targetBuildDepends info],
                     componentExtensions = map (T.pack . prettyShow) (defaultExtensions info),
-                    componentLanguage = T.pack . prettyShow <$> defaultLanguage info
+                    componentLanguage = T.pack . prettyShow <$> defaultLanguage info,
+                    componentModules = map (T.pack . prettyShow) (otherModules info),
+                    componentAutogen = map (T.pack . prettyShow) (autogenModules info)
                   }
-       in [component Lib (PD.libBuildInfo (condTreeData lib)) | Just lib <- [condLibrary description]]
-            ++ [ component (Exe (T.pack (unUnqualComponentName exe))) (PD.buildInfo (condTreeData tree))
-               | (exe, tree) <- condExecutables description
-               ]
+       in ( name,
+            takeDirectory file,
+            [component Lib (PD.libBuildInfo (condTreeData lib)) | Just lib <- [condLibrary description]]
+              ++ [ component (Exe (T.pack (unUnqualComponentName exe))) (PD.buildInfo (condTreeData tree))
+                 | (exe, tree) <- condExecutables description
+                 ]
+          )
 
 describeComponent :: Component -> Text
 describeComponent c =
@@ -181,19 +214,19 @@ addModule c (ModuleName name) cabal =
     fieldLine l = not (T.null (T.strip l)) && not ("--" `T.isPrefixOf` T.strip l)
     leading = T.length . T.takeWhile isSpace
 
--- | Appends the run's property test suite, unless it is already present. A
--- library's suite depends on the package; an executable cannot be depended
--- on, so its suite compiles the module from the executable's source
--- directories, with the executable's dependencies, extensions and language.
-addTestSuite :: Component -> ModuleName -> Text -> Text
-addTestSuite c m@(ModuleName name) cabal
-  | header `elem` map T.stripEnd (T.lines cabal) = cabal
-  | otherwise =
-      T.stripEnd cabal
-        <> "\n\n"
-        <> T.unlines (header : map ("  " <>) fields)
+-- | Writes the run's property test suite, named after its main module,
+-- replacing the stanza if the run wrote it before. A library's suite depends
+-- on the package; an executable cannot be depended on, so its suite
+-- compiles the executable's modules, including the run's new ones, from its
+-- source directories, with its dependencies, extensions and language.
+upsertTestSuite :: Component -> ModuleName -> [ModuleName] -> Text -> Text
+upsertTestSuite c m newModules cabal =
+  T.stripEnd (withoutStanza header cabal)
+    <> "\n\n"
+    <> T.unlines (header : map ("  " <>) fields)
   where
     header = "test-suite " <> suiteName m
+    modulesListed = nub (componentModules c ++ map moduleNameText newModules)
     fields = case componentKind c of
       Lib ->
         [ "type: exitcode-stdio-1.0",
@@ -206,8 +239,19 @@ addTestSuite c m@(ModuleName name) cabal
         [ "type: exitcode-stdio-1.0",
           "hs-source-dirs: " <> T.intercalate ", " (nub ("test" : map T.pack (sourceDirs c))),
           "main-is: " <> T.pack (propertiesFile m),
-          "other-modules: " <> name,
           "build-depends: " <> T.intercalate ", " (nub (["base", "QuickCheck"] ++ dependencies c)),
           "default-language: " <> fromMaybe "Haskell2010" (componentLanguage c)
         ]
+          ++ ["other-modules: " <> T.intercalate ", " modulesListed | not (null modulesListed)]
+          ++ ["autogen-modules: " <> T.intercalate ", " (componentAutogen c) | not (null (componentAutogen c))]
           ++ ["default-extensions: " <> T.intercalate ", " (componentExtensions c) | not (null (componentExtensions c))]
+
+-- | The cabal file without the stanza starting at the header line, up to the
+-- next top-level line.
+withoutStanza :: Text -> Text -> Text
+withoutStanza header cabal = case break ((== header) . T.stripEnd) ls of
+  (before, _ : rest) -> T.unlines (before ++ dropWhile (not . topLevel) rest)
+  (_, []) -> cabal
+  where
+    ls = T.lines cabal
+    topLevel l = not (T.null l) && not (isSpace (T.head l)) && not ("--" `T.isPrefixOf` l)

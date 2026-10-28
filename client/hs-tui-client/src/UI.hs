@@ -327,10 +327,16 @@ drawRun state run =
            | not (null (touchedFiles run))
            ]
 
+-- | The run's main module and its component, then how many others it changes.
 target :: Run -> Maybe Text
 target run = do
-  ModuleName name <- targetModule run
-  pure (maybe name (\p -> p <> ":" <> name) (targetComponent run))
+  plan <- mainModule (artefact run)
+  let others = length (modules (artefact run)) - 1
+  pure $
+    moduleNameText (planModule plan)
+      <> " in "
+      <> planComponent plan
+      <> (if others > 0 then "  +" <> T.pack (show others) <> " more" else "")
 
 drawStep :: UI -> Run -> (Step, StepStatus) -> [Widget Name]
 drawStep state run (step, stepStatus) = row : details
@@ -342,14 +348,14 @@ drawStep state run (step, stepStatus) = row : details
       Running | step == Implement -> map (padLeft (Pad 3) . drawTask state) (tasks run)
       _ -> []
 
-drawTask :: UI -> (FunctionName, TaskStatus) -> Widget Name
-drawTask state (name, taskStatus) = case taskStatus of
+drawTask :: UI -> (FunctionRef, TaskStatus) -> Widget Name
+drawTask state (ref, taskStatus) = case taskStatus of
   Queued -> withAttr muted $ txt ("○  " <> label)
   Working -> withAttr accent $ txt (spinner state <> "  " <> label)
   Done -> withAttr successAttr $ txt ("✓  " <> label)
   TaskFailed reason -> withAttr danger $ txtWrap ("✗  " <> label <> ": " <> safeText reason)
   where
-    label = safeText (functionNameText name)
+    label = safeText (functionNameText (refName ref) <> "  " <> T.pack (refPath ref))
 
 stepAttr :: StepStatus -> AttrName
 stepAttr Pending = muted

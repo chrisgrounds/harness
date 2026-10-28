@@ -21,7 +21,7 @@ fakeRun progress = do
   passStep TypeCheck
   passStep RunProperties
   where
-    names = map FunctionName ["parseLine", "normalise", "merge", "render", "validate"]
+    names = [FunctionRef "src/Report.hs" (FunctionName n) | n <- ["parseLine", "normalise", "merge", "render", "validate"]]
 
     passStep step = do
       update progress (setStep step Running)

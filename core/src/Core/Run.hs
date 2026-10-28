@@ -11,9 +11,14 @@ module Core.Run
     TaskStatus (..),
     FunctionName (..),
     ModuleName (..),
+    FunctionRef (..),
+    FunctionKind (..),
     FunctionSpec (..),
+    fnName,
     PropertySpec (..),
+    ModulePlan (..),
     Artefact (..),
+    mainModule,
     Run (..),
     allSteps,
     stepLabel,
@@ -54,19 +59,46 @@ newtype FunctionName = FunctionName {functionNameText :: Text}
   deriving newtype (Eq, Ord, Show, ToJSON, FromJSON)
 
 newtype ModuleName = ModuleName {moduleNameText :: Text}
-  deriving newtype (Eq, Show, ToJSON, FromJSON)
+  deriving newtype (Eq, Ord, Show, ToJSON, FromJSON)
+
+-- | A function by the file it is defined in, since names repeat across
+-- modules (every executable has a @main@).
+data FunctionRef = FunctionRef
+  { -- | Relative to the project root.
+    refPath :: FilePath,
+    refName :: FunctionName
+  }
+  deriving (Eq, Ord, Show, Generic, ToJSON, FromJSON)
+
+data FunctionKind
+  = -- | Designed in step 2: a new function, or a replacement for the existing
+    -- function of the same name.
+    Designed
+  | -- | An existing function that stopped type checking because the design
+    -- changed. It keeps its signature and documentation; only its equations
+    -- are rewritten.
+    Repair
+  deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data FunctionSpec = FunctionSpec
-  { fnName :: FunctionName,
+  { fnRef :: FunctionRef,
+    fnKind :: FunctionKind,
+    -- | The type, without the name or @::@.
     fnSignature :: Text,
     fnDoc :: Text,
     -- | The complete definition (every equation, no signature). 'Nothing' is
     -- rendered as @undefined@.
     fnBody :: Maybe Text,
     -- | Extra import lines the implementation needs.
-    fnImports :: [Text]
+    fnImports :: [Text],
+    -- | The declaration as it was before the run, for functions that already
+    -- existed.
+    fnPrevious :: Maybe Text
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+fnName :: FunctionSpec -> FunctionName
+fnName = refName . fnRef
 
 data PropertySpec = PropertySpec
   { propName :: Text,
@@ -74,12 +106,31 @@ data PropertySpec = PropertySpec
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
-data Artefact = Artefact
-  { extensions :: [Text],
-    -- | Import lines for the new module.
-    imports :: [Text],
+-- | A module the run creates or changes.
+data ModulePlan = ModulePlan
+  { -- | The cabal target the module belongs to, e.g. @demo@ or @demo:exe:app@.
+    planComponent :: Text,
+    planModule :: ModuleName,
+    -- | Relative to the project root.
+    planPath :: FilePath,
+    -- | Whether the run creates the module, rather than changing an existing one.
+    planIsNew :: Bool,
+    -- | LANGUAGE extensions to add.
+    planExtensions :: [Text],
+    -- | Import lines to add.
+    planImports :: [Text],
     -- | Type declarations and instances, without imports or a module header.
-    typesSource :: Text,
+    -- In an existing module each replaces the declaration of the same name,
+    -- or is added after the others.
+    planTypes :: Text
+  }
+  deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data Artefact = Artefact
+  { -- | The first is the main module, which the property suite is named after
+    -- and built against.
+    modules :: [ModulePlan],
+    -- | Designed functions, then repairs, in any of the modules or elsewhere.
     functions :: [FunctionSpec],
     -- | Import lines for the property module, beyond the new module and QuickCheck.
     propertyImports :: [Text],
@@ -95,11 +146,8 @@ data Run = Run
     iteration :: Int,
     steps :: [(Step, StepStatus)],
     -- | One entry per function being implemented, in declaration order.
-    tasks :: [(FunctionName, TaskStatus)],
+    tasks :: [(FunctionRef, TaskStatus)],
     artefact :: Artefact,
-    -- | The cabal target the module belongs to, e.g. @demo@ or @demo:exe:app@.
-    targetComponent :: Maybe Text,
-    targetModule :: Maybe ModuleName,
     -- | Files the run created or edited, relative to the working directory.
     touchedFiles :: [FilePath],
     warnings :: [Text],
@@ -121,7 +169,12 @@ stepLabel TypeCheck = "Type checking"
 stepLabel RunProperties = "Running properties"
 
 emptyArtefact :: Artefact
-emptyArtefact = Artefact [] [] "" [] [] "" []
+emptyArtefact = Artefact [] [] [] "" []
+
+mainModule :: Artefact -> Maybe ModulePlan
+mainModule art = case modules art of
+  first : _ -> Just first
+  [] -> Nothing
 
 newRun :: Requirement -> Run
 newRun req =
@@ -131,8 +184,6 @@ newRun req =
       steps = [(s, Pending) | s <- allSteps],
       tasks = [],
       artefact = emptyArtefact,
-      targetComponent = Nothing,
-      targetModule = Nothing,
       touchedFiles = [],
       warnings = [],
       history = []
@@ -143,7 +194,7 @@ setStep step status run =
   run {steps = [(s, if s == step then status else current) | (s, current) <- steps run]}
 
 -- | Updates a task's status, appending the task if it is not yet known.
-setTask :: FunctionName -> TaskStatus -> Run -> Run
+setTask :: FunctionRef -> TaskStatus -> Run -> Run
 setTask name status run
   | any ((== name) . fst) (tasks run) =
       run {tasks = [(n, if n == name then status else current) | (n, current) <- tasks run]}

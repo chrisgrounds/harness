@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "SetFunctions",
-    "description": "Sets every function the module exports, as signatures and documentation only. Call again to replace them.",
+    "description": "Sets every function to add or change, as signatures and documentation only. Call again to replace them all.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -11,11 +11,12 @@
           "items": {
             "type": "object",
             "properties": {
-              "name": { "type": "string", "description": "Function name" },
+              "module": { "type": "string", "description": "The module from SetTypes the function is in" },
+              "name": { "type": "string", "description": "Function name; an existing function's name in its module replaces it" },
               "signature": { "type": "string", "description": "The type only, without the name or ::, e.g. \"[Row] -> Either ParseError Table\"" },
               "doc": { "type": "string", "description": "What the function does, precisely enough to implement from the types and this text alone" }
             },
-            "required": ["name", "signature", "doc"],
+            "required": ["module", "name", "signature", "doc"],
             "additionalProperties": false
           }
         }
