@@ -68,7 +68,11 @@ renderChanged original plan fns = do
           (Nothing, PreviousBody, Just equations) -> equations
           _ -> [name <> " = undefined"]
     repair sf f = case break ((== Just name) . declKey) (sourceDecls sf) of
-      (before, d : after) -> Right sf {sourceDecls = before ++ rewriteEquations name (fnBody f) d : after}
+      (before, d : after)
+        | declKind d == InstanceDecl -> case rewriteInstance (fnBody f) d of
+            Just d' -> Right sf {sourceDecls = before ++ d' : after}
+            Nothing -> Left ("Cannot repair " <> name <> ": it has no methods.")
+        | otherwise -> Right sf {sourceDecls = before ++ rewriteEquations name (fnBody f) d : after}
       (_, []) -> Left ("No declaration of " <> name <> " to repair.")
       where
         name = functionNameText (fnName f)
@@ -87,18 +91,19 @@ functionHead f = docLines ++ T.lines (functionNameText (fnName f) <> " :: " <> T
       [] -> []
       first : rest -> ("-- | " <> first) : map ("--   " <>) rest
 
--- | Renders the property suite: a @Main@ module that imports every module in
--- the plan (except executables' @Main@ modules), checks every property and
--- prints @=== name@ before each, so failures can be traced to properties.
-renderProperties :: Artefact -> Text
-renderProperties art =
+-- | Renders the property suite: a @Main@ module that imports the plan's
+-- modules it can see (never an executable's @Main@), checks every property
+-- and prints @=== name@ before each, so failures can be traced to
+-- properties.
+renderProperties :: [ModuleName] -> Artefact -> Text
+renderProperties visible art =
   T.unlines $
     map pragma (nub (concatMap planExtensions (modules art)))
       ++ [ "{-# OPTIONS_GHC -Wno-orphans #-}",
            "module Main (main) where",
            ""
          ]
-      ++ nub ["import " <> name | ModuleName name <- map planModule (modules art), name /= "Main"]
+      ++ nub ["import " <> name | ModuleName name <- map planModule (modules art), ModuleName name `elem` visible, name /= "Main"]
       ++ [ "import Test.QuickCheck",
            "import qualified Test.QuickCheck as HoleyQuickCheck",
            "import qualified System.Exit as HoleyExit"

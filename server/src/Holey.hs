@@ -96,12 +96,28 @@ pipeline env = do
       chat1 <- designStep env DesignTypes SetTypes typesStep chat
       chat2 <- designStep env DesignSignatures SetFunctions functionsInstruction chat1
       chat3 <- designStep env WriteProperties SetProperties propertiesInstruction chat2
+      verify typesStep chat3 maxFixUps
+
+    -- Errors in what one design step wrote go back to that step, up to
+    -- 'maxFixUps' times; anything else, or more, is a redesign.
+    verify :: Text -> Chat -> Int -> ExceptT () IO ()
+    verify typesStep chat fixUps = do
       skeleton <- checkSkeleton env
       case skeleton of
-        Left feedback -> loopBack typesStep chat3 [] (SkeletonFailed feedback)
+        Left (feedback, Just tool) | fixUps > 0 -> do
+          current <- liftIO (iteration <$> readRun (progress env))
+          liftIO . note env $
+            "Iteration " <> T.pack (show current) <> ": " <> describeOutcome (SkeletonFailed feedback) <> ": "
+              <> redesignReason (SkeletonFailed feedback) <> "; asking " <> toolNameText tool <> " to fix it."
+          fixed <- designStep env (stepOf tool) tool (fixUpInstruction tool feedback) chat
+          verify typesStep fixed (fixUps - 1)
+        Left (feedback, _) -> loopBack typesStep chat [] (SkeletonFailed feedback)
         Right () -> do
           refs <- liftIO (functionRefs env)
-          build typesStep chat3 [] [(ref, Nothing) | ref <- refs]
+          build typesStep chat [] [(ref, Nothing) | ref <- refs]
+    stepOf SetTypes = DesignTypes
+    stepOf SetFunctions = DesignSignatures
+    stepOf _ = WriteProperties
 
     build :: Text -> Chat -> [Text] -> [(FunctionRef, Maybe Text)] -> ExceptT () IO ()
     build typesStep chat previouslyFailed work = do
@@ -156,6 +172,14 @@ pipeline env = do
             )
           liftIO (update (progress env) (restartFrom Implement))
           build typesStep chat failedNow work
+
+-- | Skeleton errors sent back to a design step before the run redesigns.
+maxFixUps :: Int
+maxFixUps = 3
+
+-- | Adds a line to the run's history.
+note :: Env -> Text -> IO ()
+note env text = update (progress env) (\r -> r {history = history r ++ [text]})
 
 functionRefs :: Env -> IO [FunctionRef]
 functionRefs env = map fnRef . functions . artefact <$> readRun (progress env)
@@ -218,9 +242,11 @@ setTypes env args = case checkModules (components (project env)) args of
     clash <- case suiteOf (components (project env)) (artefact run) {modules = plans} of
       Just suite -> existingFiles (projectRoot env) run [suiteFile suite]
       Nothing -> pure []
-    if null clash
-      then tryUpdate (progress env) (applyModules plans)
-      else pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". List another module first."))
+    case [p | p <- plans, planIsNew p, planModule p == ModuleName "Main"] of
+      p : _ -> pure (Left ("A new module cannot be called Main: " <> planComponent p <> " already has its Main. Choose another name."))
+      []
+        | null clash -> tryUpdate (progress env) (applyModules plans)
+        | otherwise -> pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". List another module first."))
 
 setFunctions :: Env -> FunctionsArgs -> IO (Either Text ())
 setFunctions env args = do
@@ -236,11 +262,12 @@ setFunctions env args = do
       ]
   tryUpdate (progress env) (applyFunctions (`Map.lookup` Map.fromList previous) args)
 
--- | Builds the skeleton. Existing functions it breaks become holes to
--- repair, a changed function whose old equations do not fit its new
--- signature becomes @undefined@, and it is built again; any other error
--- sends the run back to design.
-checkSkeleton :: Env -> ExceptT () IO (Either Text ())
+-- | Builds the skeleton. Existing functions and instances it breaks become
+-- holes to repair, a changed function whose old equations do not fit its
+-- new signature becomes @undefined@, and it is built again. Other errors
+-- are returned with the design step that wrote the code they are in, if
+-- one did.
+checkSkeleton :: Env -> ExceptT () IO (Either (Text, Maybe ToolName) ())
 checkSkeleton env = do
   liftIO (update (progress env) (setStep CheckSkeleton Running))
   attempt (1 :: Int)
@@ -253,11 +280,11 @@ checkSkeleton env = do
           blamed <- liftIO (blameErrors env output)
           repairs <- liftIO (repairRefs env)
           kept <- liftIO (keptBodies env)
-          let others = nub [ref | (_, InOther ref) <- blamed]
-              planned = nub [ref | (_, InPlanned ref) <- blamed]
-              unblamed = [e | (e, Unblamed) <- blamed]
+          run <- liftIO (readRun (progress env))
+          let others = nub [ref | (_, _, InOther ref) <- blamed]
+              planned = nub [ref | (_, _, InPlanned ref) <- blamed]
               unfit = filter (`elem` kept) planned
-          if (not (null others) || not (null unfit)) && all (`elem` unfit) planned && null unblamed && rounds < 8
+          if (not (null others) || not (null unfit)) && rounds < 8
             then do
               liftIO (previousDecls env others >>= update (progress env) . addRepairs)
               liftIO (update (progress env) (withUndefined unfit))
@@ -266,7 +293,7 @@ checkSkeleton env = do
               let stuck = filter (`elem` repairs) planned
                   feedback = (if null stuck then "" else brokenSignaturesNote stuck <> "\n") <> summarise output
               liftIO (update (progress env) (setStep CheckSkeleton (Failed (brief (summarise output)))))
-              pure (Left feedback)
+              pure (Left (feedback, owningStep (components (project env)) (artefact run) blamed))
 
 -- | Builds the implementation. Errors are blamed on the functions they are
 -- in; existing functions that break become repairs.
@@ -278,12 +305,12 @@ typeCheck env = do
     Right () -> liftIO (update (progress env) (setStep TypeCheck Passed)) >> pure (Right ())
     Left output -> liftIO $ do
       blamed <- blameErrors env output
-      previousDecls env (nub [ref | (_, InOther ref) <- blamed]) >>= update (progress env) . addRepairs
+      previousDecls env (nub [ref | (_, _, InOther ref) <- blamed]) >>= update (progress env) . addRepairs
       let owner (InPlanned ref) = Just ref
           owner (InOther ref) = Just ref
           owner Unblamed = Nothing
-          attributed = [(ref, T.unlines [errorText e | (e, b) <- blamed, owner b == Just ref]) | ref <- nub (mapMaybe (owner . snd) blamed)]
-          unblamed = [errorText e | (e, Unblamed) <- blamed]
+          attributed = [(ref, T.unlines [errorText e | (e, _, b) <- blamed, owner b == Just ref]) | ref <- nub (mapMaybe (\(_, _, b) -> owner b) blamed)]
+          unblamed = [errorText e | (e, _, Unblamed) <- blamed]
           rest = if null attributed && null unblamed then [summarise output] else unblamed
       update (progress env) (setStep TypeCheck (Failed (brief (summarise output))))
       pure (Left (attributed, rest))
@@ -299,19 +326,45 @@ writeAndBuild env step = do
       update (progress env) (\r -> r {touchedFiles = touched})
       buildAll (projectRoot env)
 
--- | Blames each error in build output on where it is in the files as written.
-blameErrors :: Env -> Text -> IO [(GhcError, Blame)]
+-- | Blames each error in build output on where it is in the files as
+-- written, with the file it is in. An instance the run declared in step 1
+-- is the design's, not one to repair.
+blameErrors :: Env -> Text -> IO [(GhcError, Maybe FilePath, Blame)]
 blameErrors env output = do
   run <- readRun (progress env)
-  let fns = functions (artefact run)
-      suite = suiteFile <$> suiteOf (components (project env)) (artefact run)
+  let art = artefact run
+      fns = functions art
+      suite = suiteFile <$> suiteOf (components (project env)) art
+      declared p = [key | plan <- modules art, planPath plan == p, d <- sourceDecls (splitSource (planTypes plan)), Just key <- [declKey d]]
   forM (ghcErrors output) $ \e -> do
     path <- resolveErrorFile (projectRoot env) (project env) e
     case path of
       Just p | takeExtension p == ".hs", Just p /= suite -> do
         source <- splitSource <$> readText (projectRoot env </> p)
-        pure (e, blame fns p source (errorLine e))
-      _ -> pure (e, Unblamed)
+        let blamed = case blame fns p source (errorLine e) of
+              InOther ref | functionNameText (refName ref) `elem` declared p -> Unblamed
+              b -> b
+        pure (e, path, blamed)
+      _ -> pure (e, path, Unblamed)
+
+-- | The design step that wrote the code every error is in, the earliest if
+-- several: step 1 a plan module's types and imports, step 2 the signatures
+-- of designed and repaired functions, step 3 the property suite. 'Nothing'
+-- if any error is elsewhere.
+owningStep :: [Component] -> Artefact -> [(GhcError, Maybe FilePath, Blame)] -> Maybe ToolName
+owningStep cs art blamed
+  | null blamed = Nothing
+  | otherwise = traverse owner blamed >>= earliest
+  where
+    suite = suiteFile <$> suiteOf cs art
+    planPaths = map planPath (modules art)
+    owner (_, Just p, _) | Just p == suite = Just SetProperties
+    owner (_, _, InPlanned _) = Just SetFunctions
+    owner (_, Just p, Unblamed) | p `elem` planPaths = Just SetTypes
+    owner _ = Nothing
+    earliest owners = case [t | t <- [SetTypes, SetFunctions, SetProperties], t `elem` owners] of
+      t : _ -> Just t
+      [] -> Nothing
 
 -- | Changed functions that keep their old equations until implemented.
 keptBodies :: Env -> IO [FunctionRef]

@@ -8,6 +8,7 @@ module Workspace
     rollback,
     Suite (..),
     suiteOf,
+    suiteImports,
     plannedFiles,
     writeArtefact,
     existingFiles,
@@ -97,6 +98,10 @@ suiteOf cs art = do
   c <- find ((== planComponent plan) . componentName) cs
   pure (Suite c (propertiesPath c (planModule plan)) (suiteTarget c (planModule plan)))
 
+-- | The plan's modules the property suite can import.
+suiteImports :: [Component] -> Suite -> Artefact -> [ModuleName]
+suiteImports cs suite art = [planModule p | p <- modules art, visibleFrom cs (suiteComponent suite) (planComponent p)]
+
 -- | The files the run writes code into: its modules, and the files of the
 -- functions it repairs.
 plannedFiles :: Artefact -> [FilePath]
@@ -125,7 +130,7 @@ writeArtefact root cs originals run = case suiteOf cs art of
             mapM_ (removeIfPresent . (root </>)) oldSuites
             restored <- restore [p | p <- touchedFiles run, p `notElem` plannedFiles art, p `notElem` newFiles, p `notElem` oldSuites]
             _ <- original root originals (suiteFile suite)
-            writeIfChanged (root </> suiteFile suite) (renderProperties art)
+            writeIfChanged (root </> suiteFile suite) (renderProperties (suiteImports cs suite art) art)
             cabalFiles <- registerModules suite oldSuites
             let changed = [path | (path, source, text) <- rendered, source /= Just text]
                 kept = [p | p <- touchedFiles run, p `notElem` restored, p `notElem` oldSuites]

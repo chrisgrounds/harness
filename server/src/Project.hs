@@ -18,6 +18,7 @@ module Project
     addModule,
     upsertTestSuite,
     removeTestSuite,
+    visibleFrom,
   )
 where
 
@@ -183,6 +184,15 @@ suiteName (ModuleName name) = "holey-" <> T.map toLower (T.replace "." "-" name)
 -- | The cabal target for a run's property suite, e.g. @billing:test:holey-billing-invoice@.
 suiteTarget :: Component -> ModuleName -> Text
 suiteTarget c m = componentPackage c <> ":test:" <> suiteName m
+
+-- | Whether the property suite built against a component can import a
+-- module of the named component: one of its own, or one in the library of a
+-- package it depends on (a library's suite depends on its package).
+visibleFrom :: [Component] -> Component -> Text -> Bool
+visibleFrom cs suite owner = owner == componentName suite || owner `elem` libraries
+  where
+    depends = [componentPackage suite | componentKind suite == Lib] ++ dependencies suite
+    libraries = [componentName c | c <- cs, componentKind c == Lib, componentPackage c `elem` depends]
 
 -- | Lists the module in the component's stanza: under @exposed-modules@ for a
 -- library, @other-modules@ for an executable. Adds a field line directly under

@@ -34,7 +34,8 @@ endToEndTests =
         scenario "executable" (sortedMerge executableProject) (const correctMerge) executableStillBuilds,
         scenario "existing module" changedGreeting (const correctMerge) repairsCaller,
         scenario "another package" dependentPackage (const correctMerge) repairsDependent,
-        scenario "new main module" (firstDraft (sortedMerge libraryProject)) (const correctMerge) dropsOldSuite
+        scenario "new main module" (firstDraft (sortedMerge libraryProject)) (const correctMerge) dropsOldSuite,
+        scenario "fixed properties" (brokenProperties (sortedMerge libraryProject)) (const correctMerge) fixesProperties
       ]
 
 -- | A throwaway cabal package, and what the scripted model designs in it.
@@ -51,8 +52,9 @@ data Layout = Layout
     typesArgs :: Value,
     functionsArgs :: Value,
     propertiesArgs :: Value,
-    -- | A design to send before the first redesign, if it differs.
+    -- | A design to send until an instruction says the following, if it differs.
     draft :: Maybe (Value, Value, Value),
+    draftUntil :: Text,
     -- | Each function's definition and imports, given how to define @merge@.
     implementations :: Text -> [(Text, (Text, [Text]))]
   }
@@ -114,6 +116,7 @@ sortedMerge package =
           "prop_mergeIsSortedUnion"
           "prop_mergeIsSortedUnion :: Sorted -> Sorted -> Bool\nprop_mergeIsSortedUnion a b = toList (merge a b) == sort (toList a ++ toList b)",
       draft = Nothing,
+      draftUntil = "",
       implementations = \mergeDefinition ->
         [ ("fromList", ("fromList = Sorted . sort", ["import Data.List (sort)"])),
           ("toList", ("toList (Sorted xs) = xs", [])),
@@ -153,7 +156,13 @@ changedGreeting =
                   "",
                   "-- | The greeting, loudly.",
                   "shout :: String",
-                  "shout = greeting ++ \"!\""
+                  "shout = greeting ++ \"!\"",
+                  "",
+                  "-- | Says hello when shown.",
+                  "data Greeter = Greeter",
+                  "",
+                  "instance Show Greeter where",
+                  "  show Greeter = greeting"
                 ]
             ),
             ( "tests/Main.hs",
@@ -188,11 +197,13 @@ changedGreeting =
           "prop_greetingNamesThem"
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = n `isInfixOf` greeting (Name n) && n `isInfixOf` farewell (Name n)",
       draft = Nothing,
+      draftUntil = "",
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = \"hi \" ++ n", [])),
             ("farewell", ("farewell (Name n) = \"bye \" ++ n", [])),
-            ("shout", ("shout = greeting (Name \"you\") ++ \"!\"", []))
+            ("shout", ("shout = greeting (Name \"you\") ++ \"!\"", [])),
+            ("instance Show Greeter", ("instance Show Greeter where\n  show Greeter = greeting (Name \"greeter\")", []))
           ]
     }
 
@@ -228,6 +239,7 @@ dependentPackage =
           "prop_greetingNamesThem"
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = maybe False (n `isInfixOf`) (greeting (Name n))",
       draft = Nothing,
+      draftUntil = "",
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = Just (\"hi \" ++ n)", [])),
@@ -334,7 +346,7 @@ allPassed :: Run -> [String]
 allPassed run =
   concat
     [ expect ("every step passed: " <> show (steps run)) $ all ((== Passed) . snd) (steps run),
-      expect ("every function implemented: " <> show (tasks run)) $ map snd (tasks run) == [Done, Done, Done]
+      expect ("every function implemented: " <> show (tasks run)) $ not (null (tasks run)) && all ((== Done) . snd) (tasks run)
     ]
 
 firstAttemptPasses :: Run -> String -> [String]
@@ -402,8 +414,9 @@ executableStillBuilds root run source = do
   pure (firstAttemptPasses run source ++ expect ("executable builds: " <> either T.unpack (const "") built) (built == Right ()))
 
 -- | Changes @greeting@ in place, adds @farewell@ and @Name@ and exports them,
--- repairs @shout@ while keeping its documentation and signature, and leaves
--- the test suite, which builds with the rest, as it was.
+-- repairs @shout@ while keeping its documentation and signature and the
+-- @Show Greeter@ instance, and leaves the test suite, which builds with the
+-- rest, as it was.
 repairsCaller :: FilePath -> Run -> String -> IO [String]
 repairsCaller root run source = do
   tests <- readFile (root </> "tests/Main.hs")
@@ -411,8 +424,10 @@ repairsCaller root run source = do
     allPassed run
       ++ concat
         [ expect ("one iteration: " <> show (history run)) (iteration run == 1 && null (history run)),
-          expect ("shout repaired: " <> show (map fst (tasks run))) $
-            [(fnName f, fnKind f) | f <- functions (artefact run)] == [(FunctionName "greeting", Designed), (FunctionName "farewell", Designed), (FunctionName "shout", Repair)],
+          expect ("shout and the instance repaired: " <> show (map fst (tasks run))) $
+            [(fnName f, fnKind f) | f <- functions (artefact run)]
+              == [(FunctionName "greeting", Designed), (FunctionName "farewell", Designed), (FunctionName "shout", Repair), (FunctionName "instance Show Greeter", Repair)],
+          expect "instance repaired in place" ("-- | Says hello when shown.\ndata Greeter = Greeter\n\ninstance Show Greeter where\n  show Greeter = greeting (Name \"greeter\")" `isInfixOf` source),
           expect "greeting replaced in place" ("-- | Greets the name.\ngreeting :: Name -> String\ngreeting (Name n) = \"hi \" ++ n" `isInfixOf` source),
           expect "shout keeps its documentation and signature" ("-- | The greeting, loudly.\nshout :: String\nshout = greeting (Name \"you\") ++ \"!\"" `isInfixOf` source),
           expect ("new names exported: " <> takeWhile (/= '\n') source) ("module Demo (greeting, shout, Name (..), farewell) where" `isInfixOf` source),
@@ -420,12 +435,14 @@ repairsCaller root run source = do
         ]
 
 -- | The sorted-merge design, drafted first with @Demo@ as the main module and
--- a property that does not compile, so the run redesigns with a new main
--- module.
+-- a property that does not compile until the run redesigns, so asking for
+-- corrected properties fails until the run gives up on them and redesigns
+-- with a new main module.
 firstDraft :: Layout -> Layout
 firstDraft layout =
   layout
     { changedFiles = ["src/Sorted/Merge.hs", "demo.cabal", "test/HoleySortedMergeProperties.hs"],
+      draftUntil = "the previous design failed verification",
       draft =
         Just
           ( object
@@ -447,14 +464,41 @@ dropsOldSuite root run source = do
   pure $
     allPassed run
       ++ concat
-        [ expect ("redesigned once, saying why: " <> show (history run)) $
+        [ expect ("asked for corrected properties three times, then redesigned, saying why: " <> show (history run)) $
             case history run of
-              [note] -> "Iteration 1: the skeleton did not type check: Variable not in scope: missingHelper" `T.isPrefixOf` note && "(test/HoleyDemoProperties.hs:" `T.isInfixOf` note
+              [a, b, c, redesign] ->
+                all (fixUpNote "SetProperties") [a, b, c]
+                  && "Iteration 1: the skeleton did not type check: Variable not in scope: missingHelper" `T.isPrefixOf` redesign
+                  && not ("asking" `T.isInfixOf` redesign)
               _ -> False,
           expect "old suite file removed" (not oldSuite),
           expect "old suite stanza removed" (not ("test-suite holey-demo" `isInfixOf` cabal)),
           expect "no holes left" (not ("undefined" `isInfixOf` source))
         ]
+
+-- | The sorted-merge design whose first properties do not compile, until it
+-- is asked to correct them.
+brokenProperties :: Layout -> Layout
+brokenProperties layout =
+  layout
+    { draft = Just (typesArgs layout, functionsArgs layout, propertiesArg [] "" "prop_missing" "prop_missing :: Bool\nprop_missing = missingHelper"),
+      draftUntil = "because of what this step wrote"
+    }
+
+-- | One request for corrected properties fixes the skeleton, with no redesign.
+fixesProperties :: FilePath -> Run -> String -> IO [String]
+fixesProperties _ run source =
+  pure $
+    firstAttemptPasses' run source
+      ++ expect ("asked once for corrected properties: " <> show (history run)) (case history run of [n] -> fixUpNote "SetProperties" n; _ -> False)
+  where
+    firstAttemptPasses' r s = allPassed r ++ expect "one iteration" (iteration r == 1) ++ expect "no holes left" (not ("undefined" `isInfixOf` s))
+
+-- | A history line asking a design step to fix the skeleton.
+fixUpNote :: Text -> Text -> Bool
+fixUpNote tool line =
+  "Iteration 1: the skeleton did not type check: Variable not in scope: missingHelper" `T.isPrefixOf` line
+    && ("; asking " <> tool <> " to fix it.") `T.isSuffixOf` line
 
 -- | Repairs @main@ in the other package's @src/Main.hs@, not the library's.
 repairsDependent :: FilePath -> Run -> String -> IO [String]
@@ -496,7 +540,7 @@ designer layout strategy chat = case latestText chat of
         t : _ -> Just t
         [] -> Nothing
       [] -> Nothing
-    revised = "the previous design failed verification" `T.isInfixOf` instructions chat
+    revised = draftUntil layout `T.isInfixOf` instructions chat
     (types, functions', properties') = case draft layout of
       Just first | not revised -> first
       _ -> (typesArgs layout, functionsArgs layout, propertiesArgs layout)
@@ -520,15 +564,16 @@ expect label ok = [label | not ok]
 instructions :: Chat -> Text
 instructions chat = T.unlines [text | m <- messages chat, role m == User, Just text <- [content m]]
 
--- | The function an implementation agent was asked for, from its instructions.
+-- | The function or instance an implementation agent was asked for, from
+-- its instructions.
 implementing :: Chat -> Maybe Text
 implementing chat =
-  case [ T.takeWhile (/= ' ') rest
+  case [ name
        | m <- messages chat,
          role m == User,
          Just text <- [content m],
          line <- T.lines text,
-         Just rest <- [T.stripPrefix "Implement " line]
+         Just name <- [T.takeWhile (/= ' ') <$> T.stripPrefix "Implement " line, fst . T.breakOn " so it" <$> T.stripPrefix "Rewrite " line]
        ] of
     name : _ -> Just name
     [] -> Nothing

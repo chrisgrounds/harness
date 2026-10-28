@@ -18,6 +18,8 @@ module Decls
     importAt,
     upsertDecl,
     rewriteEquations,
+    instanceHeadLines,
+    rewriteInstance,
     adaptEquations,
     parameters,
     exportName,
@@ -124,6 +126,26 @@ rewriteEquations name body d =
     after = trailing d
     code = length (declLines d) - length after
     equations = maybe [name <> " = undefined"] (T.lines . T.stripEnd) body
+
+-- | An instance's comments and head, up to its @where@, without its methods.
+-- 'Nothing' for an instance without methods.
+instanceHeadLines :: Decl -> Maybe [Text]
+instanceHeadLines d
+  | declKind d /= InstanceDecl = Nothing
+  | otherwise = case break endsHead (declLines d) of
+      (before, end : _) -> Just (before ++ [end])
+      (_, []) -> Nothing
+  where
+    endsHead l = case reverse (T.words (fst (T.breakOn "--" l))) of
+      "where" : _ -> True
+      _ -> False
+
+-- | Replaces an instance with a new declaration, or with just its head as a
+-- hole while it is repaired, keeping the lines after it.
+rewriteInstance :: Maybe Text -> Decl -> Maybe Decl
+rewriteInstance body d = do
+  replacement <- maybe (instanceHeadLines d) (Just . T.lines . T.stripEnd) body
+  pure d {declLines = replacement ++ trailing d}
 
 -- | A function's equations adapted to a new signature, to stand in for it
 -- until it is reimplemented: as they are when the signature has as many

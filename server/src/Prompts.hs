@@ -7,6 +7,7 @@ module Prompts
     propertiesInstruction,
     revisionNote,
     brokenSignaturesNote,
+    fixUpInstruction,
     callToolNudge,
     implementSystemPrompt,
     implementInstruction,
@@ -67,7 +68,8 @@ propertiesInstruction :: Text
 propertiesInstruction =
   T.unlines
     [ "Step 3: properties. Call SetProperties with QuickCheck properties for the invariants the types cannot express.",
-      "The property module already imports every module from step 1 (except executables' Main modules) and Test.QuickCheck.",
+      "The property module is built against the first module's component. It already imports Test.QuickCheck and every module from step 1",
+      "that component can use: its own modules and those of libraries it depends on (never an executable's Main). It cannot use the others.",
       "It can only use names those modules export: everything in new modules, and in existing modules what they already export",
       "plus the types and functions from steps 1 and 2. To use another existing type, repeat its declaration unchanged in step 1.",
       "Put any other imports in imports, and Arbitrary instances or generators for the new types in helpers.",
@@ -97,6 +99,20 @@ brokenSignaturesNote refs =
       "Add them to SetFunctions with new signatures, or keep the design compatible with them."
     ]
 
+-- | Asks a design step to fix the skeleton errors in what it wrote.
+fixUpInstruction :: ToolName -> Text -> Text
+fixUpInstruction tool errors =
+  T.unlines
+    [ "The skeleton does not type check, because of what this step wrote:",
+      errors,
+      "Fix it by calling " <> toolNameText tool <> " again with the complete corrected " <> what <> ". The rest of the design stays as it is."
+    ]
+  where
+    what = case tool of
+      SetTypes -> "modules and types"
+      SetFunctions -> "functions"
+      _ -> "properties"
+
 callToolNudge :: ToolName -> Text
 callToolNudge name = "You have not called " <> toolNameText name <> " successfully yet. Call it now to complete this step."
 
@@ -125,12 +141,16 @@ implementInstruction design moduleSource fn props feedback =
       moduleSource,
       "```",
       "",
-      "Implement " <> functionNameText (fnName fn) <> case fnKind fn of
-        Designed -> " :: " <> fnSignature fn
-        Repair -> " again, keeping its signature in the module",
+      if instanceRepair
+        then "Rewrite " <> functionNameText (fnName fn) <> " so it type checks again: give its complete declaration, from the instance head to its methods, as the definition."
+        else "Implement " <> functionNameText (fnName fn) <> case fnKind fn of
+          Designed -> " :: " <> fnSignature fn
+          Repair -> " again, keeping its signature in the module",
       case fnKind fn of
         Designed -> fnDoc fn
-        Repair -> "This existing function stopped type checking because the design changed. Keep what it did, adapted to the new design.",
+        Repair
+          | instanceRepair -> "This existing instance stopped type checking because the design changed. Keep what it did, adapted to the new design."
+          | otherwise -> "This existing function stopped type checking because the design changed. Keep what it did, adapted to the new design.",
       ""
     ]
       ++ maybe [] (\previous -> ["Its previous definition:", "```haskell", T.stripEnd previous, "```", ""]) (fnPrevious fn)
@@ -141,3 +161,5 @@ implementInstruction design moduleSource fn props feedback =
       ++ case feedback of
         Just text -> ["A previous implementation failed:", text, "Fix it."]
         Nothing -> []
+  where
+    instanceRepair = "instance " `T.isPrefixOf` functionNameText (fnName fn)

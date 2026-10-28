@@ -12,13 +12,13 @@ Each message is a requirement and starts a *holey run*, which moves through thes
 6. Type checking
 7. Running properties
 
-A run can create modules and change existing ones. In an existing module, a type declaration or designed function replaces the declaration of the same name or is added after the others, and is exported if the module has an export list, so properties and other modules can use it; every other line is left as it was. Existing functions that stop type checking because the design changed are *repairs*: the skeleton check turns each into a hole that keeps its documentation and signature, in any package, and an implementer rewrites its equations. Files are split into declarations by layout (a declaration starts at a column-0 line of code, with the comments directly above it), which is also how build errors are blamed on functions in any file.
+A run can create modules and change existing ones. In an existing module, a type declaration or designed function replaces the declaration of the same name or is added after the others, and is exported if the module has an export list, so properties and other modules can use it; every other line is left as it was. Existing functions and instances that stop type checking because the design changed are *repairs*, in any package: the skeleton check turns a function into a hole that keeps its documentation and signature, and an instance into its head without methods, and an implementer rewrites the equations or the whole instance. A new module cannot be called `Main`. Files are split into declarations by layout (a declaration starts at a column-0 line of code, with the comments directly above it), which is also how build errors are blamed on functions in any file.
 
 A failed verification loops back and starts a new iteration:
 
 | Failure | Next |
 | --- | --- |
-| The skeleton does not type check | Redesign from step 1 with the errors, unless they are all in existing functions or in changed functions' old equations: those become repairs or `undefined` and the skeleton is checked again |
+| The skeleton does not type check | Errors in existing functions and instances, or in changed functions' old equations, become repairs or `undefined` and the skeleton is checked again. Errors in what one design step wrote go back to that step to correct, in the same iteration and up to three times: the property suite to step 3, a function's signature to step 2, a changed module's types and imports to step 1. Anything else is a redesign from step 1 with the errors |
 | An agent submits no implementation | Reimplement that function |
 | Type errors | Reimplement the functions whose declarations (or added imports) the errors are in, each with its own errors, including existing functions that broke; all functions if none can be blamed |
 | Properties fail | Reimplement the functions the failing properties mention, with the counterexamples; redesign if the same properties failed last iteration too |
@@ -29,7 +29,7 @@ A run writes into the project the client was started in (or `--project DIR`):
 
 - new modules, in the first source directory of their component: a package's library (`demo`) or one of its executables (`demo:exe:app`);
 - changes to existing modules, and repairs to existing functions anywhere in the project;
-- `test/Holey<Module>Properties.hs` next to the main (first) module's package, a QuickCheck suite with one `prop_` per invariant;
+- `test/Holey<Module>Properties.hs` next to the main (first) module's package, a QuickCheck suite with one `prop_` per invariant, importing the run's modules its component can use (its own, and those of libraries it depends on);
 - cabal files: each new module under its component's `exposed-modules` (library) or `other-modules` (executable), and a `test-suite holey-<module>` stanza named after the main module, so `cabal test` runs the properties locally and in CI. A library's suite depends on the package; an executable's suite compiles the executable's modules from its source directories with its dependencies, `default-extensions` and `default-language`.
 
 Every write starts from the files as they were when the run first read them, files a redesign stops changing are restored, and a redesign with a different main module removes the run's earlier property suite. It refuses to overwrite files it did not create, warns when the git tree has uncommitted changes, and lists every file it touched. Verification uses the project's own `cabal`: steps 4 and 6 run `cabal build all --enable-tests`, so code anywhere in the project that uses what changed, including test suites, is type checked and repaired. The project's existing test suites are built but not run. Start the server inside a development shell that can build the project.
@@ -111,6 +111,6 @@ The only listener is `/tmp/harness.sock`, an `AF_UNIX` stream socket. Requests a
 ## TODO
 
 - **User checkpoints in holey runs.** Pause after the signatures and properties steps so the user can approve or edit the design before the parallel implementation step starts. Runs currently go straight through without stopping.
-- **Changing instances and other non-function declarations that break.** Only functions are repaired; an instance or pattern synonym the design breaks sends the run back to design, which must replace it in `SetTypes`.
+- **Repairing other declarations that break.** Functions and instances with methods are repaired; a pattern synonym or type family instance the design breaks sends the run back to design, which must replace it in `SetTypes`.
 - **Running existing tests.** Runs build the project's test suites but do not run them, which would be slow. Running them would need a baseline taken before the run's first write, so suites that already fail are not blamed on the run.
 - **A cheaper model for implementation.** Every step uses the one model chosen with `--model`; implementation agents could use a cheaper one, such as Haiku while Opus designs.

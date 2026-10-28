@@ -45,6 +45,9 @@ propertyTests =
         check "a changed function keeps its old equations until implemented" prop_previousBodyKept,
         check "errors are blamed on the declaration they are in" prop_errorsBlamed,
         check "errors record the package being built" prop_errorsRecordPackage,
+        check "a failure without a GHC error is summarised by cabal's error" prop_cabalErrorSummarised,
+        check "a repaired instance keeps its head while it is a hole" prop_instanceRepaired,
+        check "a property suite sees its component and the libraries it depends on" prop_suiteVisibility,
         check "failed properties are read from suite output" prop_failedPropertiesRead,
         check "a run gives up at the iteration cap" prop_givesUpAtCap,
         check "a broken skeleton is redesigned" prop_skeletonRedesigned,
@@ -315,9 +318,35 @@ prop_errorsBlamed e =
                 (ValueDecl, Just k)
                   | k `elem` planned -> InPlanned (FunctionRef path (FunctionName k))
                   | otherwise -> InOther (FunctionRef path (FunctionName k))
+                (InstanceDecl, Just k) -> InOther (FunctionRef path (FunctionName k))
                 _ -> Unblamed
         | (d, (from, to)) <- declSpans source
         ]
+
+prop_cabalErrorSummarised :: Property
+prop_cabalErrorSummarised =
+  forAll (elements ["Resolving dependencies...", "Build profile: -w ghc-9.6.7 -O1\nIn order, the following will be built:"]) $ \before ->
+    firstProblem (before <> "\nError: [Cabal-7107]\nCould not resolve dependencies:\n[__0] trying: demo-0.1\n")
+      === Just "Error: [Cabal-7107] Could not resolve dependencies:"
+
+prop_instanceRepaired :: Property
+prop_instanceRepaired =
+  let source = "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n  show Greeter = greeting\n\nx :: Int\nx = 1\n"
+      spec body = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "instance Show Greeter")) Repair "" "" body Undefined [] Nothing
+   in renderChanged source Nothing [spec Nothing] === Right "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n\nx :: Int\nx = 1\n"
+        .&&. renderChanged source Nothing [spec (Just "instance Show Greeter where\n  show _ = \"hi\"")]
+          === Right "module Demo where\n\ninstance Show Greeter where\n  show _ = \"hi\"\n\nx :: Int\nx = 1\n"
+
+prop_suiteVisibility :: Property
+prop_suiteVisibility =
+  let component pkg kind deps = Component pkg kind (T.unpack pkg <> ".cabal") (T.unpack pkg) ["src"] deps [] Nothing [] []
+      demo = component "demo" Lib ["base"]
+      app = component "demo" (Exe "app") ["base", "demo"]
+      other = component "other" Lib ["base"]
+      tool = component "other" (Exe "tool") ["base"]
+      cs = [demo, app, other, tool]
+      sees suite = [componentName c | c <- cs, visibleFrom cs suite (componentName c)]
+   in sees demo === ["demo"] .&&. sees app === ["demo", "demo:exe:app"] .&&. sees tool === ["other:exe:tool"]
 
 prop_errorsRecordPackage :: Property
 prop_errorsRecordPackage =

@@ -101,8 +101,9 @@ checkModules components (TypesArgs args) = do
       pure (component, ModuleName name, arg)
 
 -- | Sets the modules the run creates or changes and their imports and
--- types, dropping the repairs found for the previous design. A run cannot
--- drop a module it has already created.
+-- types, dropping the repairs found for the previous design and functions
+-- in modules no longer listed. A run cannot drop a module it has already
+-- created.
 applyModules :: [ModulePlan] -> Run -> Either Text Run
 applyModules plans run = do
   let paths = map planPath plans
@@ -112,7 +113,7 @@ applyModules plans run = do
     dropped -> Left ("This run has already created " <> T.intercalate ", " (map T.pack dropped) <> "; keep those modules.")
   let art = artefact run
       tidy p = p {planExtensions = map T.strip (planExtensions p), planImports = map T.strip (planImports p)}
-  pure run {artefact = art {modules = map tidy plans, functions = [f | f <- functions art, fnKind f == Designed]}}
+  pure run {artefact = art {modules = map tidy plans, functions = [f | f <- functions art, fnKind f == Designed, refPath (fnRef f) `elem` paths]}}
 
 -- | Replaces the function list. Every body is cleared, since the design
 -- changed. A function named like an existing one in its module replaces it;
@@ -159,12 +160,16 @@ applyImplementation ref (ImplementArgs definition importLines) run = do
   checkedImports <- traverse checkImport importLines
   let n = functionNameText (refName ref)
       body = T.unlines (filter (not . isSignature n) (T.lines definition))
-  unless (any (defines n . T.stripStart) (T.lines body)) $
-    Left ("The definition must define " <> n <> ".")
+  if "instance " `T.isPrefixOf` n
+    then unless (any (("instance " `T.isPrefixOf`) . T.stripStart) (T.lines definition)) $
+      Left ("Give the complete declaration of " <> n <> ", starting with its instance head.")
+    else unless (any (defines n . T.stripStart) (T.lines body)) $
+      Left ("The definition must define " <> n <> ".")
   unless (any ((== ref) . fnRef) (functions (artefact run))) $
     Left ("Unknown function " <> n)
-  let set f
-        | fnRef f == ref = f {fnBody = Just (T.stripEnd body), fnImports = checkedImports}
+  let kept = if "instance " `T.isPrefixOf` n then definition else body
+      set f
+        | fnRef f == ref = f {fnBody = Just (T.stripEnd kept), fnImports = checkedImports}
         | otherwise = f
   pure run {artefact = (artefact run) {functions = map set (functions (artefact run))}}
   where

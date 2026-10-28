@@ -7,7 +7,7 @@ import Core (FunctionName (..), FunctionRef (..))
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Verify (firstError)
+import Verify (firstProblem)
 
 -- | How a verification step failed.
 data Outcome
@@ -70,7 +70,7 @@ redesignReason :: Outcome -> Text
 redesignReason (SkeletonFailed errors) =
   case filter (not . T.null) (map T.strip (T.lines errors)) of
     first : _ | "The signatures of these existing functions" `T.isPrefixOf` first -> first
-    lines' -> fromMaybe (maybe "the build failed without a GHC error." id (safeHead lines')) (firstError errors)
+    lines' -> fromMaybe (maybe "the build failed without a GHC error." id (safeHead lines')) (firstProblem errors)
   where
     safeHead (x : _) = Just x
     safeHead [] = Nothing

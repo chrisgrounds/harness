@@ -11,6 +11,7 @@ module Verify
     ghcErrors,
     blame,
     firstError,
+    firstProblem,
     failedProperties,
     propertyReport,
     mentions,
@@ -20,7 +21,9 @@ module Verify
 where
 
 import Core (FunctionName (..), FunctionRef (..), FunctionSpec (..))
+import Control.Applicative ((<|>))
 import Data.Char (isAlphaNum, isDigit)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Decls
@@ -108,18 +111,20 @@ data Blame
   = -- | In a function the run designed or is repairing, or in an import line
     -- one of them added.
     InPlanned FunctionRef
-  | -- | In another function in the project, which the design broke.
+  | -- | In another function or instance in the project, which the design broke.
     InOther FunctionRef
-  | -- | In a type, an instance, the property suite, or outside the project.
+  | -- | In a type, an instance without methods, the property suite, or
+    -- outside the project.
     Unblamed
   deriving (Eq, Show)
 
 -- | Blames an error on the line of a file, given the run's functions and the
--- file as written.
+-- file as written. Functions and instances with methods can be repaired, so
+-- an instance is blamed like a function, by its @instance <head>@ key.
 blame :: [FunctionSpec] -> FilePath -> SourceFile -> Int -> Blame
 blame fns path source line = case declAt line source of
   Just d
-    | declKind d == ValueDecl,
+    | repairable d,
       Just key <- declKey d ->
         let ref = FunctionRef path (FunctionName key)
          in if ref `elem` map fnRef fns then InPlanned ref else InOther ref
@@ -128,6 +133,21 @@ blame fns path source line = case declAt line source of
     Just imported
       | f : _ <- [f | f <- fns, refPath (fnRef f) == path, imported `elem` map (T.unwords . T.words) (fnImports f)] -> InPlanned (fnRef f)
     _ -> Unblamed
+
+repairable :: Decl -> Bool
+repairable d = declKind d == ValueDecl || (declKind d == InstanceDecl && isJust (instanceHeadLines d))
+
+-- | The first problem in build output as one line: the first GHC error, or
+-- else cabal's error and the line after it.
+firstProblem :: Text -> Maybe Text
+firstProblem output = firstError output <|> cabalError
+  where
+    cabalError = case dropWhile (not . ("Error:" `T.isPrefixOf`)) (map T.strip (T.lines output)) of
+      problem : rest ->
+        let detail = take 1 (filter (not . T.null) rest)
+         in Just (clip (T.unwords (problem : detail)))
+      [] -> Nothing
+    clip t = if T.length t > 200 then T.take 197 t <> "..." else t
 
 -- | The first GHC error in output as one line: its message and where it is.
 firstError :: Text -> Maybe Text
