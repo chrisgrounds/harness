@@ -20,7 +20,7 @@ countText n = T.pack (show n) <> T.pack (if n == 1 then " run" else " runs")
 
 prop_modelNameLeftOfRunCount :: AnyModel -> NonNegative Int -> Bool
 prop_modelNameLeftOfRunCount (AnyModel m) (NonNegative n) =
-  runsSummary Nothing (Just m) n == modelId m <> T.pack "  \183  " <> runsSummary Nothing Nothing n
+  runsSummary Nothing (Just m) n == modelId m <> T.pack " \183 " <> runsSummary Nothing Nothing n
 
 prop_unknownModelShowsOnlyCount :: NonNegative Int -> Bool
 prop_unknownModelShowsOnlyCount (NonNegative n) =

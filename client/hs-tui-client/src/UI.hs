@@ -284,7 +284,7 @@ splitAtWidth width t = T.splitAt (max 1 (fits 0 0 (T.unpack t))) t
 
 status :: UI -> Widget Name
 status state = case failure state of
-  Just err -> withAttr danger (txtWrap ("Disconnected · " <> safeText err <> "  ·  Ctrl-C to exit"))
+  Just err -> withAttr danger (txtWrap ("Disconnected · " <> safeText err <> " · Ctrl-C to exit"))
   Nothing -> case (waiting state, latest) of
     (True, Just (step, _)) -> withAttr accent $ txt (spinner state <> "  " <> stepLabel step <> progress step <> iterationNote <> toolCallNote)
     (True, Nothing) -> withAttr accent $ txt (spinner state <> "  Starting" <> T.replicate (frame state `div` 8 `mod` 4) ".")
@@ -295,11 +295,11 @@ status state = case failure state of
     latest = run >>= currentStep
     progress step = maybe "" (implementProgress step) run
     iterationNote = case run of
-      Just r | iteration r > 1 -> "  ·  iteration " <> T.pack (show (iteration r))
+      Just r | iteration r > 1 -> " · iteration " <> T.pack (show (iteration r))
       _ -> ""
     toolCallNote = case run of
       Just r -> case latestToolCall r of
-        Just tc -> "  ·  " <> toolCallLabel tc
+        Just tc -> " · " <> toolCallLabel tc
         Nothing -> ""
       Nothing -> ""
 
@@ -374,11 +374,11 @@ stepAttr (Failed _) = danger
 
 -- | The text at the right of the status line: the average token rate of the
 -- model's replies and the server's model, if known, and the number of runs,
--- e.g. @25.0 tok/s  claude-opus-5-5  ·  3 runs@.
+-- e.g. @25.0 tok/s · claude-opus-5-5 · 3 runs@.
 runsSummary :: Maybe Double -> Maybe Model -> Int -> Text
 runsSummary rate known count =
-  maybe "" (\r -> T.pack (printf "%.1f" r) <> " tok/s  ") rate
-    <> maybe "" (\m -> modelId m <> "  ·  ") known
+  maybe "" (\r -> T.pack (printf "%.1f" r) <> " tok/s · ") rate
+    <> maybe "" (\m -> modelId m <> " · ") known
     <> T.pack (show count)
     <> (if count == 1 then " run" else " runs")
 

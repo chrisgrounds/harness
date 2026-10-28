@@ -43,8 +43,8 @@ prop_averageIsMean (PosRateList rss) =
 
 prop_rateLeftOfModel :: AnyModel -> NonNegative Int -> Bool
 prop_rateLeftOfModel (AnyModel m) (NonNegative n) =
-  runsSummary (Just 25) (Just m) n == T.pack "25.0 tok/s  " <> runsSummary Nothing (Just m) n
-    && runsSummary (Just 25) (Just ClaudeOpus) 3 == T.pack "25.0 tok/s  claude-opus-5-5  \183  3 runs"
+  runsSummary (Just 25) (Just m) n == T.pack "25.0 tok/s \183 " <> runsSummary Nothing (Just m) n
+    && runsSummary (Just 25) (Just ClaudeOpus) 3 == T.pack "25.0 tok/s \183 claude-opus-5-5 \183 3 runs"
 
 main :: IO ()
 main = do
