@@ -19,6 +19,8 @@ data NetworkEvent
   | Tick
   | -- | The server announced the model it runs with.
     ServerModel Model
+  | -- | The model sent a reply at this many tokens per second.
+    ReplyRate Double
 
 receiveEvent :: Socket -> B.ByteString -> IO (ServerEvent, B.ByteString)
 receiveEvent sock pending = do
@@ -54,6 +56,7 @@ worker sock requests publish = do
       case event of
         Connected m -> publish (ServerModel m) >> events rest
         RunUpdated run -> publish (RunChanged run) >> events rest
+        TokenRate r -> publish (ReplyRate r) >> events rest
         TurnFinished -> pure rest
 
 -- | Steps whose status differs between two snapshots, ignoring steps reset to

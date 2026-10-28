@@ -197,7 +197,7 @@ stepLabel CheckSkeleton = "Checking skeleton"
 stepLabel Implement = "Implementing functions"
 stepLabel TypeCheck = "Type checking"
 stepLabel RunProperties = "Running properties"
-stepLabel Review = "Reviewing for duplication"
+stepLabel Review = "Reviewing against the requirement"
 
 emptyArtefact :: Artefact
 emptyArtefact = Artefact [] [] [] "" []

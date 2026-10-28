@@ -117,11 +117,16 @@ fixUpInstruction tool errors =
       SetFunctions -> "functions"
       _ -> "properties"
 
--- | Asks for duplication in the run's functions to be refactored away.
-reviewInstruction :: [(ModuleName, [FunctionSpec])] -> Text
-reviewInstruction written =
+-- | Asks for the run's functions to be checked against the requirement, and
+-- for gaps and duplication to be refactored away.
+reviewInstruction :: Requirement -> [(ModuleName, [FunctionSpec])] -> Text
+reviewInstruction req written =
   T.unlines $
-    [ "Step 4: review. The run's code type checks and its properties pass. These are the functions it wrote:",
+    [ "Step 4: review. The run's code type checks and its properties pass, but the properties cannot check everything the requirement asks for.",
+      "The requirement was:",
+      requirementText req,
+      "",
+      "These are the functions the run wrote:",
       ""
     ]
       ++ concat
@@ -130,10 +135,12 @@ reviewInstruction written =
             ++ ["```", ""]
         | (m, fns) <- written
         ]
-      ++ [ "Look for duplication: logic repeated across these functions, or code that already exists elsewhere in the codebase (use ReadFile and Search).",
-           "If there is any, call Refactor with new definitions for the functions that should change, and any helpers they should share.",
+      ++ [ "First, check them against the requirement, phrase by phrase: does the code do everything it asks, where and when it asks?",
+           "Pay attention to what properties cannot test, such as when something happens, what reaches the user, and which code path is taken.",
+           "Then look for duplication: logic repeated across these functions, or code that already exists elsewhere in the codebase (use ReadFile and Search).",
+           "If anything falls short or is duplicated, call Refactor with new definitions for the functions that should change, and any helpers they should share.",
            "Each definition must define only its function. The refactor is kept only if the code still builds and the properties still pass.",
-           "If nothing is duplicated, reply without calling Refactor."
+           "If the code meets the requirement and nothing is duplicated, reply without calling Refactor."
          ]
 
 callToolNudge :: ToolName -> Text

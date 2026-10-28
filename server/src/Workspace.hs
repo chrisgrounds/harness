@@ -25,7 +25,7 @@ import qualified Data.ByteString as B
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (find, foldl', isPrefixOf, isSuffixOf, nub, sortOn)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -126,7 +126,8 @@ writeArtefact root cs originals run = case suiteOf cs art of
           Right rendered -> do
             forM_ rendered $ \(path, _, text) -> writeIfChanged (root </> path) text
             -- Suites written for an earlier main module, which would still be built.
-            let oldSuites = [p | p <- touchedFiles run, isPropertiesFile p, p /= suiteFile suite]
+            -- Only suites the run created; it may also have repaired existing ones.
+            oldSuites <- filterM (fmap isNothing . original root originals) [p | p <- touchedFiles run, isPropertiesFile p, p /= suiteFile suite]
             mapM_ (removeIfPresent . (root </>)) oldSuites
             restored <- restore [p | p <- touchedFiles run, p `notElem` plannedFiles art, p `notElem` newFiles, p `notElem` oldSuites]
             _ <- original root originals (suiteFile suite)

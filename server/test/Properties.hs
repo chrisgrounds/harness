@@ -47,6 +47,7 @@ propertyTests =
         check "a changed function keeps its old equations until implemented" prop_previousBodyKept,
         check "character literals do not end an equation's patterns" prop_characterLiterals,
         check "change notes stay out of the code, and empty documentation keeps the old" prop_changeNotesNotWritten,
+        check "a changed declaration keeps its comments and is exported only if used" prop_changedDeclarationsKept,
         check "errors are blamed on the declaration they are in" prop_errorsBlamed,
         check "errors record the package being built" prop_errorsRecordPackage,
         check "a failure without a GHC error is summarised by cabal's error" prop_cabalErrorSummarised,
@@ -244,7 +245,7 @@ prop_changeKeepsOthers e =
       before = splitSource (exSource e)
       -- A declaration without the blank lines and comments after it.
       code d = dropWhileEnd (\l -> T.null (T.strip l) || "--" `T.isPrefixOf` l) (declLines d)
-   in case renderChanged (exSource e) (Just plan) fns of
+   in case renderChanged (const True) (exSource e) (Just plan) fns of
         Left err -> counterexample (T.unpack err) False
         Right text ->
           let after = splitSource text
@@ -299,7 +300,7 @@ prop_previousBodyKept :: Property
 prop_previousBodyKept =
   let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
       spec placeholder = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" "Greets the name." "" Nothing placeholder [] Nothing
-      rendered placeholder = renderChanged source Nothing [spec placeholder]
+      rendered placeholder = renderChanged (const False) source Nothing [spec placeholder]
    in rendered PreviousBody === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting _ = \"hi\"\n"
         .&&. rendered Undefined === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting = undefined\n"
 
@@ -309,7 +310,17 @@ prop_changeNotesNotWritten =
     let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
         spec = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" doc "Take the name to greet." (Just "greeting (Name n) = n") PreviousBody [] Nothing
         expected = "module Demo (greeting) where\n\n-- | " <> (if T.null doc then "How to greet." else doc) <> "\ngreeting :: Name -> String\ngreeting (Name n) = n\n"
-     in renderChanged source Nothing [spec] === Right expected
+     in renderChanged (const False) source Nothing [spec] === Right expected
+
+prop_changedDeclarationsKept :: Property
+prop_changedDeclarationsKept =
+  let source = "module Demo (Mode (..), greeting) where\n\n-- | The mode.\ndata Mode = A\n\n-- | How to greet,\n-- warmly.\ngreeting :: String\ngreeting = \"hi\"\n\n-- | Internal.\nhelper :: Int\nhelper = 1\n"
+      plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") "src/Demo.hs" False [] [] "data Mode = A | B"
+      fn name doc = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName name)) Designed "Int" doc "" (Just (name <> " = 2")) Undefined [] Nothing
+      rendered used = renderChanged used source (Just plan) [fn "greeting" "How to greet, warmly.", fn "helper" "Internal, changed.", fn "fresh" "New."]
+   in rendered (const False)
+        === Right "module Demo (Mode (..), greeting, fresh) where\n\n-- | The mode.\ndata Mode = A | B\n\n-- | How to greet,\n-- warmly.\ngreeting :: Int\ngreeting = 2\n\n-- | Internal, changed.\nhelper :: Int\nhelper = 2\n\n-- | New.\nfresh :: Int\nfresh = 2\n"
+        .&&. fmap (T.isPrefixOf "module Demo (Mode (..), greeting, helper, fresh) where") (rendered (== "helper")) === Right True
 
 prop_exportsAdded :: Property
 prop_exportsAdded =
@@ -431,8 +442,8 @@ prop_instanceRepaired :: Property
 prop_instanceRepaired =
   let source = "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n  show Greeter = greeting\n\nx :: Int\nx = 1\n"
       spec body = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "instance Show Greeter")) Repair "" "" "" body Undefined [] Nothing
-   in renderChanged source Nothing [spec Nothing] === Right "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n\nx :: Int\nx = 1\n"
-        .&&. renderChanged source Nothing [spec (Just "instance Show Greeter where\n  show _ = \"hi\"")]
+   in renderChanged (const False) source Nothing [spec Nothing] === Right "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n\nx :: Int\nx = 1\n"
+        .&&. renderChanged (const False) source Nothing [spec (Just "instance Show Greeter where\n  show _ = \"hi\"")]
           === Right "module Demo where\n\ninstance Show Greeter where\n  show _ = \"hi\"\n\nx :: Int\nx = 1\n"
 
 prop_suiteVisibility :: Property

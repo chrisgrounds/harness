@@ -24,6 +24,8 @@ import Graphics.Vty.CrossPlatform (mkVty)
 import Network.Socket (Socket)
 import TerminalWidth (installTerminalWidths)
 import Theme (loadTheme, accent, muted, metadataAttr, borderAttr, userAttr, bodyAttr, danger, successAttr)
+import Client.Tokens (TokenStats, addRate, averageTokens, emptyTokenStats)
+import Text.Printf (printf)
 
 data Name = Transcript | Composer deriving (Eq, Ord, Show)
 
@@ -39,14 +41,16 @@ data UI = UI
     historyIndex :: Maybe Int,
     savedDraft :: Text,
     -- | The model the server runs with, once its 'Connected' greeting arrives.
-    serverModel :: Maybe Model
+    serverModel :: Maybe Model,
+    -- | Token-rate statistics across every message received from the server.
+    tokenStats :: TokenStats
   }
 
 runUI :: FilePath -> FilePath -> Socket -> IO ()
 runUI path dir sock = do
   events <- newBChan 16
   requests <- newChan
-  let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing "" Nothing
+  let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing "" Nothing emptyTokenStats
       publish = writeBChan events
       ticker = forever (threadDelay 120000 >> publish Tick)
       buildVty = do
@@ -91,6 +95,7 @@ handleEvent dir requests event = do
     AppEvent TurnDone -> modify' (\s -> s {waiting = False})
     AppEvent (Disconnected err) -> modify' (\s -> s {failure = Just err, waiting = False})
     AppEvent (ServerModel m) -> modify' (\s -> s {serverModel = Just m})
+    AppEvent (ReplyRate r) -> modify' (\s -> s {tokenStats = addRate (tokenStats s) r})
     VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl]) -> halt
     VtyEvent (V.EvKey (V.KChar 'd') [V.MCtrl]) | T.null (draft state) -> halt
     VtyEvent (V.EvKey V.KEsc []) -> pure ()
@@ -207,7 +212,7 @@ drawUI path dir state = [screen]
                       [ status state,
                         padLeft Max $
                           withAttr muted $
-                            txt (safeText (runsSummary (serverModel state) (length (runs state))))
+                            txt (safeText (runsSummary (averageTokens (tokenStats state)) (serverModel state) (length (runs state))))
                       ],
                   padTop (Pad 1) $
                     withAttr borderAttr $
@@ -362,10 +367,12 @@ stepAttr Running = accent
 stepAttr Passed = successAttr
 stepAttr (Failed _) = danger
 
--- | The text at the right of the status line: the server's model if known
--- and the number of runs, e.g. @claude-opus-5-5  ·  3 runs@.
-runsSummary :: Maybe Model -> Int -> Text
-runsSummary known count =
-  maybe "" (\m -> modelId m <> "  ·  ") known
+-- | The text at the right of the status line: the average token rate of the
+-- model's replies and the server's model, if known, and the number of runs,
+-- e.g. @25.0 tok/s  claude-opus-5-5  ·  3 runs@.
+runsSummary :: Maybe Double -> Maybe Model -> Int -> Text
+runsSummary rate known count =
+  maybe "" (\r -> T.pack (printf "%.1f" r) <> " tok/s  ") rate
+    <> maybe "" (\m -> modelId m <> "  ·  ") known
     <> T.pack (show count)
     <> (if count == 1 then " run" else " runs")

@@ -20,15 +20,15 @@ countText n = T.pack (show n) <> T.pack (if n == 1 then " run" else " runs")
 
 prop_modelNameLeftOfRunCount :: AnyModel -> NonNegative Int -> Bool
 prop_modelNameLeftOfRunCount (AnyModel m) (NonNegative n) =
-  runsSummary (Just m) n == modelId m <> T.pack "  \183  " <> runsSummary Nothing n
+  runsSummary Nothing (Just m) n == modelId m <> T.pack "  \183  " <> runsSummary Nothing Nothing n
 
 prop_unknownModelShowsOnlyCount :: NonNegative Int -> Bool
 prop_unknownModelShowsOnlyCount (NonNegative n) =
-  runsSummary Nothing n == countText n
+  runsSummary Nothing Nothing n == countText n
 
 prop_modelSummaryStartsWithModelAndEndsWithCount :: AnyModel -> NonNegative Int -> Bool
 prop_modelSummaryStartsWithModelAndEndsWithCount (AnyModel m) (NonNegative n) =
-  let s = runsSummary (Just m) n
+  let s = runsSummary Nothing (Just m) n
    in modelId m `T.isPrefixOf` s && countText n `T.isSuffixOf` s
 
 prop_connectedRoundTripsJSON :: AnyModel -> Bool

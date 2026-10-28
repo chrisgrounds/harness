@@ -11,7 +11,7 @@ Each message is a requirement and starts a *holey run*, which moves through thes
 5. Implementing functions (one cheap agent per function, in parallel)
 6. Type checking
 7. Running properties
-8. Reviewing for duplication: the design conversation sees every function the run wrote and may refactor duplication away with `Refactor`; the refactor is kept only if everything still builds and the properties pass, and this step never fails the run
+8. Reviewing against the requirement: the design conversation checks every function the run wrote against the requirement, for what properties cannot test (when something happens, what reaches the user), and for duplication, and may fix either with `Refactor`; the refactor is kept only if everything still builds and the properties pass, and this step never fails the run
 
 A run can create modules and change existing ones. In an existing module, a type declaration or designed function replaces the declaration of the same name or is added after the others, and is exported if the module has an export list, so properties and other modules can use it; every other line is left as it was. Existing functions and instances that stop type checking because the design changed are *repairs*, in any package: the skeleton check turns a function into a hole that keeps its documentation and signature, and an instance into its head without methods, and an implementer rewrites the equations or the whole instance. A new module cannot be called `Main`. Files are split into declarations by layout (a declaration starts at a column-0 line of code, with the comments directly above it), which is also how build errors are blamed on functions in any file.
 

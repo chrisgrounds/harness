@@ -336,6 +336,7 @@ scenario label layout strategy checks = do
     hasModule <- doesFileExist (root </> moduleFile layout)
     source <- if hasModule then readFile (root </> moduleFile layout) else pure ""
     published <- readIORef events
+    replies <- readIORef counter
     specific <- checks root run source
     let kept
           | null (changedFiles layout) = []
@@ -351,7 +352,8 @@ scenario label layout strategy checks = do
         ++ concat
           [ expect ("touched files: " <> show (touchedFiles run)) $
               touchedFiles run == changedFiles layout,
-            expect "every change published" (case published of RunUpdated latest : _ -> latest == run; _ -> False)
+            expect "every change published" (case [r | RunUpdated r <- published] of latest : _ -> latest == run; _ -> False),
+            expect ("every reply's rate published: " <> show (length [() | TokenRate _ <- published], replies)) (length [() | TokenRate _ <- published] == replies)
           ]
   pure (map ((label <> ": ") <>) failures)
 

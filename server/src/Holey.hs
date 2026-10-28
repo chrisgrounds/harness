@@ -14,14 +14,14 @@ import Core
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (nub)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isNothing, mapMaybe)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Decls (Decl (..), DeclKind (..), SourceFile (..), findDecl, splitSource)
 import Edits
 import Policy
-import Progress (Progress, readRun, tryUpdate, update)
+import Progress (Progress, publishEvent, readRun, tryUpdate, update)
 import Project
 import Prompts
 import Render (designSummary, renderFile)
@@ -447,7 +447,8 @@ declText :: Decl -> Text
 declText = T.stripEnd . T.unlines . declLines
 
 -- | Runs an agent until it records the step's result with the tool, giving
--- it that many attempts, each after the first with a reminder.
+-- it that many attempts, each after the first with a reminder. Each reply's
+-- token rate is published as it arrives.
 untilAccepted :: Int -> Int -> ToolName -> (ToolRequest -> Holey ToolReply) -> Chat -> Holey (Bool, Chat)
 untilAccepted budget attempts tool handler chat = do
   env <- ask
@@ -458,9 +459,13 @@ untilAccepted budget attempts tool handler chat = do
           Answer text -> pure text
           Recorded (Left err) -> pure ("Rejected: " <> err)
           Recorded (Right ()) -> writeIORef accepted True >> pure "Accepted."
+      reporting c = do
+        replied <- llm (config env) c
+        mapM_ (publishEvent (progress env) . TokenRate) (listToMaybe (messages replied) >>= tokensPerSecond)
+        pure replied
       attempt :: Int -> Chat -> IO Chat
       attempt remaining c = do
-        c' <- runAgent (llm (config env)) budget respond c
+        c' <- runAgent reporting budget respond c
         done <- readIORef accepted
         if done || remaining <= 1
           then pure c'
@@ -541,10 +546,11 @@ runProperties = do
 reviewStep :: Chat -> Holey ()
 reviewStep chat = do
   modifyRun (setStep Review Running)
-  before <- artefact <$> getRun
+  run0 <- getRun
+  let before = artefact run0
   let written = [(planModule p, [f | f <- functions before, refPath (fnRef f) == planPath p]) | p <- modules before]
       repaired = [f | f <- functions before, refPath (fnRef f) `notElem` map planPath (modules before)]
-      instruction = reviewInstruction (written ++ [(ModuleName (T.pack (refPath (fnRef f))), [f]) | f <- repaired])
+      instruction = reviewInstruction (requirement run0) (written ++ [(ModuleName (T.pack (refPath (fnRef f))), [f]) | f <- repaired])
   definitions <- definitionsFor designTools
   (refactored, _) <- untilAccepted 30 1 Refactor (designTool Refactor) (addMessage (textMessage User instruction) chat {tools = definitions})
   when refactored $ do

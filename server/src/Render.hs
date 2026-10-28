@@ -6,7 +6,8 @@ module Render (renderFile, renderNewModule, renderChanged, renderProperties, des
 import Control.Monad (foldM)
 import Core
 import Data.List (dropWhileEnd, nub)
-import Data.Maybe (mapMaybe)
+import Data.Char (isUpper)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Decls
@@ -16,7 +17,7 @@ import Decls
 renderFile :: Artefact -> FilePath -> Maybe Text -> Either Text Text
 renderFile art path original = case (plan, original) of
   (Just p, _) | planIsNew p -> Right (renderNewModule p fns)
-  (_, Just source) -> renderChanged source plan fns
+  (_, Just source) -> renderChanged (usedOutside art path) source plan fns
   (_, Nothing) -> Left ("No source for " <> T.pack path)
   where
     plan = case [p | p <- modules art, planPath p == path] of
@@ -36,15 +37,27 @@ renderNewModule plan fns = T.unlines (header ++ concatMap (\f -> functionLines f
         ++ T.lines (T.stripEnd (planTypes plan))
         ++ [""]
 
+-- | Whether the run uses a name outside a file: in its properties, or in
+-- another file's types and functions.
+usedOutside :: Artefact -> FilePath -> Text -> Bool
+usedOutside art path name = name `elem` concatMap (T.split (not . isIdentChar)) texts
+  where
+    texts =
+      propertyHelpers art
+        : map propSource (properties art)
+        ++ concat [fnSignature f : maybe [] pure (fnBody f) | f <- functions art, refPath (fnRef f) /= path]
+        ++ [planTypes p | p <- modules art, planPath p /= path]
+
 -- | An existing module with the run's changes. Type declarations and
--- designed functions replace the declaration of the same name or are added
--- after the others, and are exported, so properties and other modules can
--- use them; until it is implemented, a designed function that replaces one
--- keeps the old equations where its placeholder says so and they fit.
--- Repairs keep their comments and signature and get new equations. Every
--- other line is left as it was.
-renderChanged :: Text -> Maybe ModulePlan -> [FunctionSpec] -> Either Text Text
-renderChanged original plan fns = do
+-- designed functions replace the declaration of the same name, keeping its
+-- comments if they come without their own, or are added after the others.
+-- New ones are exported, and changed ones if the run uses them elsewhere.
+-- Until it is implemented, a designed function that replaces one keeps the
+-- old equations where its placeholder says so and they fit. Repairs keep
+-- their comments and signature and get new equations. Every other line is
+-- left as it was.
+renderChanged :: (Text -> Bool) -> Text -> Maybe ModulePlan -> [FunctionSpec] -> Either Text Text
+renderChanged used original plan fns = do
   repaired <- foldM repair (foldl (flip upsertDecl) source (typeDecls ++ map designedDecl designed)) repairs
   pure . joinSource $
     addExports newExports . addImports (maybe [] planImports plan ++ concatMap fnImports fns) . addPragmas (maybe [] planExtensions plan) $
@@ -53,16 +66,19 @@ renderChanged original plan fns = do
     source = splitSource original
     designed = [f | f <- fns, fnKind f == Designed]
     repairs = [f | f <- fns, fnKind f == Repair]
-    typeDecls = case splitSource (maybe "" planTypes plan) of
+    typeDecls = map keepComments $ case splitSource (maybe "" planTypes plan) of
       SourceFile leading (d : ds) -> map tidy (d {declLines = filter (not . T.null . T.strip) leading ++ declLines d} : ds)
       SourceFile _ [] -> []
+    keepComments d = case declKey d >>= (`findDecl` source) of
+      Just old | null (leadingComments d) -> d {declLines = leadingComments old ++ declLines d}
+      _ -> d
     tidy d = d {declLines = dropWhileEnd (T.null . T.strip) (declLines d)}
     designedDecl f = Decl ValueDecl (Just name) (docs ++ signatureLines f ++ body) 0
       where
         name = functionNameText (fnName f)
-        -- No documentation keeps the existing function's.
+        -- No documentation, or the same in other lines, keeps the existing function's.
         docs = case findDecl name source of
-          Just old | T.null (T.strip (fnDoc f)) -> leadingComments old
+          Just old | T.null (T.strip (fnDoc f)) || T.words (fnDoc f) == commentWords (leadingComments old) -> leadingComments old
           _ -> docLines f
         kept = do
           old <- findDecl name source
@@ -80,7 +96,12 @@ renderChanged original plan fns = do
       (_, []) -> Left ("No declaration of " <> name <> " to repair.")
       where
         name = functionNameText (fnName f)
-    newExports = mapMaybe exportName typeDecls ++ [functionNameText (fnName f) | f <- designed]
+    newExports =
+      [e | d <- typeDecls, Just key <- [declKey d], isNothing (findDecl key source) || any used (key : constructors d), Just e <- [exportName d]]
+        ++ [name | f <- designed, let name = functionNameText (fnName f), isNothing (findDecl name source) || used name]
+    constructors d = [w | w <- concatMap (T.split (not . isIdentChar)) (declLines d), maybe False (isUpper . fst) (T.uncons w)]
+    -- The words of a Haddock comment, without its dashes and bar.
+    commentWords = concatMap (filter (`notElem` ["--", "-- |", "|"]) . T.words . T.dropWhile (`elem` ("-| " :: String)))
 
 functionLines :: FunctionSpec -> [Text]
 functionLines f = functionHead f ++ maybe [name <> " = undefined"] (T.lines . T.stripEnd) (fnBody f)

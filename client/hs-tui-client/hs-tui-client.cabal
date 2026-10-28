@@ -8,6 +8,7 @@ build-type: Simple
 data-files: themes/orng.toml
 
 executable hs-tui-client
+  other-modules: Client.Tokens
   hs-source-dirs: src
   main-is: Main.hs
   other-modules: Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
@@ -29,6 +30,16 @@ executable hs-tui-client
   ghc-options: -Wall -Werror=missing-fields -threaded
   default-language: Haskell2010
 
+test-suite holey-client-tokens
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test, src
+  main-is: HoleyClientTokensProperties.hs
+  build-depends: base, QuickCheck, aeson, core, brick, bytestring, containers, directory, mtl, network, text, toml-parser, vty, vty-crossplatform
+  default-language: Haskell2010
+  other-modules: Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client, Client.Tokens
+  autogen-modules: Paths_hs_tui_client
+  ghc-options: -Wall
+
 test-suite holey-ui
   type: exitcode-stdio-1.0
   hs-source-dirs: test, src
@@ -36,5 +47,5 @@ test-suite holey-ui
   build-depends: base, QuickCheck, aeson, core, brick, bytestring, containers, directory, mtl, network, text, toml-parser, vty, vty-crossplatform
   default-language: Haskell2010
   ghc-options: -Wall -Werror=missing-fields
-  other-modules: Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
+  other-modules: Client, Client.Tokens, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
   autogen-modules: Paths_hs_tui_client

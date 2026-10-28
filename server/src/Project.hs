@@ -237,14 +237,16 @@ upsertTestSuite c m newModules cabal =
           "hs-source-dirs: test",
           "main-is: " <> T.pack (propertiesFile m),
           "build-depends: " <> T.intercalate ", " (nub (["base", "QuickCheck", componentPackage c] ++ dependencies c)),
-          "default-language: Haskell2010"
+          "default-language: Haskell2010",
+          "ghc-options: -Wall"
         ]
       Exe _ ->
         [ "type: exitcode-stdio-1.0",
           "hs-source-dirs: " <> T.intercalate ", " (nub ("test" : map T.pack (sourceDirs c))),
           "main-is: " <> T.pack (propertiesFile m),
           "build-depends: " <> T.intercalate ", " (nub (["base", "QuickCheck"] ++ dependencies c)),
-          "default-language: " <> fromMaybe "Haskell2010" (componentLanguage c)
+          "default-language: " <> fromMaybe "Haskell2010" (componentLanguage c),
+          "ghc-options: -Wall"
         ]
           ++ ["other-modules: " <> T.intercalate ", " modulesListed | not (null modulesListed)]
           ++ ["autogen-modules: " <> T.intercalate ", " (componentAutogen c) | not (null (componentAutogen c))]

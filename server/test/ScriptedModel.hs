@@ -31,7 +31,8 @@ scriptedLlm counter decide chat = do
             Nothing
             Nothing
             Nothing
-  pure (addMessage message chat)
+  -- Every reply carries a token rate, as the real models' do.
+  pure (addMessage message {tokensPerSecond = Just 10} chat)
 
 -- | The content of the most recent message, with its role.
 latestText :: Chat -> Maybe (Role, Text)

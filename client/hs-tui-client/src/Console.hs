@@ -38,6 +38,7 @@ runConsole dir sock = do
       case event of
         Connected _ -> follow previous rest
         TurnFinished -> pure rest
+        TokenRate _ -> follow previous rest
         RunUpdated run -> do
           mapM_ (TIO.putStrLn . renderLine "holey" . ("warning: " <>)) (newItems warnings previous run)
           mapM_ (TIO.putStrLn . renderLine "holey") (newItems history previous run)

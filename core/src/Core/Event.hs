@@ -18,9 +18,12 @@ data StartRun = StartRun
 
 -- | On each new connection the server first sends one 'Connected' naming the
 -- model it runs with. It then replies to each 'StartRun' with any number of
--- 'RunUpdated' snapshots of that requirement's run, then one 'TurnFinished'.
+-- 'RunUpdated' snapshots of that requirement's run, and a 'TokenRate' for
+-- each reply the model sends, then one 'TurnFinished'.
 data ServerEvent
   = Connected Model
   | RunUpdated Run
   | TurnFinished
+  | -- | The model sent a reply at this many tokens per second.
+    TokenRate Double
   deriving (Eq, Show, Generic, ToJSON, FromJSON)

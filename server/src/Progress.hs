@@ -1,4 +1,4 @@
-module Progress (Progress, newProgress, update, tryUpdate, readRun) where
+module Progress (Progress, newProgress, update, tryUpdate, readRun, publishEvent) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
 import Core (Run, ServerEvent (..))
@@ -29,3 +29,7 @@ tryUpdate (Progress state publish) f = modifyMVar state $ \run ->
 
 readRun :: Progress -> IO Run
 readRun (Progress state _) = readMVar state
+
+-- | Publishes an event to the client, in order with run updates.
+publishEvent :: Progress -> ServerEvent -> IO ()
+publishEvent (Progress _ publish) ev = publish ev
