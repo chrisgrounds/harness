@@ -22,7 +22,7 @@ where
 
 import Core (FunctionName (..), FunctionRef (..), FunctionSpec (..))
 import Control.Applicative ((<|>))
-import Data.Char (isAlphaNum, isDigit)
+import Data.Char (isDigit)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -204,7 +204,7 @@ propertyReport output = case failedProperties output of
 
 -- | Whether the source uses the function's name as an identifier.
 mentions :: FunctionName -> Text -> Bool
-mentions (FunctionName name) source = name `elem` T.split (\c -> not (isAlphaNum c || c == '_' || c == '\'')) source
+mentions (FunctionName name) source = name `elem` T.split (not . isIdentChar) source
 
 -- | The first lines of a report, for showing under a failed step.
 brief :: Text -> Text

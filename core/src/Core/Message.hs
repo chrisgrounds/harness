@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Core.Message (Message (..)) where
+module Core.Message (Message (..), textMessage) where
 
 import Core.Role (Role)
 import Core.Tool (ToolCallId, ToolRequest)
@@ -21,6 +21,10 @@ data Message = Message
     providerContent :: Maybe Value
   }
   deriving (Eq, Show, Generic)
+
+-- | A message of only text.
+textMessage :: Role -> Text -> Message
+textMessage r text = Message r (Just text) [] Nothing Nothing Nothing
 
 instance FromJSON Message where
   parseJSON = withObject "Message" $ \value ->

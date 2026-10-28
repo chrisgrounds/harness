@@ -1,80 +1,44 @@
-{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module OpenAI where
+-- | Mercury through Inception's OpenAI-style chat completions API.
+module OpenAI (inceptionLlm, completionReply) where
 
-import Core (Role, ToolRequest)
+import Core
 import Data.Aeson
+import Data.Aeson.Types (Parser, parseEither)
 import Data.Text (Text)
-import GHC.Generics (Generic)
+import qualified Data.Text.Encoding as TE
+import GHC.Clock (getMonotonicTimeNSec)
+import Network.HTTP.Req
 
-data OpenAIChatCompletionResponse = OpenAIChatCompletionResponse
-  { responseChoices :: [OpenAIChatResponseChoice],
-    responseCreated :: Integer,
-    responseId :: Text,
-    responseModel :: Text,
-    responseObject :: Text,
-    responseReasoningSummary :: Maybe Value,
-    responseUsage :: OpenAIChatResponseUsage,
-    responseWarning :: Maybe Value
-  }
-  deriving (Show, Generic)
+-- | Sends the chat to Mercury and returns it with Mercury's reply added.
+inceptionLlm :: Text -> Chat -> IO Chat
+inceptionLlm apiKey chat = do
+  start <- getMonotonicTimeNSec
+  response <-
+    runReq defaultHttpConfig $
+      req
+        POST
+        (https "api.inceptionlabs.ai" /: "v1" /: "chat" /: "completions")
+        -- The chat keeps its newest message first; the API wants them in order.
+        (ReqBodyJson chat {messages = reverse (messages chat)})
+        jsonResponse
+        (header "Authorization" ("Bearer " <> TE.encodeUtf8 apiKey))
+  end <- getMonotonicTimeNSec
+  case parseEither completionReply (responseBody response) of
+    Left err -> ioError (userError ("Unexpected reply from the Inception API: " <> err))
+    Right Nothing -> pure chat
+    Right (Just (message, tokens)) ->
+      let seconds = fromIntegral (end - start) / 1e9 :: Double
+       in pure (addMessage message {tokensPerSecond = Just (fromIntegral tokens / seconds)} chat)
 
-data OpenAIChatResponseChoice = OpenAIChatResponseChoice
-  { choiceFinishReason :: Maybe Text,
-    choiceIndex :: Int,
-    choiceMessage :: OpenAIChatResponseMessage
-  }
-  deriving (Show, Generic)
-
-data OpenAIChatResponseMessage = OpenAIChatResponseMessage
-  { messageContent :: Maybe Text,
-    messageRole :: Role,
-    messageToolCallId :: Maybe Text,
-    messageToolCalls :: Maybe [ToolRequest]
-  }
-  deriving (Show, Generic)
-
-data OpenAIChatResponseUsage = OpenAIChatResponseUsage
-  { usageCompletionTokens :: Int,
-    usageCompletionTokensDetails :: OpenAIChatCompletionTokensDetails,
-    usagePromptTokens :: Int,
-    usagePromptTokensDetails :: OpenAIChatPromptTokensDetails,
-    usageTotalTokens :: Int
-  }
-  deriving (Show, Generic)
-
-data OpenAIChatCompletionTokensDetails = OpenAIChatCompletionTokensDetails
-  { completionReasoningTokens :: Int
-  }
-  deriving (Show, Generic)
-
-data OpenAIChatPromptTokensDetails = OpenAIChatPromptTokensDetails
-  { promptCachedTokens :: Int
-  }
-  deriving (Show, Generic)
-
-jsonOptions :: String -> Options
-jsonOptions prefix =
-  defaultOptions
-    { fieldLabelModifier =
-        camelTo2 '_' . Prelude.drop (Prelude.length prefix)
-    }
-
-instance FromJSON OpenAIChatCompletionResponse where
-  parseJSON = genericParseJSON (jsonOptions "response")
-
-instance FromJSON OpenAIChatResponseChoice where
-  parseJSON = genericParseJSON (jsonOptions "choice")
-
-instance FromJSON OpenAIChatResponseMessage where
-  parseJSON = genericParseJSON (jsonOptions "message")
-
-instance FromJSON OpenAIChatResponseUsage where
-  parseJSON = genericParseJSON (jsonOptions "usage")
-
-instance FromJSON OpenAIChatCompletionTokensDetails where
-  parseJSON = genericParseJSON (jsonOptions "completion")
-
-instance FromJSON OpenAIChatPromptTokensDetails where
-  parseJSON = genericParseJSON (jsonOptions "prompt")
+-- | The first choice's message, if there is one, and the number of tokens
+-- the completion took.
+completionReply :: Value -> Parser (Maybe (Message, Int))
+completionReply = withObject "completion" $ \o -> do
+  tokens <- o .: "usage" >>= (.: "completion_tokens")
+  choices <- o .: "choices" :: Parser [Object]
+  case choices of
+    [] -> pure Nothing
+    choice : _ -> (\message -> Just (message, tokens)) <$> (choice .: "message" :: Parser Message)

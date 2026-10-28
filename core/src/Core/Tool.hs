@@ -28,7 +28,7 @@ data ToolName
   | SetFunctions
   | SetProperties
   | ImplementFunction
-  deriving (Eq, Show, Enum, Bounded)
+  deriving (Eq, Ord, Show, Enum, Bounded)
 
 instance FromJSON ToolName where
   parseJSON = withText "ToolName" $ \value ->

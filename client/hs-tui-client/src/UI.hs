@@ -334,7 +334,7 @@ target run = do
   pure $
     moduleNameText (planModule plan)
       <> " in "
-      <> planComponent plan
+      <> componentNameText (planComponent plan)
       <> (if others > 0 then "  +" <> T.pack (show others) <> " more" else "")
 
 drawStep :: UI -> Run -> (Step, StepStatus) -> [Widget Name]

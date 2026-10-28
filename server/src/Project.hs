@@ -23,14 +23,18 @@ module Project
 where
 
 import Control.Monad (filterM)
-import Core (ModuleName (..))
+import Core (ComponentName (..), ModuleName (..))
 import qualified Data.ByteString as B
-import Data.Char (isAlphaNum, isSpace, isUpper, toLower)
-import Data.List (isPrefixOf, nub)
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Char (isSpace, isUpper, toLower)
+import Decls (isIdentChar)
+import Data.List (find, isPrefixOf, nub)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import Distribution.Fields (Field (..), FieldLine (..), Name (..), SectionArg (..), readFields)
 import Distribution.Package (depPkgName, pkgName, unPackageName)
+import Distribution.Parsec.Position (Position (..))
 import Distribution.PackageDescription (GenericPackageDescription (..), package)
 import qualified Distribution.PackageDescription as PD
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescriptionMaybe)
@@ -76,8 +80,8 @@ data ComponentKind = Lib | Exe Text
 
 -- | The component's cabal target, e.g. @billing@ or @billing:exe:billing-cli@,
 -- which is also how the model names it.
-componentName :: Component -> Text
-componentName c = case componentKind c of
+componentName :: Component -> ComponentName
+componentName c = ComponentName $ case componentKind c of
   Lib -> componentPackage c
   Exe exe -> componentPackage c <> ":exe:" <> exe
 
@@ -146,7 +150,7 @@ readPackage root file = do
 describeComponent :: Component -> Text
 describeComponent c =
   "- "
-    <> componentName c
+    <> componentNameText (componentName c)
     <> " ("
     <> kind
     <> ", cabal file "
@@ -165,7 +169,7 @@ validModuleName :: Text -> Bool
 validModuleName name = not (T.null name) && all segment (T.splitOn "." name)
   where
     segment s = case T.uncons s of
-      Just (c, rest) -> isUpper c && T.all (\x -> isAlphaNum x || x == '_' || x == '\'') rest
+      Just (c, rest) -> isUpper c && T.all isIdentChar rest
       Nothing -> False
 
 modulePath :: Component -> ModuleName -> FilePath
@@ -188,42 +192,31 @@ suiteTarget c m = componentPackage c <> ":test:" <> suiteName m
 -- | Whether the property suite built against a component can import a
 -- module of the named component: one of its own, or one in the library of a
 -- package it depends on (a library's suite depends on its package).
-visibleFrom :: [Component] -> Component -> Text -> Bool
+visibleFrom :: [Component] -> Component -> ComponentName -> Bool
 visibleFrom cs suite owner = owner == componentName suite || owner `elem` libraries
   where
     depends = [componentPackage suite | componentKind suite == Lib] ++ dependencies suite
     libraries = [componentName c | c <- cs, componentKind c == Lib, componentPackage c `elem` depends]
 
--- | Lists the module in the component's stanza: under @exposed-modules@ for a
--- library, @other-modules@ for an executable. Adds a field line directly under
--- the stanza header, matching the stanza's indentation; Cabal merges repeated
--- fields.
+-- | Lists the module in the component's stanza, under @exposed-modules@ for
+-- a library or @other-modules@ for an executable, unless it already is. Adds
+-- a field line directly under the stanza header, indented like the stanza's
+-- fields; Cabal merges repeated fields.
 addModule :: Component -> ModuleName -> Text -> Either Text Text
-addModule c (ModuleName name) cabal =
-  case break isHeader ls of
-    (_, []) -> Left ("The cabal file has no " <> stanza <> " stanza.")
-    (before, header : after) ->
-      let body = takeWhile (\l -> not (fieldLine l) || leading l > 0) after
-          indent = case filter fieldLine body of
-            next : _ -> T.takeWhile isSpace next
-            _ -> "  "
-          line = indent <> field <> ": " <> name
-       in if line `elem` body
-            then Right cabal
-            else Right (T.unlines (before ++ header : line : after))
+addModule c (ModuleName name) cabal = do
+  all' <- maybe (Left "The cabal file could not be read.") Right (stanzas cabal)
+  s <- maybe (Left ("The cabal file has no " <> describe <> " stanza.")) Right (find matches all')
+  pure $
+    if name `elem` concat [fieldValues ls | Field (Name _ n) ls <- stanzaFields s, lower n == field]
+      then cabal
+      else insertAfter (fst (stanzaLines s)) (indent s <> field <> ": " <> name) cabal
   where
-    ls = T.lines cabal
-    (stanza, field, isHeader) = case componentKind c of
-      Lib -> ("main library", "exposed-modules", \l -> T.toLower (T.stripEnd l) == "library")
-      Exe exe ->
-        ( "executable " <> exe,
-          "other-modules",
-          \l -> leading l == 0 && case T.words l of
-            [keyword, n] -> T.toLower keyword == "executable" && n == exe
-            _ -> False
-        )
-    fieldLine l = not (T.null (T.strip l)) && not ("--" `T.isPrefixOf` T.strip l)
-    leading = T.length . T.takeWhile isSpace
+    (describe, field, matches) = case componentKind c of
+      Lib -> ("main library", "exposed-modules", \s -> stanzaKeyword s == "library" && null (stanzaArgs s))
+      Exe exe -> ("executable " <> exe, "other-modules", \s -> stanzaKeyword s == "executable" && stanzaArgs s == [exe])
+    indent s = case [column | Field (Name (Position _ column) _) _ <- stanzaFields s] of
+      column : _ -> T.replicate (column - 1) " "
+      [] -> "  "
 
 -- | Writes the run's property test suite, named after its main module,
 -- replacing the stanza if the run wrote it before. A library's suite depends
@@ -232,7 +225,7 @@ addModule c (ModuleName name) cabal =
 -- source directories, with its dependencies, extensions and language.
 upsertTestSuite :: Component -> ModuleName -> [ModuleName] -> Text -> Text
 upsertTestSuite c m newModules cabal =
-  T.stripEnd (withoutStanza header cabal)
+  T.stripEnd (withoutStanzas (\s -> stanzaKeyword s == "test-suite" && stanzaArgs s == [suiteName m]) cabal)
     <> "\n\n"
     <> T.unlines (header : map ("  " <>) fields)
   where
@@ -260,20 +253,51 @@ upsertTestSuite c m newModules cabal =
 -- | The cabal file without the holey test suite whose @main-is@ is the given
 -- file.
 removeTestSuite :: FilePath -> Text -> Text
-removeTestSuite file cabal = case [l | (i, l) <- zip [0 :: Int ..] ls, "test-suite holey-" `T.isPrefixOf` l, runs (drop (i + 1) ls)] of
-  header : _ -> withoutStanza (T.stripEnd header) cabal
-  [] -> cabal
+removeTestSuite file = withoutStanzas runs
   where
-    ls = T.lines cabal
-    runs body = ("main-is: " <> T.pack file) `elem` map T.strip (takeWhile (not . topLevel) body)
-    topLevel l = not (T.null l) && not (isSpace (T.head l)) && not ("--" `T.isPrefixOf` l)
+    runs s =
+      stanzaKeyword s == "test-suite"
+        && any ("holey-" `T.isPrefixOf`) (stanzaArgs s)
+        && T.pack file `elem` concat [fieldValues ls | Field (Name _ n) ls <- stanzaFields s, lower n == "main-is"]
 
--- | The cabal file without the stanza starting at the header line, up to the
--- next top-level line.
-withoutStanza :: Text -> Text -> Text
-withoutStanza header cabal = case break ((== header) . T.stripEnd) ls of
-  (before, _ : rest) -> T.unlines (before ++ dropWhile (not . topLevel) rest)
-  (_, []) -> cabal
+-- | A top-level stanza of a cabal file: its keyword, arguments and fields,
+-- and its first and last line, 1-based.
+data Stanza = Stanza
+  { stanzaKeyword :: Text,
+    stanzaArgs :: [Text],
+    stanzaFields :: [Field Position],
+    stanzaLines :: (Int, Int)
+  }
+
+stanzas :: Text -> Maybe [Stanza]
+stanzas cabal = either (const Nothing) (Just . mapMaybe stanza) (readFields (TE.encodeUtf8 cabal))
   where
-    ls = T.lines cabal
-    topLevel l = not (T.null l) && not (isSpace (T.head l)) && not ("--" `T.isPrefixOf` l)
+    stanza (Section (Name (Position row _) keyword) args fields) =
+      Just (Stanza (lower keyword) (map argument args) fields (row, maximum (row : concatMap rows fields)))
+    stanza (Field _ _) = Nothing
+    argument (SecArgName _ a) = TE.decodeUtf8 a
+    argument (SecArgStr _ a) = TE.decodeUtf8 a
+    argument (SecArgOther _ a) = TE.decodeUtf8 a
+    rows (Field (Name (Position row _) _) ls) = row : [r | FieldLine (Position r _) _ <- ls]
+    rows (Section (Name (Position row _) _) _ fields) = row : concatMap rows fields
+
+-- | The comma- or space-separated values of a field.
+fieldValues :: [FieldLine Position] -> [Text]
+fieldValues ls = filter (not . T.null) (T.split (\ch -> ch == ',' || isSpace ch) (T.unwords [TE.decodeUtf8 l | FieldLine _ l <- ls]))
+
+lower :: B.ByteString -> Text
+lower = T.toLower . TE.decodeUtf8
+
+-- | The cabal file with a line after the given line, 1-based.
+insertAfter :: Int -> Text -> Text -> Text
+insertAfter row line cabal = let ls = T.lines cabal in T.unlines (take row ls ++ [line] ++ drop row ls)
+
+-- | The cabal file without the stanzas, and the blank lines after them.
+withoutStanzas :: (Stanza -> Bool) -> Text -> Text
+withoutStanzas gone cabal = case stanzas cabal of
+  Nothing -> cabal
+  Just all' ->
+    let ls = T.lines cabal
+        ranges = [stanzaLines s | s <- all', gone s]
+        removed i = any (\(from, to) -> i >= from && i <= to + length (takeWhile (T.null . T.strip) (drop to ls))) ranges
+     in T.unlines [l | (i, l) <- zip [1 ..] ls, not (removed i)]

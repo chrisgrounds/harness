@@ -6,10 +6,10 @@ module Holey (Config (..), OnFailure (..), runHoley) where
 import Agent (Llm, runAgent)
 import Control.Concurrent (newQSem, signalQSem, waitQSem)
 import Control.Concurrent.Async (forConcurrently_)
-import Control.Exception (SomeException, bracket_, displayException, try)
+import Control.Exception (Exception, SomeException, bracket_, displayException, fromException, throwIO, try)
 import Control.Monad (forM, unless, when)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import Control.Monad.Trans.Reader (ReaderT, ask, asks, runReaderT)
 import Core
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (nub)
@@ -33,7 +33,7 @@ import Workspace
 data Config = Config
   { llm :: Llm,
     llmModel :: Model,
-    toolDefinitions :: [(ToolName, ToolDefinition)],
+    toolDefinitions :: ToolName -> ToolDefinition,
     onFailure :: OnFailure
   }
 
@@ -52,6 +52,15 @@ data Env = Env
     originals :: Originals
   }
 
+-- | The steps of a run, which read its environment.
+type Holey = ReaderT Env IO
+
+-- | Stops the run once the reason is recorded on it.
+data Stopped = Stopped
+  deriving (Show)
+
+instance Exception Stopped
+
 -- | Runs the requirement. A run that does not finish, because a step failed,
 -- it gave up or something went wrong, keeps or reverts its changes as
 -- 'onFailure' says.
@@ -61,78 +70,82 @@ runHoley cfg root prog = do
   result <- try $ do
     exists <- doesDirectoryExist root
     if not (isAbsolute root && exists)
-      then update prog (setStep DesignTypes (Failed ("The project directory " <> T.pack root <> " is not an absolute path to an existing directory."))) >> pure False
+      then failStart ("The project directory " <> T.pack root <> " is not an absolute path to an existing directory.")
       else do
         dirty <- uncommittedChanges root
         when dirty $
-          update prog (\r -> r {warnings = warnings r ++ ["The working tree has uncommitted changes, so this run's edits will be mixed in with them."]})
+          update prog (addWarning "The working tree has uncommitted changes, so this run's edits will be mixed in with them.")
         info <- findProject root
         if null (components info)
-          then update prog (setStep DesignTypes (Failed ("No cabal library or executable was found in " <> T.pack root <> "."))) >> pure False
-          else either (const False) (const True) <$> runExceptT (pipeline (Env cfg root prog info origs))
+          then failStart ("No cabal library or executable was found in " <> T.pack root <> ".")
+          else True <$ runReaderT pipeline (Env cfg root prog info origs)
   finished <- case result of
-    Left err -> failCurrent prog ("Internal error: " <> T.pack (displayException (err :: SomeException))) >> pure False
     Right done -> pure done
+    Left err
+      | Just Stopped <- fromException err -> pure False
+      | otherwise -> failCurrent prog ("Internal error: " <> T.pack (displayException err)) >> pure False
   unless (finished || onFailure cfg == Keep) (undo origs)
   where
+    failStart reason = update prog (setStep DesignTypes (Failed reason)) >> pure False
     undo origs = do
       run <- readRun prog
       undone <- try (rollback root origs run)
-      update prog $ \r -> case undone of
-        Right [] -> r
-        Right paths -> r {touchedFiles = [], history = history r ++ ["The run did not finish, so its changes to " <> T.pack (show (length paths)) <> " files were undone."]}
-        Left err -> r {warnings = warnings r ++ ["Could not undo the run's changes: " <> T.pack (displayException (err :: SomeException))]}
+      update prog $ case undone of
+        Right [] -> id
+        Right paths -> addHistory ("The run did not finish, so its changes to " <> T.pack (show (length paths)) <> " files were undone.") . (\r -> r {touchedFiles = []})
+        Left err -> addWarning ("Could not undo the run's changes: " <> T.pack (displayException (err :: SomeException)))
 
 -- | Each stage records its result on the run. Failed verifications loop back
 -- as 'decide' says; any other failure stops the run.
-pipeline :: Env -> ExceptT () IO ()
-pipeline env = do
-  req <- liftIO (requirement <$> readRun (progress env))
-  let typesStep = typesInstruction req (components (project env))
-  design typesStep (Chat [systemMessage designSystemPrompt] (llmModel (config env)) [])
+pipeline :: Holey ()
+pipeline = do
+  req <- requirement <$> getRun
+  cs <- asks (components . project)
+  m <- asks (llmModel . config)
+  let typesStep = typesInstruction req cs
+  design typesStep (Chat [textMessage System designSystemPrompt] m [])
   where
-    design :: Text -> Chat -> ExceptT () IO ()
+    design :: Text -> Chat -> Holey ()
     design typesStep chat = do
-      chat1 <- designStep env DesignTypes SetTypes typesStep chat
-      chat2 <- designStep env DesignSignatures SetFunctions functionsInstruction chat1
-      chat3 <- designStep env WriteProperties SetProperties propertiesInstruction chat2
+      chat1 <- designStep DesignTypes SetTypes typesStep chat
+      chat2 <- designStep DesignSignatures SetFunctions functionsInstruction chat1
+      chat3 <- designStep WriteProperties SetProperties propertiesInstruction chat2
       verify typesStep chat3 maxFixUps
 
     -- Errors in what one design step wrote go back to that step, up to
     -- 'maxFixUps' times; anything else, or more, is a redesign.
-    verify :: Text -> Chat -> Int -> ExceptT () IO ()
+    verify :: Text -> Chat -> Int -> Holey ()
     verify typesStep chat fixUps = do
-      skeleton <- checkSkeleton env
+      skeleton <- checkSkeleton
       case skeleton of
         Left (feedback, Just tool) | fixUps > 0 -> do
-          current <- liftIO (iteration <$> readRun (progress env))
-          liftIO . note env $
-            "Iteration " <> T.pack (show current) <> ": " <> describeOutcome (SkeletonFailed feedback) <> ": "
-              <> redesignReason (SkeletonFailed feedback) <> "; asking " <> toolNameText tool <> " to fix it."
-          fixed <- designStep env (stepOf tool) tool (fixUpInstruction tool feedback) chat
+          current <- iteration <$> getRun
+          note . atIteration current $
+            describeOutcome (SkeletonFailed feedback) <> ": " <> redesignReason (SkeletonFailed feedback) <> "; asking " <> toolNameText tool <> " to fix it."
+          fixed <- designStep (stepOf tool) tool (fixUpInstruction tool feedback) chat
           verify typesStep fixed (fixUps - 1)
         Left (feedback, _) -> loopBack typesStep chat [] (SkeletonFailed feedback)
         Right () -> do
-          refs <- liftIO (functionRefs env)
+          refs <- functionRefs
           build typesStep chat [] [(ref, Nothing) | ref <- refs]
     stepOf SetTypes = DesignTypes
     stepOf SetFunctions = DesignSignatures
     stepOf _ = WriteProperties
 
-    build :: Text -> Chat -> [Text] -> [(FunctionRef, Maybe Text)] -> ExceptT () IO ()
+    build :: Text -> Chat -> [Text] -> [(FunctionRef, Maybe Text)] -> Holey ()
     build typesStep chat previouslyFailed work = do
-      missing <- implementStep env work
+      missing <- implementStep work
       if not (null missing)
         then loopBack typesStep chat previouslyFailed (ImplementationMissing missing)
         else do
-          typed <- typeCheck env
+          typed <- typeCheck
           case typed of
             Left (attributed, rest) -> loopBack typesStep chat previouslyFailed (TypeErrors attributed rest)
             Right () -> do
-              checked <- propertiesStep env
+              checked <- propertiesStep
               case checked of
                 Left output -> do
-                  art <- liftIO (artefact <$> readRun (progress env))
+                  art <- artefact <$> getRun
                   let failed = failedProperties output
                       suspects =
                         nub
@@ -145,114 +158,141 @@ pipeline env = do
                   loopBack typesStep chat previouslyFailed (PropertiesFailed failed suspects (propertyReport output))
                 Right () -> pure ()
 
-    loopBack :: Text -> Chat -> [Text] -> Outcome -> ExceptT () IO ()
+    loopBack :: Text -> Chat -> [Text] -> Outcome -> Holey ()
     loopBack typesStep chat previouslyFailed outcome = do
-      run <- liftIO (readRun (progress env))
-      refs <- liftIO (functionRefs env)
-      let current = iteration run
-          record text = liftIO (update (progress env) (\r -> r {history = history r ++ [text]}))
-          failedNow = case outcome of
-            PropertiesFailed failed _ _ -> failed
-            _ -> []
+      current <- iteration <$> getRun
+      refs <- functionRefs
       case decide current refs previouslyFailed outcome of
-        GiveUp reason -> record reason >> throwE ()
+        GiveUp reason -> note reason >> liftIO (throwIO Stopped)
         Redesign feedback -> do
-          record ("Iteration " <> T.pack (show current) <> ": " <> describeOutcome outcome <> ": " <> redesignReason outcome)
-          liftIO (update (progress env) (restartFrom DesignTypes))
-          design typesStep (addMessage (userMessage (revisionNote (current + 1) feedback)) chat)
+          note (atIteration current (describeOutcome outcome <> ": " <> redesignReason outcome))
+          modifyRun (restartFrom DesignTypes)
+          design typesStep (addMessage (textMessage User (revisionNote (current + 1) feedback)) chat)
         Reimplement work -> do
-          record
-            ( "Iteration "
-                <> T.pack (show current)
-                <> ": "
-                <> describeOutcome outcome
-                <> ", so reimplementing "
-                <> T.intercalate ", " (map (functionNameText . refName . fst) work)
-                <> "."
-            )
-          liftIO (update (progress env) (restartFrom Implement))
+          note (atIteration current (describeOutcome outcome <> ", so reimplementing " <> T.intercalate ", " (map (functionNameText . refName . fst) work) <> "."))
+          modifyRun (restartFrom Implement)
           build typesStep chat failedNow work
+      where
+        failedNow = case outcome of
+          PropertiesFailed failed _ _ -> failed
+          _ -> []
 
 -- | Skeleton errors sent back to a design step before the run redesigns.
 maxFixUps :: Int
 maxFixUps = 3
 
--- | Adds a line to the run's history.
-note :: Env -> Text -> IO ()
-note env text = update (progress env) (\r -> r {history = history r ++ [text]})
+-- | A line of the run's history about an iteration.
+atIteration :: Int -> Text -> Text
+atIteration n text = "Iteration " <> T.pack (show n) <> ": " <> text
 
-functionRefs :: Env -> IO [FunctionRef]
-functionRefs env = map fnRef . functions . artefact <$> readRun (progress env)
+getRun :: Holey Run
+getRun = asks progress >>= liftIO . readRun
+
+modifyRun :: (Run -> Run) -> Holey ()
+modifyRun f = asks progress >>= \p -> liftIO (update p f)
+
+-- | Applies a change to the run that may be rejected.
+tryModifyRun :: (Run -> Either Text Run) -> Holey (Either Text ())
+tryModifyRun f = asks progress >>= \p -> liftIO (tryUpdate p f)
+
+-- | Adds a line to the run's history.
+note :: Text -> Holey ()
+note = modifyRun . addHistory
+
+-- | Marks the step failed and stops the run.
+stop :: Step -> Text -> Holey a
+stop step reason = modifyRun (setStep step (Failed reason)) >> liftIO (throwIO Stopped)
+
+-- | Runs a verification step: running, then passed, or failed with a
+-- description of what went wrong.
+inStep :: Step -> (e -> Text) -> Holey (Either e a) -> Holey (Either e a)
+inStep step describe action = do
+  modifyRun (setStep step Running)
+  result <- action
+  modifyRun (setStep step (either (Failed . describe) (const Passed) result))
+  pure result
+
+functionRefs :: Holey [FunctionRef]
+functionRefs = map fnRef . functions . artefact <$> getRun
+
+definitionsFor :: [ToolName] -> Holey [ToolDefinition]
+definitionsFor names = asks (\env -> map (toolDefinitions (config env)) names)
 
 -- | Runs one design step in the shared design conversation. The step passes
 -- once the model's call to the step's tool is accepted. Every step offers
 -- the same tools, and 'designTool' refuses the other steps' ones, so the
 -- conversation only ever grows: Claude's thinking is bound to what came
 -- before it, and an unchanged prefix stays cached.
-designStep :: Env -> Step -> ToolName -> Text -> Chat -> ExceptT () IO Chat
-designStep env step tool instruction chat = do
-  liftIO (update (progress env) (setStep step Running))
-  let prepared = addMessage (userMessage instruction) chat {tools = definitionsFor env [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties]}
-  (done, final) <- liftIO (untilAccepted env 30 tool (designTool env tool) prepared)
+designStep :: Step -> ToolName -> Text -> Chat -> Holey Chat
+designStep step tool instruction chat = do
+  modifyRun (setStep step Running)
+  definitions <- definitionsFor [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties]
+  (done, final) <- untilAccepted 30 tool (designTool tool) (addMessage (textMessage User instruction) chat {tools = definitions})
   if done
-    then liftIO (update (progress env) (setStep step Passed)) >> pure final
-    else stepFailed env step ("The model did not call " <> toolNameText tool <> ".")
+    then modifyRun (setStep step Passed) >> pure final
+    else stop step ("The model did not call " <> toolNameText tool <> ".")
 
-designTool :: Env -> ToolName -> IO () -> ToolRequest -> IO Text
-designTool env tool onAccepted request =
-  case readOnlyTool (projectRoot env) name args of
-    Just run -> run
+-- | What a tool call did: answered the model, or tried to record the step's
+-- result, which was rejected with a reason or accepted.
+data ToolReply = Answer Text | Recorded (Either Text ())
+
+designTool :: ToolName -> ToolRequest -> Holey ToolReply
+designTool tool request = do
+  root <- asks projectRoot
+  case readOnlyTool root name args of
+    Just run -> Answer <$> liftIO run
     Nothing
-      | name /= tool -> pure (toolNameText name <> " is not available in this step.")
-      | otherwise -> do
-          result <- case name of
-            SetTypes -> either (pure . Left) (setTypes env) (decodeArgs args)
-            SetFunctions -> either (pure . Left) (setFunctions env) (decodeArgs args)
-            SetProperties -> either (pure . Left) (tryUpdate (progress env) . applyProperties) (decodeArgs args)
-            _ -> pure (Left (toolNameText name <> " is not available in this step."))
-          case result of
-            Left err -> pure ("Rejected: " <> err)
-            Right () -> onAccepted >> pure "Accepted."
+      | name /= tool -> pure (Answer unavailable)
+      | otherwise ->
+          Recorded <$> case name of
+            SetTypes -> either (pure . Left) setTypes (decodeArgs args)
+            SetFunctions -> either (pure . Left) setFunctions (decodeArgs args)
+            SetProperties -> either (pure . Left) (tryModifyRun . applyProperties) (decodeArgs args)
+            _ -> pure (Left unavailable)
   where
     function = toolRequestFunction request
     name = toolRequestFunctionParamsName function
     args = toolRequestFunctionParamsArguments function
+    unavailable = toolNameText name <> " is not available in this step."
 
 -- | Finds each module on disk: a module that exists is changed, any other is
 -- created. Existing modules are read now, before the run writes anything.
-setTypes :: Env -> TypesArgs -> IO (Either Text ())
-setTypes env args = case checkModules (components (project env)) args of
-  Left err -> pure (Left err)
-  Right checked -> do
-    plans <- forM checked $ \(c, name, arg) -> do
-      located <- locateModule (projectRoot env) c name
-      before <- maybe (pure Nothing) (original (projectRoot env) (originals env)) located
-      pure
-        ModulePlan
-          { planComponent = componentName c,
-            planModule = name,
-            planPath = fromMaybe (modulePath c name) located,
-            -- A module this run created earlier is still new.
-            planIsNew = isNothing before,
-            planExtensions = argExtensions arg,
-            planImports = argImports arg,
-            planTypes = argTypes arg
-          }
-    run <- readRun (progress env)
-    clash <- case suiteOf (components (project env)) (artefact run) {modules = plans} of
-      Just suite -> existingFiles (projectRoot env) run [suiteFile suite]
-      Nothing -> pure []
-    case [p | p <- plans, planIsNew p, planModule p == ModuleName "Main"] of
-      p : _ -> pure (Left ("A new module cannot be called Main: " <> planComponent p <> " already has its Main. Choose another name."))
-      []
-        | null clash -> tryUpdate (progress env) (applyModules plans)
-        | otherwise -> pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". List another module first."))
+setTypes :: TypesArgs -> Holey (Either Text ())
+setTypes args = do
+  Env {projectRoot = root, project = info, originals = origs} <- ask
+  case checkModules (components info) args of
+    Left err -> pure (Left err)
+    Right checked -> do
+      plans <- liftIO . forM checked $ \(c, name, arg) -> do
+        located <- locateModule root c name
+        before <- maybe (pure Nothing) (original root origs) located
+        pure
+          ModulePlan
+            { planComponent = componentName c,
+              planModule = name,
+              planPath = fromMaybe (modulePath c name) located,
+              -- A module this run created earlier is still new.
+              planIsNew = isNothing before,
+              planExtensions = argExtensions arg,
+              planImports = argImports arg,
+              planTypes = argTypes arg
+            }
+      run <- getRun
+      clash <- case suiteOf (components info) (artefact run) {modules = plans} of
+        Just suite -> liftIO (existingFiles root run [suiteFile suite])
+        Nothing -> pure []
+      case [p | p <- plans, planIsNew p, planModule p == ModuleName "Main"] of
+        p : _ -> pure (Left ("A new module cannot be called Main: " <> componentNameText (planComponent p) <> " already has its Main. Choose another name."))
+        []
+          | null clash -> tryModifyRun (applyModules plans)
+          | otherwise -> pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". List another module first."))
 
-setFunctions :: Env -> FunctionsArgs -> IO (Either Text ())
-setFunctions env args = do
-  plans <- modules . artefact <$> readRun (progress env)
-  previous <- fmap concat . forM [p | p <- plans, not (planIsNew p)] $ \p -> do
-    before <- original (projectRoot env) (originals env) (planPath p)
+setFunctions :: FunctionsArgs -> Holey (Either Text ())
+setFunctions args = do
+  plans <- modules . artefact <$> getRun
+  Env {projectRoot = root, originals = origs} <- ask
+  previous <- liftIO . fmap concat . forM [p | p <- plans, not (planIsNew p)] $ \p -> do
+    before <- original root origs (planPath p)
     pure
       [ (FunctionRef (planPath p) (FunctionName key), declText d)
       | Just text <- [before],
@@ -260,87 +300,86 @@ setFunctions env args = do
         declKind d == ValueDecl,
         Just key <- [declKey d]
       ]
-  tryUpdate (progress env) (applyFunctions (`Map.lookup` Map.fromList previous) args)
+  tryModifyRun (applyFunctions (`Map.lookup` Map.fromList previous) args)
 
 -- | Builds the skeleton. Existing functions and instances it breaks become
 -- holes to repair, a changed function whose old equations do not fit its
 -- new signature becomes @undefined@, and it is built again. Other errors
 -- are returned with the design step that wrote the code they are in, if
 -- one did.
-checkSkeleton :: Env -> ExceptT () IO (Either (Text, Maybe ToolName) ())
-checkSkeleton env = do
-  liftIO (update (progress env) (setStep CheckSkeleton Running))
-  attempt (1 :: Int)
+checkSkeleton :: Holey (Either (Text, Maybe ToolName) ())
+checkSkeleton = inStep CheckSkeleton (brief . fst) (attempt (1 :: Int))
   where
     attempt rounds = do
-      built <- writeAndBuild env CheckSkeleton
+      built <- writeAndBuild CheckSkeleton
       case built of
-        Right () -> liftIO (update (progress env) (setStep CheckSkeleton Passed)) >> pure (Right ())
+        Right () -> pure (Right ())
         Left output -> do
-          blamed <- liftIO (blameErrors env output)
-          repairs <- liftIO (repairRefs env)
-          kept <- liftIO (keptBodies env)
-          run <- liftIO (readRun (progress env))
-          let others = nub [ref | (_, _, InOther ref) <- blamed]
+          blamed <- blameErrors output
+          run <- getRun
+          let fns = functions (artefact run)
+              repairs = [fnRef f | f <- fns, fnKind f == Repair]
+              kept = [fnRef f | f <- fns, fnPlaceholder f == PreviousBody, fnBody f == Nothing]
+              others = nub [ref | (_, _, InOther ref) <- blamed]
               planned = nub [ref | (_, _, InPlanned ref) <- blamed]
               unfit = filter (`elem` kept) planned
           if (not (null others) || not (null unfit)) && rounds < 8
             then do
-              liftIO (previousDecls env others >>= update (progress env) . addRepairs)
-              liftIO (update (progress env) (withUndefined unfit))
+              previousDecls others >>= modifyRun . addRepairs
+              modifyRun (withUndefined unfit)
               attempt (rounds + 1)
             else do
+              cs <- asks (components . project)
               let stuck = filter (`elem` repairs) planned
                   feedback = (if null stuck then "" else brokenSignaturesNote stuck <> "\n") <> summarise output
-              liftIO (update (progress env) (setStep CheckSkeleton (Failed (brief (summarise output)))))
-              pure (Left (feedback, owningStep (components (project env)) (artefact run) blamed))
+              pure (Left (feedback, owningStep cs (artefact run) blamed))
 
 -- | Builds the implementation. Errors are blamed on the functions they are
 -- in; existing functions that break become repairs.
-typeCheck :: Env -> ExceptT () IO (Either ([(FunctionRef, Text)], [Text]) ())
-typeCheck env = do
-  liftIO (update (progress env) (setStep TypeCheck Running))
-  built <- writeAndBuild env TypeCheck
+typeCheck :: Holey (Either ([(FunctionRef, Text)], [Text]) ())
+typeCheck = inStep TypeCheck (\(attributed, rest) -> brief (T.unlines (map snd attributed ++ rest))) $ do
+  built <- writeAndBuild TypeCheck
   case built of
-    Right () -> liftIO (update (progress env) (setStep TypeCheck Passed)) >> pure (Right ())
-    Left output -> liftIO $ do
-      blamed <- blameErrors env output
-      previousDecls env (nub [ref | (_, _, InOther ref) <- blamed]) >>= update (progress env) . addRepairs
+    Right () -> pure (Right ())
+    Left output -> do
+      blamed <- blameErrors output
+      previousDecls (nub [ref | (_, _, InOther ref) <- blamed]) >>= modifyRun . addRepairs
       let owner (InPlanned ref) = Just ref
           owner (InOther ref) = Just ref
           owner Unblamed = Nothing
           attributed = [(ref, T.unlines [errorText e | (e, _, b) <- blamed, owner b == Just ref]) | ref <- nub (mapMaybe (\(_, _, b) -> owner b) blamed)]
           unblamed = [errorText e | (e, _, Unblamed) <- blamed]
           rest = if null attributed && null unblamed then [summarise output] else unblamed
-      update (progress env) (setStep TypeCheck (Failed (brief (summarise output))))
       pure (Left (attributed, rest))
 
 -- | Writes the artefact and builds every package with its test suites.
-writeAndBuild :: Env -> Step -> ExceptT () IO (Either Text ())
-writeAndBuild env step = do
-  run <- liftIO (readRun (progress env))
-  written <- liftIO (writeArtefact (projectRoot env) (components (project env)) (originals env) run)
+writeAndBuild :: Step -> Holey (Either Text ())
+writeAndBuild step = do
+  run <- getRun
+  Env {projectRoot = root, project = info, originals = origs} <- ask
+  written <- liftIO (writeArtefact root (components info) origs run)
   case written of
-    Left err -> stepFailed env step err
-    Right touched -> liftIO $ do
-      update (progress env) (\r -> r {touchedFiles = touched})
-      buildAll (projectRoot env)
+    Left err -> stop step err
+    Right touched -> do
+      modifyRun (\r -> r {touchedFiles = touched})
+      liftIO (buildAll root)
 
 -- | Blames each error in build output on where it is in the files as
 -- written, with the file it is in. An instance the run declared in step 1
 -- is the design's, not one to repair.
-blameErrors :: Env -> Text -> IO [(GhcError, Maybe FilePath, Blame)]
-blameErrors env output = do
-  run <- readRun (progress env)
+blameErrors :: Text -> Holey [(GhcError, Maybe FilePath, Blame)]
+blameErrors output = do
+  run <- getRun
+  Env {projectRoot = root, project = info} <- ask
   let art = artefact run
       fns = functions art
-      suite = suiteFile <$> suiteOf (components (project env)) art
+      suite = suiteFile <$> suiteOf (components info) art
       declared p = [key | plan <- modules art, planPath plan == p, d <- sourceDecls (splitSource (planTypes plan)), Just key <- [declKey d]]
-  forM (ghcErrors output) $ \e -> do
-    path <- resolveErrorFile (projectRoot env) (project env) e
+  liftIO . forM (ghcErrors output) $ \e -> do
+    path <- resolveErrorFile root info e
     case path of
       Just p | takeExtension p == ".hs", Just p /= suite -> do
-        source <- splitSource <$> readText (projectRoot env </> p)
+        source <- splitSource <$> readText (root </> p)
         let blamed = case blame fns p source (errorLine e) of
               InOther ref | functionNameText (refName ref) `elem` declared p -> Unblamed
               b -> b
@@ -366,45 +405,43 @@ owningStep cs art blamed
       t : _ -> Just t
       [] -> Nothing
 
--- | Changed functions that keep their old equations until implemented.
-keptBodies :: Env -> IO [FunctionRef]
-keptBodies env = (\run -> [fnRef f | f <- functions (artefact run), fnPlaceholder f == PreviousBody, fnBody f == Nothing]) <$> readRun (progress env)
-
 withUndefined :: [FunctionRef] -> Run -> Run
-withUndefined refs run =
-  run {artefact = (artefact run) {functions = [if fnRef f `elem` refs then f {fnPlaceholder = Undefined} else f | f <- functions (artefact run)]}}
-
-repairRefs :: Env -> IO [FunctionRef]
-repairRefs env = (\run -> [fnRef f | f <- functions (artefact run), fnKind f == Repair]) <$> readRun (progress env)
+withUndefined refs = overFunctions (map (\f -> if fnRef f `elem` refs then f {fnPlaceholder = Undefined} else f))
 
 -- | Each function's declaration before the run.
-previousDecls :: Env -> [FunctionRef] -> IO [(FunctionRef, Text)]
-previousDecls env refs = forM refs $ \ref -> do
-  before <- original (projectRoot env) (originals env) (refPath ref)
-  pure (ref, maybe "" declText (before >>= findDecl (functionNameText (refName ref)) . splitSource))
+previousDecls :: [FunctionRef] -> Holey [(FunctionRef, Text)]
+previousDecls refs = do
+  Env {projectRoot = root, originals = origs} <- ask
+  liftIO . forM refs $ \ref -> do
+    before <- original root origs (refPath ref)
+    pure (ref, maybe "" declText (before >>= findDecl (functionNameText (refName ref)) . splitSource))
 
 declText :: Decl -> Text
 declText = T.stripEnd . T.unlines . declLines
 
--- | Runs an agent until the handler accepts a call to the tool, reminding the
--- model to call it up to twice. The handler is given the action that records
--- acceptance.
-untilAccepted :: Env -> Int -> ToolName -> (IO () -> ToolRequest -> IO Text) -> Chat -> IO (Bool, Chat)
-untilAccepted env budget tool handler chat = do
-  accepted <- newIORef False
-  let attempt :: Int -> Chat -> IO Chat
+-- | Runs an agent until it records the step's result with the tool,
+-- reminding it to up to twice.
+untilAccepted :: Int -> ToolName -> (ToolRequest -> Holey ToolReply) -> Chat -> Holey (Bool, Chat)
+untilAccepted budget tool handler chat = do
+  env <- ask
+  accepted <- liftIO (newIORef False)
+  let respond request = do
+        reply <- runReaderT (handler request) env
+        case reply of
+          Answer text -> pure text
+          Recorded (Left err) -> pure ("Rejected: " <> err)
+          Recorded (Right ()) -> writeIORef accepted True >> pure "Accepted."
+      attempt :: Int -> Chat -> IO Chat
       attempt remaining c = do
-        c' <- runAgent (llm (config env)) budget (handler (writeIORef accepted True)) c
+        c' <- runAgent (llm (config env)) budget respond c
         done <- readIORef accepted
         if done || remaining <= 1
           then pure c'
-          else attempt (remaining - 1) (addMessage (userMessage (callToolNudge tool)) c')
-  final <- attempt 3 chat
-  done <- readIORef accepted
-  pure (done, final)
-
-definitionsFor :: Env -> [ToolName] -> [ToolDefinition]
-definitionsFor env = mapMaybe (`lookup` toolDefinitions (config env))
+          else attempt (remaining - 1) (addMessage (textMessage User (callToolNudge tool)) c')
+  liftIO $ do
+    final <- attempt 3 chat
+    done <- readIORef accepted
+    pure (done, final)
 
 -- | Implements the given functions in parallel, each by its own agent that
 -- sees the design, its module with the run's functions as holes, its
@@ -412,88 +449,59 @@ definitionsFor env = mapMaybe (`lookup` toolDefinitions (config env))
 -- mention it, and any feedback from a failed attempt. Functions not listed
 -- keep their current definitions. Returns the functions whose agents did
 -- not submit an implementation.
-implementStep :: Env -> [(FunctionRef, Maybe Text)] -> ExceptT () IO [FunctionRef]
-implementStep env work = do
-  run <- liftIO (readRun (progress env))
-  let art = artefact run
-      holes = art {functions = [f {fnBody = Nothing, fnImports = []} | f <- functions art]}
+implementStep :: [(FunctionRef, Maybe Text)] -> Holey [FunctionRef]
+implementStep work = do
+  env@Env {projectRoot = root, originals = origs} <- ask
+  art <- artefact <$> getRun
+  let holes = art {functions = [f {fnBody = Nothing, fnImports = []} | f <- functions art]}
       queued = map fst work
   sources <- liftIO . forM (nub (map (refPath . fst) work)) $ \path -> do
-    before <- original (projectRoot env) (originals env) path
+    before <- original root origs path
     pure (path, either id id (renderFile holes path before))
-  liftIO $
-    update
-      (progress env)
-      ( \r ->
-          (setStep Implement Running r)
-            { tasks = [(fnRef f, if fnRef f `elem` queued then Queued else Done) | f <- functions art]
-            }
-      )
+  modifyRun (\r -> (setStep Implement Running r) {tasks = [(fnRef f, if fnRef f `elem` queued then Queued else Done) | f <- functions art]})
   slots <- liftIO (newQSem 4)
-  liftIO $
-    forConcurrently_ work $ \(ref, feedback) ->
-      bracket_ (waitQSem slots) (signalQSem slots) $
-        case [f | f <- functions art, fnRef f == ref] of
-          fn : _ ->
-            implementOne
-              env
-              (designSummary art)
-              (fromMaybe "" (lookup (refPath ref) sources))
-              fn
-              [p | p <- properties art, mentions (fnName fn) (propSource p)]
-              feedback
-          [] -> update (progress env) (setTask ref (TaskFailed "Unknown function"))
-  after <- liftIO (readRun (progress env))
-  let missing = [ref | (ref, TaskFailed _) <- tasks after]
-  liftIO $ update (progress env) $ setStep Implement $
+  liftIO . forConcurrently_ work $ \(ref, feedback) ->
+    bracket_ (waitQSem slots) (signalQSem slots) . flip runReaderT env $
+      case [f | f <- functions art, fnRef f == ref] of
+        fn : _ ->
+          implementOne
+            (designSummary art)
+            (fromMaybe "" (lookup (refPath ref) sources))
+            fn
+            [p | p <- properties art, mentions (fnName fn) (propSource p)]
+            feedback
+        [] -> modifyRun (setTask ref (TaskFailed "Unknown function"))
+  missing <- (\run -> [ref | (ref, TaskFailed _) <- tasks run]) <$> getRun
+  modifyRun . setStep Implement $
     if null missing
       then Passed
       else Failed ("No implementation for " <> T.intercalate ", " (map (functionNameText . refName) missing) <> ".")
   pure missing
 
-implementOne :: Env -> Text -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> IO ()
-implementOne env design moduleSource fn props feedback = do
-  update (progress env) (setTask (fnRef fn) Working)
-  let chat =
-        Chat
-          [ userMessage (implementInstruction design moduleSource fn props feedback),
-            systemMessage implementSystemPrompt
-          ]
-          (llmModel (config env))
-          (definitionsFor env [ImplementFunction])
-      handler onAccepted request
-        | toolRequestFunctionParamsName (toolRequestFunction request) /= ImplementFunction =
-            pure "Only ImplementFunction is available."
-        | otherwise = do
-            result <- case decodeArgs (toolRequestFunctionParamsArguments (toolRequestFunction request)) of
-              Left err -> pure (Left err)
-              Right args -> tryUpdate (progress env) (applyImplementation (fnRef fn) args)
-            case result of
-              Left err -> pure ("Rejected: " <> err)
-              Right () -> onAccepted >> pure "Accepted."
-  outcome <- try (untilAccepted env 6 ImplementFunction handler chat)
-  update (progress env) $ setTask (fnRef fn) $ case outcome of
+implementOne :: Text -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> Holey ()
+implementOne design moduleSource fn props feedback = do
+  modifyRun (setTask (fnRef fn) Working)
+  m <- asks (llmModel . config)
+  definitions <- definitionsFor [ImplementFunction]
+  let chat = Chat [textMessage User (implementInstruction design moduleSource fn props feedback), textMessage System implementSystemPrompt] m definitions
+  env <- ask
+  outcome <- liftIO (try (runReaderT (untilAccepted 6 ImplementFunction handler chat) env))
+  modifyRun . setTask (fnRef fn) $ case outcome of
     Right (True, _) -> Done
     Right (False, _) -> TaskFailed "The model did not submit an implementation."
     Left err -> TaskFailed (T.pack (displayException (err :: SomeException)))
+  where
+    handler request
+      | toolRequestFunctionParamsName (toolRequestFunction request) /= ImplementFunction = pure (Answer "Only ImplementFunction is available.")
+      | otherwise = Recorded <$> either (pure . Left) (tryModifyRun . applyImplementation (fnRef fn)) (decodeArgs (toolRequestFunctionParamsArguments (toolRequestFunction request)))
 
 -- | Runs the property suite. A failed run returns its output.
-propertiesStep :: Env -> ExceptT () IO (Either Text ())
-propertiesStep env = do
-  liftIO (update (progress env) (setStep RunProperties Running))
-  run <- liftIO (readRun (progress env))
-  suite <- maybe (stepFailed env RunProperties "No module was chosen.") pure (suiteOf (components (project env)) (artefact run))
-  result <- liftIO (runSuite (projectRoot env) (suiteCabalTarget suite))
-  liftIO $ case result of
-    Right _ -> update (progress env) (setStep RunProperties Passed) >> pure (Right ())
-    Left output -> do
-      update (progress env) (setStep RunProperties (Failed (brief (propertyReport output))))
-      pure (Left output)
-
-stepFailed :: Env -> Step -> Text -> ExceptT () IO a
-stepFailed env step reason = do
-  liftIO (update (progress env) (setStep step (Failed reason)))
-  throwE ()
+propertiesStep :: Holey (Either Text ())
+propertiesStep = inStep RunProperties (brief . propertyReport) $ do
+  run <- getRun
+  Env {projectRoot = root, project = info} <- ask
+  suite <- maybe (stop RunProperties "No module was chosen.") pure (suiteOf (components info) (artefact run))
+  fmap (const ()) <$> liftIO (runSuite root (suiteCabalTarget suite))
 
 -- | Marks the running step (or the first step) as failed.
 failCurrent :: Progress -> Text -> IO ()
@@ -503,9 +511,3 @@ failCurrent prog reason = do
         s : _ -> s
         [] -> DesignTypes
   update prog (setStep step (Failed reason))
-
-systemMessage :: Text -> Message
-systemMessage text = Message System (Just text) [] Nothing Nothing Nothing
-
-userMessage :: Text -> Message
-userMessage text = Message User (Just text) [] Nothing Nothing Nothing

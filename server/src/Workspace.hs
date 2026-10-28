@@ -25,7 +25,7 @@ import qualified Data.ByteString as B
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (find, foldl', isPrefixOf, isSuffixOf, nub, sortOn)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -59,7 +59,7 @@ original root (Originals ref dirs) path = do
       missing <- if exists then pure [] else filterM (fmap not . doesDirectoryExist . (root </>)) (ancestors path)
       atomicModifyIORef' dirs (\ds -> (nub (ds ++ missing), ()))
       atomicModifyIORef' ref (\m -> (Map.insertWith (\_ old -> old) path contents m, ()))
-      maybe contents id . Map.lookup path <$> readIORef ref
+      fromMaybe contents . Map.lookup path <$> readIORef ref
   where
     ancestors = takeWhile (/= ".") . drop 1 . iterate takeDirectory
 

@@ -22,7 +22,7 @@ scriptedLlm counter decide chat = do
   n <- atomicModifyIORef' counter (\x -> (x + 1, x))
   reply <- decide chat
   let message = case reply of
-        Say text -> Message Assistant (Just text) [] Nothing Nothing Nothing
+        Say text -> textMessage Assistant text
         CallTool name args ->
           Message
             Assistant

@@ -4,22 +4,18 @@
 module Core.Role (Role (..)) where
 
 import Data.Aeson
+import Data.Char (toLower)
 import GHC.Generics (Generic)
 
+-- | Encoded in lower case, as @"user"@.
 data Role = User | Assistant | System | Tool
   deriving (Eq, Show, Generic)
 
 instance ToJSON Role where
-  toJSON User = String "user"
-  toJSON Assistant = String "assistant"
-  toJSON System = String "system"
-  toJSON Tool = String "tool"
+  toJSON = genericToJSON lowerCase
 
 instance FromJSON Role where
-  parseJSON = withText "Role" $ \value ->
-    case value of
-      "user" -> pure User
-      "assistant" -> pure Assistant
-      "system" -> pure System
-      "tool" -> pure Tool
-      _ -> fail "unknown role"
+  parseJSON = genericParseJSON lowerCase
+
+lowerCase :: Options
+lowerCase = defaultOptions {constructorTagModifier = map toLower}

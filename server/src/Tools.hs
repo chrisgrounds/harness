@@ -1,12 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Tools (registerTool, toolToApiDefinition, readOnlyTool) where
+module Tools (loadToolDefinitions, readOnlyTool) where
 
 import Control.Exception (IOException, try)
 import Core
 import Data.Aeson
 import qualified Data.Aeson.Key as Key
 import Data.Aeson.Types (parseEither)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -14,7 +15,7 @@ import qualified Data.Text.IO as TIO
 import Paths_server (getDataFileName)
 import qualified System.Directory as Dir
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
+import System.FilePath ((<.>), (</>))
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 
 -- | Runs a tool that only reads the project at @root@, against which paths
@@ -59,26 +60,15 @@ reportIOError context action = do
     Left err -> context <> ": " <> T.pack (show (err :: IOException))
     Right value -> value
 
-registerTool :: [(ToolName, FilePath)]
-registerTool =
-  [ (ReadFile, "./tools/read_file.json"),
-    (Discover, "./tools/discover.json"),
-    (Search, "./tools/search.json"),
-    (SetTypes, "./tools/set_types.json"),
-    (SetFunctions, "./tools/set_functions.json"),
-    (SetProperties, "./tools/set_properties.json"),
-    (ImplementFunction, "./tools/implement_function.json")
-  ]
-
-loadToolDefinition :: FilePath -> IO ToolDefinition
-loadToolDefinition path = do
-  fileContent <- getDataFileName path >>= TIO.readFile
-  case eitherDecodeStrict (TE.encodeUtf8 fileContent) of
-    Left err -> fail ("Failed to parse ToolDefinition JSON from " <> path <> ": " <> err)
-    Right def -> pure def
-
-toolToApiDefinition :: ToolName -> IO ToolDefinition
-toolToApiDefinition toolName =
-  case lookup toolName registerTool of
-    Nothing -> fail ("No tool definition registered for " <> show toolName)
-    Just path -> loadToolDefinition path
+-- | Every tool's definition, from its packaged schema, @tools/read_file.json@
+-- for 'ReadFile' and so on.
+loadToolDefinitions :: IO (ToolName -> ToolDefinition)
+loadToolDefinitions = do
+  loaded <- Map.fromList <$> mapM (\name -> (,) name <$> load name) [minBound .. maxBound]
+  -- Every tool was loaded, so the lookup cannot fail.
+  pure (loaded Map.!)
+  where
+    load name = do
+      let path = "tools" </> camelTo2 '_' (show name) <.> "json"
+      contents <- getDataFileName path >>= TIO.readFile
+      either (\err -> fail ("Failed to parse the tool definition " <> path <> ": " <> err)) pure (eitherDecodeStrict (TE.encodeUtf8 contents))

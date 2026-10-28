@@ -2,11 +2,10 @@
 
 module Console (runConsole) where
 
-import Client (receiveEvent, safeText, statusIcon, stepChanges)
+import Client (receiveEvent, receiveGreeting, safeText, statusIcon, stepChanges)
 import Control.Monad (unless, when)
 import Core
 import Core.Protocol (sendJSON)
-import qualified Data.ByteString as B
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -17,12 +16,9 @@ import System.IO (isEOF)
 -- runs each requirement read from standard input, printing its progress.
 runConsole :: FilePath -> Socket -> IO ()
 runConsole dir sock = do
-  (greeting, leftover) <- receiveEvent sock B.empty
-  case greeting of
-    Connected m -> do
-      TIO.putStrLn (renderLine "holey" ("model " <> modelId m))
-      loop leftover
-    _ -> ioError (userError "Server did not announce its model.")
+  (m, leftover) <- receiveGreeting sock
+  TIO.putStrLn (renderLine "holey" ("model " <> modelId m))
+  loop leftover
   where
     loop pending = do
       done <- isEOF

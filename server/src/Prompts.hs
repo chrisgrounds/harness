@@ -165,4 +165,4 @@ implementInstruction design moduleSource fn props feedback =
         Just text -> ["A previous implementation failed:", text, "Fix it."]
         Nothing -> []
   where
-    instanceRepair = "instance " `T.isPrefixOf` functionNameText (fnName fn)
+    instanceRepair = isInstanceName (fnName fn)

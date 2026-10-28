@@ -20,7 +20,7 @@ import Control.Monad (filterM)
 import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath (takeDirectory, (</>))
-import Tools (registerTool, toolToApiDefinition)
+import Tools (loadToolDefinitions)
 import Verify (buildTarget)
 
 -- | Returns failure messages; an empty list means every check passed.
@@ -312,7 +312,7 @@ scenario :: String -> Layout -> MergeStrategy -> (FilePath -> Run -> String -> I
 scenario label layout strategy checks = do
   failures <- withProject layout $ \root -> do
     counter <- newIORef 0
-    definitions <- mapM (\(name, _) -> (,) name <$> toolToApiDefinition name) registerTool
+    definitions <- loadToolDefinitions
     events <- newIORef []
     progress <- newProgress (\e -> modifyIORef events (e :)) (newRun (Requirement "Merge sorted lists of integers"))
     runHoley

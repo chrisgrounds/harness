@@ -30,6 +30,9 @@ instance Arbitrary FunctionName where
 instance Arbitrary ModuleName where
   arbitrary = ModuleName <$> arbitrary
 
+instance Arbitrary ComponentName where
+  arbitrary = ComponentName <$> arbitrary
+
 instance Arbitrary FunctionRef where
   arbitrary = FunctionRef <$> arbitrary <*> arbitrary
 

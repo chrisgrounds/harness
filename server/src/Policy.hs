@@ -4,7 +4,7 @@
 module Policy (Outcome (..), Decision (..), maxIterations, decide, describeOutcome, redesignReason) where
 
 import Core (FunctionName (..), FunctionRef (..))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Verify (firstProblem)
@@ -70,10 +70,7 @@ redesignReason :: Outcome -> Text
 redesignReason (SkeletonFailed errors) =
   case filter (not . T.null) (map T.strip (T.lines errors)) of
     first : _ | "The signatures of these existing functions" `T.isPrefixOf` first -> first
-    lines' -> fromMaybe (maybe "the build failed without a GHC error." id (safeHead lines')) (firstProblem errors)
-  where
-    safeHead (x : _) = Just x
-    safeHead [] = Nothing
+    lines' -> fromMaybe (fromMaybe "the build failed without a GHC error." (listToMaybe lines')) (firstProblem errors)
 redesignReason (PropertiesFailed {}) = "they still fail after the functions they mention were reimplemented, so the properties or the design may be wrong."
 redesignReason _ = "it could not be fixed by reimplementing functions."
 

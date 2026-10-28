@@ -8,7 +8,7 @@ import Progress (Progress, newProgress)
 import qualified Socket
 import System.Environment (getArgs)
 import System.Exit (die)
-import Tools (registerTool, toolToApiDefinition)
+import Tools (loadToolDefinitions)
 
 main :: IO ()
 main = do
@@ -39,7 +39,7 @@ models =
 holey :: Model -> OnFailure -> IO (FilePath -> Progress -> IO ())
 holey m failure = do
   llm' <- loadLlm m
-  definitions <- mapM (\(name, _) -> (,) name <$> toolToApiDefinition name) registerTool
+  definitions <- loadToolDefinitions
   putStrLn ("using " <> T.unpack (modelId m))
   pure $
     runHoley

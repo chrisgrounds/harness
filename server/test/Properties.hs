@@ -4,6 +4,7 @@
 module Properties (propertyTests) where
 
 import Anthropic (replyMessage, requestBody)
+import OpenAI (completionReply)
 import Core
 import Data.Aeson (Value (..), decodeStrict, object, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
@@ -43,6 +44,7 @@ propertyTests =
         check "new names are added to every style of export list" prop_exportsAdded,
         check "a function's equations get a wildcard for each new parameter" prop_equationsAdapted,
         check "a changed function keeps its old equations until implemented" prop_previousBodyKept,
+        check "character literals do not end an equation's patterns" prop_characterLiterals,
         check "change notes stay out of the code, and empty documentation keeps the old" prop_changeNotesNotWritten,
         check "errors are blamed on the declaration they are in" prop_errorsBlamed,
         check "errors record the package being built" prop_errorsRecordPackage,
@@ -56,13 +58,15 @@ propertyTests =
         check "repeated property failures are redesigned" prop_repeatedFailureRedesigned,
         check "cabal edits keep the file valid and list the module and its suite" prop_cabalEditsParse,
         check "cabal edits are idempotent" prop_cabalEditsIdempotent,
+        check "a module already listed, on any line, is not listed again" prop_moduleListedOnce,
         check "rewriting the suite replaces it" prop_suiteReplaced,
         check "removing the suite leaves the rest of the cabal file" prop_suiteRemoved,
         check "Claude requests alternate turns, starting with the user" prop_requestsAlternate,
         check "Claude requests answer every tool call in the next turn" prop_toolResultsFollowCalls,
         check "Claude's replies are sent back unchanged" prop_repliesReplayed,
         check "a growing chat keeps its earlier request unchanged" prop_growingChatKeepsPrefix,
-        check "Claude replies are read into messages" prop_repliesRead
+        check "Claude replies are read into messages" prop_repliesRead,
+        check "Mercury replies are read into messages" prop_completionsRead
       ]
   where
     check :: (Testable p) => String -> p -> IO [String]
@@ -114,7 +118,7 @@ instance Arbitrary NewModule where
     exts <- sublistOf ["DerivingStrategies", "LambdaCase"]
     baseImports <- resize 2 (listOf importLine)
     types <- elements ["", "data Colour = Red | Green\n  deriving (Eq, Show)", "newtype Count = Count Int"]
-    pure (NewModule (ModulePlan "demo" (ModuleName "M") newModulePath True exts baseImports types) fns)
+    pure (NewModule (ModulePlan (ComponentName "demo") (ModuleName "M") newModulePath True exts baseImports types) fns)
 
 -- | An existing module in one of several layouts, with what it declares.
 data Existing = Existing
@@ -223,7 +227,7 @@ prop_changeKeepsOthers e =
       changedType = last typeKeys
       path = "src/Demo.hs"
       ref = FunctionRef path . FunctionName
-      plan = ModulePlan "demo" (ModuleName "Demo") path False ["TupleSections"] ["import Data.Char (toUpper)"] ("data " <> changedType <> " = Changed\n\ndata TNew = New\n  deriving (Show)")
+      plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") path False ["TupleSections"] ["import Data.Char (toUpper)"] ("data " <> changedType <> " = Changed\n\ndata TNew = New\n  deriving (Show)")
       fns =
         [ FunctionSpec (ref replaced) Designed "Text -> Text" "Replaced." "" (Just (replaced <> " t = t")) PreviousBody [] Nothing,
           FunctionSpec (ref "fresh") Designed "Int" "Added." "" Nothing Undefined ["import Data.Ord (comparing)"] Nothing,
@@ -354,7 +358,7 @@ prop_suiteVisibility =
       other = component "other" Lib ["base"]
       tool = component "other" (Exe "tool") ["base"]
       cs = [demo, app, other, tool]
-      sees suite = [componentName c | c <- cs, visibleFrom cs suite (componentName c)]
+      sees suite = [componentNameText (componentName c) | c <- cs, visibleFrom cs suite (componentName c)]
    in sees demo === ["demo"] .&&. sees app === ["demo", "demo:exe:app"] .&&. sees tool === ["other:exe:tool"]
 
 prop_errorsRecordPackage :: Property
@@ -615,3 +619,35 @@ prop_repliesRead =
                       .&&. map (toolRequestFunctionParamsName . toolRequestFunction) (toolCalls m) === names
                       .&&. [decodeStrict (TE.encodeUtf8 (toolRequestFunctionParamsArguments (toolRequestFunction r))) | r <- toolCalls m] === [Just (object ["path" .= toolNameText n]) | n <- names]
                       .&&. providerContent m === Just (toJSON blocks)
+
+prop_completionsRead :: Property
+prop_completionsRead =
+  let completion =
+        object
+          [ "choices"
+              .= [ object
+                     [ "message"
+                         .= object
+                           [ "role" .= ("assistant" :: Text),
+                             "content" .= (Nothing :: Maybe Text),
+                             "tool_calls" .= [object ["id" .= ("call_1" :: Text), "type" .= ("function" :: Text), "function" .= object ["name" .= ("ReadFile" :: Text), "arguments" .= ("{\"path\":\"src\"}" :: Text)]]]
+                           ]
+                     ]
+                 ],
+            "usage" .= object ["completion_tokens" .= (12 :: Int)]
+          ]
+      expected = Message Assistant Nothing [ToolRequest "call_1" FunctionTool (ToolRequestFunctionParams ReadFile "{\"path\":\"src\"}")] Nothing Nothing Nothing
+   in parseEither completionReply completion === Right (Just (expected, 12))
+        .&&. parseEither completionReply (object ["choices" .= ([] :: [Value]), "usage" .= object ["completion_tokens" .= (0 :: Int)]]) === Right Nothing
+        .&&. toJSON User === String "user"
+
+prop_moduleListedOnce :: CabalCase -> Property
+prop_moduleListedOnce c =
+  forAll (elements (caseModules c)) $ \listed ->
+    addModule (caseComponent c) (ModuleName listed) (caseCabal c) === Right (caseCabal c)
+
+prop_characterLiterals :: Property
+prop_characterLiterals =
+  let source = splitSource "module M where\n\npick :: Char -> Int\npick '=' = 1\npick '|' = 2\npick _ = 0\n"
+   in (findDecl "pick" source >>= adaptEquations "pick" "Bool -> Char -> Int")
+        === Just ["pick _ '=' = 1", "pick _ '|' = 2", "pick _ _ = 0"]

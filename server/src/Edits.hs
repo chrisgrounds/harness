@@ -22,7 +22,8 @@ where
 import Control.Monad (unless, when)
 import Core
 import Data.Aeson
-import Data.Char (isAlphaNum, isLower)
+import Data.Char (isLower)
+import Decls (isIdentChar)
 import Data.List (find, nub)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -46,9 +47,14 @@ instance FromJSON ModuleArg where
   parseJSON = withObject "module" $ \o ->
     ModuleArg <$> o .: "component" <*> o .: "module" <*> o .:? "extensions" .!= [] <*> o .:? "imports" .!= [] <*> o .:? "types" .!= ""
 
--- | A function's module, name, signature, documentation and, for an
--- existing function, what to change.
-data FunctionArg = FunctionArg Text Text Text Text Text
+data FunctionArg = FunctionArg
+  { argFunctionModule :: Text,
+    argFunctionName :: Text,
+    argSignature :: Text,
+    argDoc :: Text,
+    -- | For an existing function, what to change.
+    argChange :: Text
+  }
 
 instance FromJSON FunctionArg where
   parseJSON = withObject "function" $ \o ->
@@ -59,7 +65,11 @@ newtype FunctionsArgs = FunctionsArgs [FunctionArg]
 instance FromJSON FunctionsArgs where
   parseJSON = withObject "SetFunctions" $ \o -> FunctionsArgs <$> o .: "functions"
 
-data PropertiesArgs = PropertiesArgs [Text] Text [PropertySpec]
+data PropertiesArgs = PropertiesArgs
+  { argPropertyImports :: [Text],
+    argHelpers :: Text,
+    argProperties :: [PropertySpec]
+  }
 
 instance FromJSON PropertiesArgs where
   parseJSON = withObject "SetProperties" $ \o ->
@@ -67,7 +77,10 @@ instance FromJSON PropertiesArgs where
     where
       property = withObject "property" $ \p -> PropertySpec <$> p .: "name" <*> p .: "source"
 
-data ImplementArgs = ImplementArgs Text [Text]
+data ImplementArgs = ImplementArgs
+  { argDefinition :: Text,
+    argImplementationImports :: [Text]
+  }
 
 instance FromJSON ImplementArgs where
   parseJSON = withObject "ImplementFunction" $ \o ->
@@ -83,15 +96,15 @@ checkModules components (TypesArgs args) = do
   when (null args) $ Left "List at least one module."
   checked <- traverse check args
   let names = [name | (_, name, _) <- checked]
-  when (length (nub names) /= length names) $ Left "List each module once."
+  unique "List each module once." names
   pure checked
   where
     check arg = do
       component <-
         maybe
-          (Left ("Unknown component " <> argComponent arg <> ". Choose one of: " <> T.intercalate ", " (map componentName components)))
+          (Left ("Unknown component " <> argComponent arg <> ". Choose one of: " <> T.intercalate ", " (map (componentNameText . componentName) components)))
           Right
-          (find ((== T.strip (argComponent arg)) . componentName) components)
+          (find ((== ComponentName (T.strip (argComponent arg))) . componentName) components)
       let name = T.strip (argModule arg)
       unless (validModuleName name) $ Left ("Invalid module name: " <> name)
       when (any (("import " `T.isPrefixOf`) . T.strip) (T.lines (argTypes arg))) $
@@ -108,7 +121,7 @@ checkModules components (TypesArgs args) = do
 applyModules :: [ModulePlan] -> Run -> Either Text Run
 applyModules plans run = do
   let paths = map planPath plans
-  when (length (nub paths) /= length paths) $ Left "Two modules have the same file."
+  unique "Two modules have the same file." paths
   case [planPath p | p <- modules (artefact run), planIsNew p, planPath p `elem` touchedFiles run, planPath p `notElem` paths] of
     [] -> pure ()
     dropped -> Left ("This run has already created " <> T.intercalate ", " (map T.pack dropped) <> "; keep those modules.")
@@ -124,8 +137,8 @@ applyFunctions previous (FunctionsArgs args) run = do
   when (null args) $ Left "Declare at least one function."
   specs <- traverse spec args
   let refs = map fnRef specs
-  when (length (nub refs) /= length refs) $ Left "Each function may be declared once per module."
-  pure run {artefact = (artefact run) {functions = specs}}
+  unique "Each function may be declared once per module." refs
+  pure (overFunctions (const specs) run)
   where
     plans = modules (artefact run)
     spec (FunctionArg moduleName name signature doc change) = do
@@ -146,8 +159,8 @@ applyProperties (PropertiesArgs importLines helpers props) run = do
   checkedImports <- traverse checkImport importLines
   checked <- traverse check props
   let names = map propName checked
-  when (length (nub names) /= length names) $ Left "Property names must be unique."
-  pure run {artefact = (artefact run) {propertyImports = checkedImports, propertyHelpers = helpers, properties = checked}}
+  unique "Property names must be unique." names
+  pure (overArtefact (\art -> art {propertyImports = checkedImports, propertyHelpers = helpers, properties = checked}) run)
   where
     check (PropertySpec name source) = do
       let n = T.strip name
@@ -161,18 +174,18 @@ applyImplementation ref (ImplementArgs definition importLines) run = do
   checkedImports <- traverse checkImport importLines
   let n = functionNameText (refName ref)
       body = T.unlines (filter (not . isSignature n) (T.lines definition))
-  if "instance " `T.isPrefixOf` n
+  if isInstanceName (refName ref)
     then unless (any (("instance " `T.isPrefixOf`) . T.stripStart) (T.lines definition)) $
       Left ("Give the complete declaration of " <> n <> ", starting with its instance head.")
     else unless (any (defines n . T.stripStart) (T.lines body)) $
       Left ("The definition must define " <> n <> ".")
   unless (any ((== ref) . fnRef) (functions (artefact run))) $
     Left ("Unknown function " <> n)
-  let kept = if "instance " `T.isPrefixOf` n then definition else body
+  let kept = if isInstanceName (refName ref) then definition else body
       set f
         | fnRef f == ref = f {fnBody = Just (T.stripEnd kept), fnImports = checkedImports}
         | otherwise = f
-  pure run {artefact = (artefact run) {functions = map set (functions (artefact run))}}
+  pure (overFunctions (map set) run)
   where
     isSignature n line = any (`T.isPrefixOf` T.strip line) [n <> " ::", n <> "::"]
     -- An equation of the function, prefix or infix.
@@ -185,11 +198,13 @@ applyImplementation ref (ImplementArgs definition importLines) run = do
 -- | Adds existing functions the design broke, as holes, given each one's
 -- declaration before the run. Functions already in the run are skipped.
 addRepairs :: [(FunctionRef, Text)] -> Run -> Run
-addRepairs broken run =
-  run {artefact = art {functions = functions art ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef (functions art)]}}
+addRepairs broken = overFunctions (\fns -> fns ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef fns])
   where
-    art = artefact run
     repair ref previous = FunctionSpec ref Repair "" "" "" Nothing Undefined [] (Just previous)
+
+-- | Fails with the message if any item repeats.
+unique :: (Eq a) => Text -> [a] -> Either Text ()
+unique message xs = when (length (nub xs) /= length xs) (Left message)
 
 checkImport :: Text -> Either Text Text
 checkImport line
@@ -198,7 +213,7 @@ checkImport line
 
 validFunctionName :: Text -> Bool
 validFunctionName name = case T.uncons name of
-  Just (c, rest) -> (isLower c || c == '_') && T.all (\x -> isAlphaNum x || x == '_' || x == '\'') rest
+  Just (c, rest) -> (isLower c || c == '_') && T.all isIdentChar rest
   Nothing -> False
 
 stripPrefixes :: [Text] -> Text -> Text

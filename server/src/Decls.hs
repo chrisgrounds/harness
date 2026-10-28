@@ -25,6 +25,7 @@ module Decls
     parameters,
     exportName,
     exportedNames,
+    isIdentChar,
     addPragmas,
     addImports,
     addExports,
@@ -32,7 +33,7 @@ module Decls
 where
 
 import Data.Char (isAlphaNum, isLower, isSpace)
-import Data.List (findIndex, isPrefixOf)
+import Data.List (findIndex, isPrefixOf, nub)
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -175,17 +176,17 @@ adaptEquations name newSignature d = do
     adapt arity total wildcards l = case T.stripPrefix name l of
       Just rest | T.null rest || isSpace (T.head rest) -> do
         let (patterns, body) = splitEquation rest
-            tokens = patternTokens patterns
-        if length tokens /= arity
+            given = patternTokens patterns
+        if length given /= arity
           then Nothing
-          else Just (T.unwords (name : place total wildcards tokens) <> (if T.null (T.strip body) then "" else " " <> T.stripStart body))
+          else Just (T.unwords (name : place total wildcards given) <> (if T.null (T.strip body) then "" else " " <> T.stripStart body))
       _ -> Just l
     place total wildcards = go 0
       where
-        go i tokens
+        go i given
           | i >= total = []
-          | i `elem` wildcards = "_" : go (i + 1) tokens
-          | otherwise = case tokens of
+          | i `elem` wildcards = "_" : go (i + 1) given
+          | otherwise = case given of
               t : rest -> t : go (i + 1) rest
               [] -> []
 
@@ -223,39 +224,63 @@ parameters signature = map collapse (dropLast (splitArrows (afterContext (afterF
 
 -- | A type split at its top-level arrows.
 splitArrows :: Text -> [Text]
-splitArrows = map (T.strip . T.pack) . go (0 :: Int) "" . T.unpack
-  where
-    go _ acc [] = [reverse acc]
-    go depth acc ('-' : '>' : rest) | depth == 0 = reverse acc : go depth "" rest
-    go depth acc (c : rest)
-      | c `elem` ("([{" :: String) = go (depth + 1) (c : acc) rest
-      | c `elem` (")]}" :: String) = go (depth - 1) (c : acc) rest
-      | otherwise = go depth (c : acc) rest
+splitArrows = map (T.strip . render) . splitTop (isToken Symbol "->") . tokens
 
 -- | An equation's patterns and the rest from its @=@ or first guard.
 splitEquation :: Text -> (Text, Text)
-splitEquation t = T.splitAt (go (0 :: Int) 0 (T.unpack t)) t
-  where
-    go _ i [] = i
-    go depth i (c : rest)
-      | c `elem` ("([{" :: String) = go (depth + 1) (i + 1) rest
-      | c `elem` (")]}" :: String) = go (depth - 1) (i + 1) rest
-      | c == '"' = let n = stringLength rest in go depth (i + 1 + n) (drop n rest)
-      | depth == 0, c `elem` ("=|" :: String), not (symbolAround i) = i
-      | otherwise = go depth (i + 1) rest
-    symbolAround i = any isSymbol [ch | j <- [i - 1, i + 1], j >= 0, j < T.length t, let ch = T.index t j]
+splitEquation t = case [tokenStart tok | tok <- topLevel (tokens t), isToken Symbol "=" tok || isToken Symbol "|" tok] of
+  i : _ -> T.splitAt i t
+  [] -> (t, "")
 
 -- | An equation's patterns, split at top-level spaces.
 patternTokens :: Text -> [Text]
-patternTokens = filter (not . T.null) . map (T.strip . T.pack) . go (0 :: Int) "" . T.unpack
+patternTokens = filter (not . T.null) . map (render . filter ((/= CommentToken) . tokenKind)) . splitTop ((== Space) . tokenKind) . tokens
+
+-- Lexing
+
+-- | Enough of Haskell's lexical structure to find a source's top-level
+-- arrows, equals signs, spaces and commas: brackets nest, and literals and
+-- comments hide what is in them.
+data TokenKind = Open | Close | Space | CommentToken | Literal | Symbol | Word | Punctuation
+  deriving (Eq, Show)
+
+data Token = Token
+  { tokenKind :: TokenKind,
+    tokenText :: Text,
+    -- | Where it starts in the source, in characters.
+    tokenStart :: Int
+  }
+
+tokens :: Text -> [Token]
+tokens = go 0 . T.unpack
   where
-    go _ acc [] = [reverse acc]
-    go depth acc (c : rest)
-      | c `elem` ("([{" :: String) = go (depth + 1) (c : acc) rest
-      | c `elem` (")]}" :: String) = go (depth - 1) (c : acc) rest
-      | c == '"' = let n = stringLength rest in go depth (reverse (take n rest) ++ c : acc) (drop n rest)
-      | depth == 0 && isSpace c = reverse acc : go depth "" rest
-      | otherwise = go depth (c : acc) rest
+    go _ [] = []
+    go i s@(c : rest)
+      | c `elem` ("([{" :: String) && not ("{-" `isPrefixOf` s) = emit Open 1
+      | c `elem` (")]}" :: String) = emit Close 1
+      | isSpace c = emit Space (length (takeWhile isSpace s))
+      | "--" `isPrefixOf` s, lineComment (T.pack line) = emit CommentToken (length line)
+      | "{-" `isPrefixOf` s = emit CommentToken (blockLength s)
+      | c == '"' = emit Literal (1 + stringLength rest)
+      | c == '\'', Just n <- charLength rest = emit Literal (1 + n)
+      | isSymbol c = emit Symbol (length (takeWhile isSymbol s))
+      | isIdentChar c = emit Word (length (takeWhile isIdentChar s))
+      | otherwise = emit Punctuation 1
+      where
+        line = takeWhile (/= '\n') s
+        emit kind n = Token kind (T.pack (take n s)) i : go (i + n) (drop n s)
+
+-- | The length of a nested block comment, from its opening @{-@.
+blockLength :: String -> Int
+blockLength = go (0 :: Int) 0
+  where
+    go depth n s = case s of
+      '{' : '-' : rest -> go (depth + 1) (n + 2) rest
+      '-' : '}' : rest
+        | depth <= 1 -> n + 2
+        | otherwise -> go (depth - 1) (n + 2) rest
+      _ : rest -> go depth (n + 1) rest
+      [] -> n
 
 -- | The length of a string literal's rest, up to and including its closing quote.
 stringLength :: String -> Int
@@ -265,6 +290,42 @@ stringLength = go 0
     go n ('"' : _) = n + 1
     go n (_ : rest) = go (n + 1) rest
     go n [] = n
+
+-- | The length of a character literal's rest, up to and including its
+-- closing quote, if it is one: @'x'@ or @'\\n'@, not a quote in @''Foo@.
+charLength :: String -> Maybe Int
+charLength s = case s of
+  '\\' : rest | (escape, '\'' : _) <- break (== '\'') rest -> Just (length escape + 2)
+  c : '\'' : _ | c /= '\'' -> Just 2
+  _ -> Nothing
+
+isToken :: TokenKind -> Text -> Token -> Bool
+isToken kind text tok = tokenKind tok == kind && tokenText tok == text
+
+render :: [Token] -> Text
+render = T.concat . map tokenText
+
+-- | The tokens outside every bracket.
+topLevel :: [Token] -> [Token]
+topLevel = go (0 :: Int)
+  where
+    go _ [] = []
+    go depth (t : ts) = case tokenKind t of
+      Open -> go (depth + 1) ts
+      Close -> go (depth - 1) ts
+      _ | depth == 0 -> t : go depth ts
+      _ -> go depth ts
+
+-- | The tokens split at, and without, the top-level ones the test picks.
+splitTop :: (Token -> Bool) -> [Token] -> [[Token]]
+splitTop at = go (0 :: Int) []
+  where
+    go _ acc [] = [reverse acc]
+    go depth acc (t : ts)
+      | depth == 0 && at t = reverse acc : go depth [] ts
+      | tokenKind t == Open = go (depth + 1) (t : acc) ts
+      | tokenKind t == Close = go (depth - 1) (t : acc) ts
+      | otherwise = go depth (t : acc) ts
 
 -- | How a declaration is exported, if it defines a name.
 exportName :: Decl -> Maybe Text
@@ -280,7 +341,7 @@ addPragmas extensions sf = sf {sourceHeader = ["{-# LANGUAGE " <> e <> " #-}" | 
   where
     enabled = concat [map T.strip (T.splitOn "," (pragmaBody l)) | l <- sourceHeader sf, "LANGUAGE" `T.isInfixOf` l]
     pragmaBody = T.replace "#-}" "" . snd . T.breakOnEnd "LANGUAGE"
-    missing = dedupe [T.strip e | e <- extensions, T.strip e `notElem` enabled]
+    missing = nub [T.strip e | e <- extensions, T.strip e `notElem` enabled]
 
 -- | Adds import lines the file does not already have, after its last import.
 addImports :: [Text] -> SourceFile -> SourceFile
@@ -290,7 +351,7 @@ addImports imports sf
   where
     hs = sourceHeader sf
     existing = [collapse l | l <- hs, "import " `T.isPrefixOf` l]
-    missing = dedupe [collapse i | i <- imports, collapse i `notElem` existing]
+    missing = nub [collapse i | i <- imports, collapse i `notElem` existing]
     lastImport = listToMaybe (reverse [i | (i, l) <- zip [0 ..] hs, "import " `T.isPrefixOf` l])
     at = case lastImport of
       Just i -> i + 1 + length (takeWhile continues (drop (i + 1) hs))
@@ -305,30 +366,17 @@ addImports imports sf
 -- | The items of the module's export list, or 'Nothing' if it has none.
 exportedNames :: SourceFile -> Maybe [Text]
 exportedNames sf = do
-  (open, _, close) <- exportListEnd s
-  pure . filter (not . T.null) . map T.strip . splitTop $ withoutComments (take (close - open - 1) (drop (open + 1) s))
+  (open, _, close) <- exportList text
+  let items = splitTop (isToken Punctuation ",") (tokens (T.take (close - open - 1) (T.drop (open + 1) text)))
+  pure (filter (not . T.null) (map (T.strip . render . filter ((/= CommentToken) . tokenKind)) items))
   where
-    s = T.unpack (T.intercalate "\n" (sourceHeader sf))
-    withoutComments = unlines . map (T.unpack . dropComment . T.pack) . lines
-    -- A line without its @--@ comment; @-->@ and other operators stay.
-    dropComment t = case T.breakOn "--" t of
-      (before, rest)
-        | T.null rest -> t
-        | lineComment rest -> before
-        | otherwise -> before <> "--" <> dropComment (T.drop 2 rest)
-    splitTop = go (0 :: Int) ""
-    go _ acc [] = [T.pack (reverse acc)]
-    go depth acc (c : cs)
-      | c == '(' = go (depth + 1) (c : acc) cs
-      | c == ')' = go (depth - 1) (c : acc) cs
-      | c == ',' && depth == 0 = T.pack (reverse acc) : go depth "" cs
-      | otherwise = go depth (c : acc) cs
+    text = T.intercalate "\n" (sourceHeader sf)
 
 -- | Adds names to the module's export list, if it has one and does not
 -- already export them. A module without an export list already exports
 -- everything.
 addExports :: [Text] -> SourceFile -> SourceFile
-addExports wanted sf = case (names, exportListEnd (T.unpack text)) of
+addExports wanted sf = case (names, exportList text) of
   ([], _) -> sf
   (_, Nothing) -> sf
   (_, Just (_, lastChar, _)) ->
@@ -345,46 +393,31 @@ addExports wanted sf = case (names, exportListEnd (T.unpack text)) of
     text = T.intercalate "\n" (sourceHeader sf)
     base = T.takeWhile (/= ' ') . T.strip
     present = maybe [] (map base) (exportedNames sf)
-    names = dedupe [n | n <- wanted, base n `notElem` present]
+    names = nub [n | n <- wanted, base n `notElem` present]
 
 -- | The positions of the export list's opening parenthesis, of the last
 -- character before its closing parenthesis that is not whitespace or part
 -- of a comment, and of the closing parenthesis.
-exportListEnd :: String -> Maybe (Int, Int, Int)
-exportListEnd s = do
-  m <- findModule 0 s
-  let afterName = skipName (m + length ("module" :: String))
-  open <- case skipBlank afterName of
-    i | i < length s && s !! i == '(' -> Just i
+exportList :: Text -> Maybe (Int, Int, Int)
+exportList text = case break startsModule (zip (Nothing : map Just toks) toks) of
+  (_, (_, _) : rest) -> case dropWhile name (map snd rest) of
+    open : more | isToken Open "(" open -> close (tokenStart open) (tokenStart open) (1 :: Int) more
     _ -> Nothing
-  (lastSig, close) <- scan (open + 1) (1 :: Int) open
-  pure (open, lastSig, close)
+  (_, []) -> Nothing
   where
-    findModule i rest
-      | "module" `isPrefixOf` rest && (i == 0 || s !! (i - 1) == '\n') = Just i
-      | otherwise = case rest of
-          _ : more -> findModule (i + 1) more
-          [] -> Nothing
-    skipName i = let j = skipBlank i in j + length (takeWhile (\c -> isAlphaNum c || c `elem` ("._'" :: String)) (drop j s))
-    skipBlank i = case drop i s of
-      c : _ | isSpace c -> skipBlank (i + 1)
-      rest@('-' : '-' : _) | lineComment (T.pack (takeWhile (/= '\n') rest)) -> skipBlank (i + length (takeWhile (/= '\n') rest))
-      '{' : '-' : _ -> skipBlank (skipBlock (i + 2) 1)
-      _ -> i
-    skipBlock i depth = case drop i s of
-      _ | depth == (0 :: Int) -> i
-      '{' : '-' : _ -> skipBlock (i + 2) (depth + 1)
-      '-' : '}' : _ -> skipBlock (i + 2) (depth - 1)
-      _ : _ -> skipBlock (i + 1) depth
-      [] -> i
-    scan i depth lastSig = case drop i s of
-      [] -> Nothing
-      _ | skipBlank i > i -> scan (skipBlank i) depth lastSig
-      '(' : _ -> scan (i + 1) (depth + 1) i
-      ')' : _
-        | depth == 1 -> Just (lastSig, i)
-        | otherwise -> scan (i + 1) (depth - 1) i
-      _ -> scan (i + 1) depth i
+    toks = tokens text
+    startsModule (before, t) = isToken Word "module" t && maybe True (\b -> tokenKind b == Space && "\n" `T.isSuffixOf` tokenText b) before
+    -- The module's name, and the space and comments around it.
+    name t = tokenKind t `elem` [Space, CommentToken] || (tokenKind t == Word && tokenText t /= "where") || isToken Symbol "." t
+    end t = tokenStart t + T.length (tokenText t) - 1
+    close _ _ _ [] = Nothing
+    close open lastSig depth (t : ts) = case tokenKind t of
+      Open -> close open (end t) (depth + 1) ts
+      Close
+        | depth == 1 -> Just (open, lastSig, tokenStart t)
+        | otherwise -> close open (end t) (depth - 1) ts
+      kind | kind `elem` [Space, CommentToken] -> close open lastSig depth ts
+      _ -> close open (end t) depth ts
 
 -- Classifying lines
 
@@ -529,10 +562,14 @@ equationName code
 
 isVariable :: Text -> Bool
 isVariable name = case T.uncons name of
-  Just (c, rest) -> (isLower c || c == '_') && T.all (\x -> isAlphaNum x || x == '_' || x == '\'') rest && name `notElem` keywords
+  Just (c, rest) -> (isLower c || c == '_') && T.all isIdentChar rest && name `notElem` keywords
   Nothing -> False
   where
     keywords = ["case", "do", "if", "let", "of", "then", "else", "in", "where"]
+
+-- | A character that can follow the first one in an identifier.
+isIdentChar :: Char -> Bool
+isIdentChar c = isAlphaNum c || c == '_' || c == '\''
 
 isOperatorName :: Text -> Bool
 isOperatorName name = case T.stripPrefix "(" name >>= T.stripSuffix ")" of
@@ -549,6 +586,3 @@ trailing d = reverse (takeWhile loose (reverse (declLines d)))
 
 collapse :: Text -> Text
 collapse = T.unwords . T.words
-
-dedupe :: [Text] -> [Text]
-dedupe = foldr (\x acc -> x : filter (/= x) acc) []

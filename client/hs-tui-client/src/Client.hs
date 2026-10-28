@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Client (receiveEvent, worker, NetworkEvent (..), safeText, stepChanges, statusIcon) where
+module Client (receiveEvent, receiveGreeting, worker, NetworkEvent (..), safeText, stepChanges, statusIcon) where
 
 import Control.Concurrent (Chan, readChan)
 import Control.Exception (IOException, displayException, try)
@@ -25,21 +25,24 @@ receiveEvent sock pending = do
   reply <- receiveJSON sock pending
   maybe (ioError (userError "Server disconnected before the run finished.")) pure reply
 
+-- | The model the server greets each connection with, and the bytes after it.
+receiveGreeting :: Socket -> IO (Model, B.ByteString)
+receiveGreeting sock = do
+  (event, rest) <- receiveEvent sock B.empty
+  case event of
+    Connected m -> pure (m, rest)
+    _ -> ioError (userError "Server did not announce its model.")
+
 -- | Publishes the model from the server's greeting, then sends each
 -- requested run and publishes its events until the turn finishes. A lost
 -- connection is published as 'Disconnected'.
 worker :: Socket -> Chan StartRun -> (NetworkEvent -> IO ()) -> IO ()
 worker sock requests publish = do
-  result <- try (greet >>= loop) :: IO (Either IOException ())
+  result <- try (receiveGreeting sock >>= \(m, rest) -> publish (ServerModel m) >> loop rest) :: IO (Either IOException ())
   case result of
     Left err -> publish (Disconnected (T.pack (displayException err)))
     Right () -> pure ()
   where
-    greet = do
-      (event, rest) <- receiveEvent sock B.empty
-      case event of
-        Connected m -> publish (ServerModel m) >> pure rest
-        _ -> ioError (userError "Server did not announce its model.")
     loop pending = do
       req <- readChan requests
       sendJSON sock req

@@ -133,7 +133,7 @@ replyMessage = withObject "message" $ \o -> do
       details <- o .:? "stop_details"
       category <- maybe (pure Nothing) (withObject "stop_details" (.:? "category")) details
       let note = "The model declined this request" <> maybe "" (\c -> " (" <> c <> ")") category <> "."
-      pure (Message Assistant (Just note) [] Nothing Nothing Nothing, outputTokens)
+      pure (textMessage Assistant note, outputTokens)
     else do
       texts <- concat <$> mapM blockText blocks
       calls <- concat <$> mapM blockToolUse blocks

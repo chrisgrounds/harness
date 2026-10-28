@@ -11,11 +11,13 @@ module Core.Run
     TaskStatus (..),
     FunctionName (..),
     ModuleName (..),
+    ComponentName (..),
     FunctionRef (..),
     FunctionKind (..),
     Placeholder (..),
     FunctionSpec (..),
     fnName,
+    isInstanceName,
     PropertySpec (..),
     ModulePlan (..),
     Artefact (..),
@@ -25,6 +27,10 @@ module Core.Run
     stepLabel,
     emptyArtefact,
     newRun,
+    addHistory,
+    addWarning,
+    overArtefact,
+    overFunctions,
     setStep,
     setTask,
     restartFrom,
@@ -35,6 +41,7 @@ where
 
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Text (Text)
+import qualified Data.Text as T
 import GHC.Generics (Generic)
 
 newtype Requirement = Requirement {requirementText :: Text}
@@ -61,6 +68,15 @@ newtype FunctionName = FunctionName {functionNameText :: Text}
 
 newtype ModuleName = ModuleName {moduleNameText :: Text}
   deriving newtype (Eq, Ord, Show, ToJSON, FromJSON)
+
+-- | A cabal target, such as @demo@ for a library or @demo:exe:app@.
+newtype ComponentName = ComponentName {componentNameText :: Text}
+  deriving newtype (Eq, Ord, Show, ToJSON, FromJSON)
+
+-- | Whether a repaired declaration is an instance, named like
+-- @instance Show Foo@, rather than a function.
+isInstanceName :: FunctionName -> Bool
+isInstanceName (FunctionName name) = "instance " `T.isPrefixOf` name
 
 -- | A function by the file it is defined in, since names repeat across
 -- modules (every executable has a @main@).
@@ -122,7 +138,7 @@ data PropertySpec = PropertySpec
 -- | A module the run creates or changes.
 data ModulePlan = ModulePlan
   { -- | The cabal target the module belongs to, e.g. @demo@ or @demo:exe:app@.
-    planComponent :: Text,
+    planComponent :: ComponentName,
     planModule :: ModuleName,
     -- | Relative to the project root.
     planPath :: FilePath,
@@ -201,6 +217,18 @@ newRun req =
       warnings = [],
       history = []
     }
+
+addHistory :: Text -> Run -> Run
+addHistory text run = run {history = history run ++ [text]}
+
+addWarning :: Text -> Run -> Run
+addWarning text run = run {warnings = warnings run ++ [text]}
+
+overArtefact :: (Artefact -> Artefact) -> Run -> Run
+overArtefact f run = run {artefact = f (artefact run)}
+
+overFunctions :: ([FunctionSpec] -> [FunctionSpec]) -> Run -> Run
+overFunctions f = overArtefact (\art -> art {functions = f (functions art)})
 
 setStep :: Step -> StepStatus -> Run -> Run
 setStep step status run =
