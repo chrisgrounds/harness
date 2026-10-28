@@ -49,6 +49,11 @@ decide iterationNumber allFunctions previouslyFailed outcome
                   <> T.unlines unattributed
               )
         | null attributed -> Reimplement [(name, Just (T.unlines unattributed)) | name <- allFunctions]
+        | any (`elem` previouslyFailed) (failedChecks outcome) ->
+            Redesign
+              ( "These errors came back in the same functions after they were reimplemented, so they are probably caused by the design or by code elsewhere:\n"
+                  <> T.unlines (map snd attributed ++ unattributed)
+              )
         | otherwise -> Reimplement [(name, Just (T.unlines (errors : unattributed))) | (name, errors) <- attributed]
       PropertiesFailed failed suspects report
         | any (`elem` previouslyFailed) failed ->
@@ -66,12 +71,17 @@ decide iterationNumber allFunctions previouslyFailed outcome
 -- function, without where it is.
 failedChecks :: Outcome -> [Text]
 failedChecks (PropertiesFailed failed _ _) = failed
-failedChecks (TypeErrors [] unattributed) = ["build: " <> maybe "" withoutLocation (firstProblem (T.unlines unattributed))]
-  where
-    withoutLocation problem = case T.breakOnEnd " (" problem of
-      (before, location) | not (T.null before), ")" `T.isSuffixOf` location -> T.dropEnd 2 before
-      _ -> problem
+failedChecks (TypeErrors [] unattributed) = ["build: " <> problem (T.unlines unattributed)]
+failedChecks (TypeErrors attributed _) = [functionNameText (refName ref) <> ": " <> problem errors | (ref, errors) <- attributed]
 failedChecks _ = []
+
+-- | The first problem in errors, without where it is.
+problem :: Text -> Text
+problem = maybe "" withoutLocation . firstProblem
+  where
+    withoutLocation text = case T.breakOnEnd " (" text of
+      (before, location) | not (T.null before), ")" `T.isSuffixOf` location -> T.dropEnd 2 before
+      _ -> text
 
 -- | A one-line description for the run's history.
 describeOutcome :: Outcome -> Text
@@ -89,7 +99,8 @@ redesignReason (SkeletonFailed errors) =
     first : _ | "The signatures of these existing functions" `T.isPrefixOf` first -> first
     lines' -> fromMaybe (fromMaybe "the build failed without a GHC error." (listToMaybe lines')) (firstProblem errors)
 redesignReason (PropertiesFailed {}) = "they still fail after the functions they mention were reimplemented, so the properties or the design may be wrong."
-redesignReason (TypeErrors {}) = "it came back after every function was reimplemented, so the design has to change."
+redesignReason (TypeErrors [] _) = "it came back after every function was reimplemented, so the design has to change."
+redesignReason (TypeErrors {}) = "they came back in the same functions after those were reimplemented, so the cause is probably elsewhere."
 redesignReason _ = "it could not be fixed by reimplementing functions."
 
 -- | The functions an iteration reimplements, out of all the run's: all of

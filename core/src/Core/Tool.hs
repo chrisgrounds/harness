@@ -28,6 +28,7 @@ data ToolName
   | SetFunctions
   | SetProperties
   | ImplementFunction
+  | Refactor
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 instance FromJSON ToolName where

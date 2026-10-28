@@ -8,6 +8,7 @@ module Prompts
     revisionNote,
     brokenSignaturesNote,
     fixUpInstruction,
+    reviewInstruction,
     callToolNudge,
     implementSystemPrompt,
     implementInstruction,
@@ -115,6 +116,25 @@ fixUpInstruction tool errors =
       SetTypes -> "modules and types"
       SetFunctions -> "functions"
       _ -> "properties"
+
+-- | Asks for duplication in the run's functions to be refactored away.
+reviewInstruction :: [(ModuleName, [FunctionSpec])] -> Text
+reviewInstruction written =
+  T.unlines $
+    [ "Step 4: review. The run's code type checks and its properties pass. These are the functions it wrote:",
+      ""
+    ]
+      ++ concat
+        [ ["```haskell", "-- " <> moduleNameText m]
+            ++ concat [[functionNameText (fnName f) <> " :: " <> fnSignature f | not (T.null (fnSignature f))] ++ maybe [] T.lines (fnBody f) ++ [""] | f <- fns]
+            ++ ["```", ""]
+        | (m, fns) <- written
+        ]
+      ++ [ "Look for duplication: logic repeated across these functions, or code that already exists elsewhere in the codebase (use ReadFile and Search).",
+           "If there is any, call Refactor with new definitions for the functions that should change, and any helpers they should share.",
+           "Each definition must define only its function. The refactor is kept only if the code still builds and the properties still pass.",
+           "If nothing is duplicated, reply without calling Refactor."
+         ]
 
 callToolNudge :: ToolName -> Text
 callToolNudge name = "You have not called " <> toolNameText name <> " successfully yet. Call it now to complete this step."

@@ -1,0 +1,60 @@
+{
+  "type": "function",
+  "function": {
+    "name": "Refactor",
+    "description": "Replaces the definitions of functions this run wrote, and adds helpers they share, to remove duplication. Only call it if something is duplicated.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "functions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "module": {
+                "type": "string",
+                "description": "The module the function is in, from step 1"
+              },
+              "name": {
+                "type": "string",
+                "description": "A function this run wrote, to redefine it, or a new helper"
+              },
+              "signature": {
+                "type": "string",
+                "description": "The type only, without the name or ::. Required for a new helper; empty keeps an existing function's"
+              },
+              "doc": {
+                "type": "string",
+                "description": "For a new helper, what it does, written into the code as its documentation"
+              },
+              "definition": {
+                "type": "string",
+                "description": "The complete definition: every equation and any where clause, without the type signature. It must define only this function"
+              },
+              "imports": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Complete import lines the definition needs beyond the module's imports"
+              }
+            },
+            "required": [
+              "module",
+              "name",
+              "signature",
+              "doc",
+              "definition",
+              "imports"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "functions"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

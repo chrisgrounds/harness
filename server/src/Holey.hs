@@ -167,7 +167,7 @@ pipeline = do
                             mentions (fnName f) (propSource p)
                           ]
                   loopBack typesStep chat previouslyFailed (PropertiesFailed failed suspects (propertyReport output))
-                Right () -> pure ()
+                Right () -> reviewStep chat
 
     loopBack :: Text -> Chat -> [Text] -> Outcome -> Holey ()
     loopBack typesStep chat previouslyFailed outcome = do
@@ -233,11 +233,16 @@ definitionsFor names = asks (\env -> map (toolDefinitions (config env)) names)
 designStep :: Step -> ToolName -> Text -> Chat -> Holey Chat
 designStep step tool instruction chat = do
   modifyRun (setStep step Running)
-  definitions <- definitionsFor [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties]
-  (done, final) <- untilAccepted 30 tool (designTool tool) (addMessage (textMessage User instruction) chat {tools = definitions})
+  definitions <- definitionsFor designTools
+  (done, final) <- untilAccepted 30 3 tool (designTool tool) (addMessage (textMessage User instruction) chat {tools = definitions})
   if done
     then modifyRun (setStep step Passed) >> pure final
     else stop step ("The model did not call " <> toolNameText tool <> ".")
+
+-- | The tools the design conversation offers at every step, the review's
+-- included.
+designTools :: [ToolName]
+designTools = [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties, Refactor]
 
 -- | What a tool call did: answered the model, or tried to record the step's
 -- result, which was rejected with a reason or accepted.
@@ -255,6 +260,7 @@ designTool tool request = do
             SetTypes -> either (pure . Left) setTypes (decodeArgs args)
             SetFunctions -> either (pure . Left) setFunctions (decodeArgs args)
             SetProperties -> either (pure . Left) (tryModifyRun . applyProperties) (decodeArgs args)
+            Refactor -> either (pure . Left) (tryModifyRun . applyRefactor) (decodeArgs args)
             _ -> pure (Left unavailable)
   where
     function = toolRequestFunction request
@@ -361,22 +367,29 @@ typeCheck = inStep TypeCheck (\(attributed, rest) -> brief (T.unlines (map snd a
 
 -- | Writes the artefact and builds every package with its test suites.
 writeAndBuild :: Step -> Holey (Either Text ())
-writeAndBuild step = do
+writeAndBuild step = writeFiles >>= either (stop step) (const (buildProject step))
+
+-- | Writes every file in the plan.
+writeFiles :: Holey (Either Text ())
+writeFiles = do
   run <- getRun
   Env {projectRoot = root, project = info, originals = origs} <- ask
   written <- liftIO (writeArtefact root (components info) origs run)
-  case written of
-    Left err -> stop step err
-    Right touched -> do
-      modifyRun (\r -> r {touchedFiles = touched})
-      built <- liftIO (buildAll root)
-      current <- iteration <$> getRun
-      logPath <- asks buildLog
-      liftIO . TIO.appendFile logPath $
-        "== Iteration " <> T.pack (show current) <> ", " <> stepLabel step <> ": " <> either (const "failed") (const "passed") built <> " ==\n"
-          <> either id id built
-          <> "\n"
-      pure (() <$ built)
+  traverse (\touched -> modifyRun (\r -> r {touchedFiles = touched})) written
+
+-- | Builds every package with its test suites, keeping the output in the
+-- build log.
+buildProject :: Step -> Holey (Either Text ())
+buildProject step = do
+  root <- asks projectRoot
+  built <- liftIO (buildAll root)
+  current <- iteration <$> getRun
+  logPath <- asks buildLog
+  liftIO . TIO.appendFile logPath $
+    "== Iteration " <> T.pack (show current) <> ", " <> stepLabel step <> ": " <> either (const "failed") (const "passed") built <> " ==\n"
+      <> either id id built
+      <> "\n"
+  pure (() <$ built)
 
 -- | Blames each error in build output on where it is in the files as
 -- written, with the file it is in. An instance the run declared in step 1
@@ -433,10 +446,10 @@ previousDecls refs = do
 declText :: Decl -> Text
 declText = T.stripEnd . T.unlines . declLines
 
--- | Runs an agent until it records the step's result with the tool,
--- reminding it to up to twice.
-untilAccepted :: Int -> ToolName -> (ToolRequest -> Holey ToolReply) -> Chat -> Holey (Bool, Chat)
-untilAccepted budget tool handler chat = do
+-- | Runs an agent until it records the step's result with the tool, giving
+-- it that many attempts, each after the first with a reminder.
+untilAccepted :: Int -> Int -> ToolName -> (ToolRequest -> Holey ToolReply) -> Chat -> Holey (Bool, Chat)
+untilAccepted budget attempts tool handler chat = do
   env <- ask
   accepted <- liftIO (newIORef False)
   let respond request = do
@@ -453,7 +466,7 @@ untilAccepted budget tool handler chat = do
           then pure c'
           else attempt (remaining - 1) (addMessage (textMessage User (callToolNudge tool)) c')
   liftIO $ do
-    final <- attempt 3 chat
+    final <- attempt attempts chat
     done <- readIORef accepted
     pure (done, final)
 
@@ -499,7 +512,7 @@ implementOne design moduleSource fn props feedback = do
   definitions <- definitionsFor [ImplementFunction]
   let chat = Chat [textMessage User (implementInstruction design moduleSource fn props feedback), textMessage System implementSystemPrompt] m definitions
   env <- ask
-  outcome <- liftIO (try (runReaderT (untilAccepted 6 ImplementFunction handler chat) env))
+  outcome <- liftIO (try (runReaderT (untilAccepted 6 3 ImplementFunction handler chat) env))
   modifyRun . setTask (fnRef fn) $ case outcome of
     Right (True, _) -> Done
     Right (False, _) -> TaskFailed "The model did not submit an implementation."
@@ -511,11 +524,40 @@ implementOne design moduleSource fn props feedback = do
 
 -- | Runs the property suite. A failed run returns its output.
 propertiesStep :: Holey (Either Text ())
-propertiesStep = inStep RunProperties (brief . propertyReport) $ do
+propertiesStep = inStep RunProperties (brief . propertyReport) runProperties
+
+runProperties :: Holey (Either Text ())
+runProperties = do
   run <- getRun
   Env {projectRoot = root, project = info} <- ask
-  suite <- maybe (stop RunProperties "No module was chosen.") pure (suiteOf (components info) (artefact run))
-  fmap (const ()) <$> liftIO (runSuite root (suiteCabalTarget suite))
+  case suiteOf (components info) (artefact run) of
+    Nothing -> pure (Left "No module was chosen.")
+    Just suite -> fmap (const ()) <$> liftIO (runSuite root (suiteCabalTarget suite))
+
+-- | Asks the design conversation to refactor duplication out of the run's
+-- functions. A refactor is kept only if everything still builds and the
+-- properties still pass; otherwise it is undone. The step never fails the
+-- run.
+reviewStep :: Chat -> Holey ()
+reviewStep chat = do
+  modifyRun (setStep Review Running)
+  before <- artefact <$> getRun
+  let written = [(planModule p, [f | f <- functions before, refPath (fnRef f) == planPath p]) | p <- modules before]
+      repaired = [f | f <- functions before, refPath (fnRef f) `notElem` map planPath (modules before)]
+      instruction = reviewInstruction (written ++ [(ModuleName (T.pack (refPath (fnRef f))), [f]) | f <- repaired])
+  definitions <- definitionsFor designTools
+  (refactored, _) <- untilAccepted 30 1 Refactor (designTool Refactor) (addMessage (textMessage User instruction) chat {tools = definitions})
+  when refactored $ do
+    after <- artefact <$> getRun
+    let changed = describeWork (map fnRef (functions after)) [fnRef f | f <- functions after, f `notElem` functions before]
+    checked <- writeFiles >>= either (pure . Left) (const (buildProject Review)) >>= either (pure . Left) (const runProperties)
+    case checked of
+      Right () -> note ("Review: refactored " <> changed <> " to remove duplication.")
+      Left output -> do
+        modifyRun (overArtefact (const before))
+        _ <- writeFiles
+        note ("Review: undid the refactor of " <> changed <> ", because " <> maybe "the properties failed" (<> ".") (firstProblem output))
+  modifyRun (setStep Review Passed)
 
 -- | Marks the running step (or the first step) as failed.
 failCurrent :: Progress -> Text -> IO ()

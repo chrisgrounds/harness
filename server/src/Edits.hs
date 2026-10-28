@@ -9,12 +9,15 @@ module Edits
     FunctionsArgs (..),
     PropertiesArgs (..),
     ImplementArgs (..),
+    RefactorArgs (..),
+    RefactorArg (..),
     decodeArgs,
     checkModules,
     applyModules,
     applyFunctions,
     applyProperties,
     applyImplementation,
+    applyRefactor,
     addRepairs,
   )
 where
@@ -23,7 +26,7 @@ import Control.Monad (unless, when)
 import Core
 import Data.Aeson
 import Data.Char (isLower)
-import Decls (isIdentChar)
+import Decls (Decl (..), SourceFile (..), isIdentChar, splitSource)
 import Data.List (find, nub)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -172,20 +175,31 @@ applyProperties (PropertiesArgs importLines helpers props) run = do
 applyImplementation :: FunctionRef -> ImplementArgs -> Run -> Either Text Run
 applyImplementation ref (ImplementArgs definition importLines) run = do
   checkedImports <- traverse checkImport importLines
-  let n = functionNameText (refName ref)
+  body <- definitionOf (refName ref) definition
+  unless (any ((== ref) . fnRef) (functions (artefact run))) $
+    Left ("Unknown function " <> functionNameText (refName ref))
+  let set f
+        | fnRef f == ref = f {fnBody = Just body, fnImports = checkedImports}
+        | otherwise = f
+  pure (overFunctions (map set) run)
+
+-- | A submitted definition, without any signature of the function the model
+-- repeated: every equation of the function, or for an instance its whole
+-- declaration. Anything else it defines at the top level would clash with
+-- the rest of the module, so it is rejected.
+definitionOf :: FunctionName -> Text -> Either Text Text
+definitionOf name definition = do
+  let n = functionNameText name
       body = T.unlines (filter (not . isSignature n) (T.lines definition))
-  if isInstanceName (refName ref)
+  if isInstanceName name
     then unless (any (("instance " `T.isPrefixOf`) . T.stripStart) (T.lines definition)) $
       Left ("Give the complete declaration of " <> n <> ", starting with its instance head.")
     else unless (any (defines n . T.stripStart) (T.lines body)) $
       Left ("The definition must define " <> n <> ".")
-  unless (any ((== ref) . fnRef) (functions (artefact run))) $
-    Left ("Unknown function " <> n)
-  let kept = if isInstanceName (refName ref) then definition else body
-      set f
-        | fnRef f == ref = f {fnBody = Just (T.stripEnd kept), fnImports = checkedImports}
-        | otherwise = f
-  pure (overFunctions (map set) run)
+  case nub [key | d <- sourceDecls (splitSource definition), Just key <- [declKey d], key /= n] of
+    [] -> pure ()
+    others -> Left ("Define only " <> n <> "; this also defines " <> T.intercalate ", " others <> ". Put helpers in a where clause.")
+  pure (T.stripEnd (if isInstanceName name then definition else body))
   where
     isSignature n line = any (`T.isPrefixOf` T.strip line) [n <> " ::", n <> "::"]
     -- An equation of the function, prefix or infix.
@@ -194,6 +208,60 @@ applyImplementation ref (ImplementArgs definition importLines) run = do
         || ("`" <> n <> "`") `elem` infixPosition line
         || maybe False (`elem` infixPosition line) (T.stripPrefix "(" n >>= T.stripSuffix ")")
     infixPosition = take 1 . drop 1 . T.words
+
+newtype RefactorArgs = RefactorArgs [RefactorArg]
+
+instance FromJSON RefactorArgs where
+  parseJSON = withObject "Refactor" $ \o -> RefactorArgs <$> o .: "functions"
+
+-- | A new definition for one of the run's functions, or a new helper, which
+-- needs a signature.
+data RefactorArg = RefactorArg
+  { refactorModule :: Text,
+    refactorName :: Text,
+    refactorSignature :: Text,
+    refactorDoc :: Text,
+    refactorDefinition :: Text,
+    refactorImports :: [Text]
+  }
+
+instance FromJSON RefactorArg where
+  parseJSON = withObject "function" $ \o ->
+    RefactorArg
+      <$> o .: "module"
+      <*> o .: "name"
+      <*> o .:? "signature" .!= ""
+      <*> o .:? "doc" .!= ""
+      <*> o .: "definition"
+      <*> o .:? "imports" .!= []
+
+-- | Rewrites the run's functions and adds helpers, as a review asked.
+applyRefactor :: RefactorArgs -> Run -> Either Text Run
+applyRefactor (RefactorArgs args) run = do
+  when (null args) $ Left "List at least one function, or reply without calling Refactor if nothing is duplicated."
+  changes <- traverse change args
+  unique "Change each function once." (map (fnRef . fst) changes)
+  pure (overFunctions (\fns -> map (replaced changes) fns ++ [f | (f, True) <- changes]) run)
+  where
+    plans = modules (artefact run)
+    existing = functions (artefact run)
+    replaced changes f = case [c | (c, False) <- changes, fnRef c == fnRef f] of
+      c : _ -> f {fnBody = fnBody c, fnImports = fnImports c, fnSignature = if T.null (fnSignature c) then fnSignature f else fnSignature c}
+      [] -> f
+    -- A function to replace, or a new one, said by the flag.
+    change arg = do
+      let n = T.strip (refactorName arg)
+      plan <- case [p | p <- plans, moduleNameText (planModule p) == T.strip (refactorModule arg)] of
+        p : _ -> Right p
+        [] -> Left ("Unknown module " <> refactorModule arg <> ". Use one of: " <> T.intercalate ", " (map (moduleNameText . planModule) plans))
+      unless (validFunctionName n) $ Left ("Invalid function name: " <> n)
+      body <- definitionOf (FunctionName n) (refactorDefinition arg)
+      imports' <- traverse checkImport (refactorImports arg)
+      let ref = FunctionRef (planPath plan) (FunctionName n)
+          signature = stripPrefixes [n <> " ::", n <> "::", "::"] (T.strip (refactorSignature arg))
+          new = ref `notElem` map fnRef existing
+      when (new && T.null signature) $ Left ("Give the new helper " <> n <> " a signature.")
+      pure (FunctionSpec ref Designed signature (T.strip (refactorDoc arg)) "" (Just body) Undefined imports' Nothing, new)
 
 -- | Adds existing functions the design broke, as holes, given each one's
 -- declaration before the run. Functions already in the run are skipped.

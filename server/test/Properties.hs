@@ -6,10 +6,11 @@ module Properties (propertyTests) where
 import Anthropic (replyMessage, requestBody)
 import OpenAI (completionReply)
 import Core
-import Data.Aeson (Value (..), decodeStrict, object, toJSON, (.=))
+import Data.Aeson (Value (..), decodeStrict, object, parseJSON, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Aeson.Types (parseEither)
+import Edits (ImplementArgs (..), applyImplementation, applyRefactor)
 import Data.Foldable (toList)
 import Data.List (dropWhileEnd, nub, sort)
 import Data.Maybe (isJust)
@@ -52,6 +53,10 @@ propertyTests =
         check "errors without a location are read" prop_noLocationErrorsRead,
         check "a build failure outside every function that repeats is redesigned" prop_repeatedBuildFailureRedesigned,
         check "long lists of functions are shortened" prop_workDescribed,
+        check "an implementation may define only its own function" prop_onlyOwnDefinition,
+        check "a type error that comes back in the same function is redesigned" prop_repeatedTypeErrorRedesigned,
+        check "a record missing fields fails the build" prop_missingFieldsFatal,
+        check "a refactor replaces the run's functions and adds helpers" prop_refactorApplied,
         check "a repaired instance keeps its head while it is a hole" prop_instanceRepaired,
         check "a property suite sees its component and the libraries it depends on" prop_suiteVisibility,
         check "failed properties are read from suite output" prop_failedPropertiesRead,
@@ -369,6 +374,51 @@ prop_repeatedBuildFailureRedesigned = forAll functionRefs $ \refs ->
               Reimplement _ -> property True
               other -> counterexample (show other) False
           ]
+
+-- | A run with one designed function in a module, @merge@.
+mergeRun :: Run
+mergeRun =
+  let plan = ModulePlan (ComponentName "demo") (ModuleName "M") "src/M.hs" True [] [] ""
+      merge = FunctionSpec (FunctionRef "src/M.hs" (FunctionName "merge")) Designed "[Int] -> [Int] -> [Int]" "" "" Nothing Undefined [] Nothing
+   in overArtefact (\art -> art {modules = [plan], functions = [merge]}) (newRun (Requirement "merge"))
+
+prop_onlyOwnDefinition :: Property
+prop_onlyOwnDefinition =
+  let ref = FunctionRef "src/M.hs" (FunctionName "merge")
+      submit body = applyImplementation ref (ImplementArgs body []) mergeRun
+      bodyOf = fmap (map fnBody . functions . artefact)
+   in bodyOf (submit "merge xs ys = go xs ys\n  where\n    go a b = a ++ b") === Right [Just "merge xs ys = go xs ys\n  where\n    go a b = a ++ b"]
+        .&&. bodyOf (submit "merge :: [Int] -> [Int] -> [Int]\nmerge = (++)") === Right [Just "merge = (++)"]
+        .&&. bodyOf (submit "merge = helper\n\nhelper :: [Int] -> [Int] -> [Int]\nhelper = (++)") === Left "Define only merge; this also defines helper. Put helpers in a where clause."
+
+prop_repeatedTypeErrorRedesigned :: Property
+prop_repeatedTypeErrorRedesigned = forAll functionRefs $ \refs ->
+  forAll (chooseInt (1, maxIterations - 1)) $ \i ->
+    let failure line = TypeErrors [(head refs, "src/A.hs:" <> T.pack (show line) <> ":1: error:\n    Multiple declarations of \8216f\8217\n")] []
+     in conjoin
+          [ case decide i refs [] (failure (3 :: Int)) of
+              Reimplement work -> map fst work === [head refs]
+              other -> counterexample (show other) False,
+            case decide i refs (failedChecks (failure (3 :: Int))) (failure (7 :: Int)) of
+              Redesign _ -> property True
+              other -> counterexample (show other) False
+          ]
+
+prop_missingFieldsFatal :: Property
+prop_missingFieldsFatal =
+  let output = "Building library for core-0.1.0.0..\nsrc/Core/Run.hs:216:3: warning: [GHC-20125] [-Wmissing-fields]\n    \8226 Fields of \8216Run\8217 not initialised:\n        tokenStats :: TokenStats\n\nsrc/Core/Run.hs:48:1: warning: [-Wunused-imports]\n    The import is redundant\n"
+   in failOnFatalWarnings (Right output) === Left output
+        .&&. failOnFatalWarnings (Right "src/A.hs:1:1: warning: [-Wunused-imports]\n") === Right "src/A.hs:1:1: warning: [-Wunused-imports]\n"
+        .&&. map (\e -> (errorFile e, errorLine e)) (ghcErrors output) === [("src/Core/Run.hs", 216)]
+
+prop_refactorApplied :: Property
+prop_refactorApplied =
+  let change name signature definition = object ["module" .= ("M" :: Text), "name" .= (name :: Text), "signature" .= (signature :: Text), "doc" .= ("" :: Text), "definition" .= (definition :: Text), "imports" .= ([] :: [Text])]
+      refactor changes = either (Left . T.pack) Right (parseEither parseJSON (object ["functions" .= changes])) >>= \args -> applyRefactor args mergeRun
+      summary = fmap (\run -> [(functionNameText (fnName f), fnSignature f, fnBody f) | f <- functions (artefact run)])
+   in summary (refactor [change "merge" "" "merge = joined", change "joined" "[Int] -> [Int] -> [Int]" "joined = (++)"])
+        === Right [("merge", "[Int] -> [Int] -> [Int]", Just "merge = joined"), ("joined", "[Int] -> [Int] -> [Int]", Just "joined = (++)")]
+        .&&. summary (refactor [change "joined" "" "joined = (++)"]) === Left "Give the new helper joined a signature."
 
 prop_workDescribed :: Property
 prop_workDescribed =

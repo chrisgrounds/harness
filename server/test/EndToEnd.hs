@@ -36,7 +36,9 @@ endToEndTests =
         scenario "existing module" changedGreeting (const correctMerge) repairsCaller,
         scenario "another package" dependentPackage (const correctMerge) repairsDependent,
         scenario "new main module" (firstDraft (sortedMerge libraryProject)) (const correctMerge) dropsOldSuite,
-        scenario "fixed properties" (brokenProperties (sortedMerge libraryProject)) (const correctMerge) fixesProperties
+        scenario "fixed properties" (brokenProperties (sortedMerge libraryProject)) (const correctMerge) fixesProperties,
+        scenario "refactor" (refactored mergeLists (sortedMerge libraryProject)) (const correctMerge) keepsRefactor,
+        scenario "bad refactor" (refactored "merge (Sorted xs) (Sorted ys) = xs ++ ys" (sortedMerge libraryProject)) (const correctMerge) undoesRefactor
       ]
 
 -- | A throwaway cabal package, and what the scripted model designs in it.
@@ -56,6 +58,8 @@ data Layout = Layout
     -- | A design to send until an instruction says the following, if it differs.
     draft :: Maybe (Value, Value, Value),
     draftUntil :: Text,
+    -- | What the review refactors, if anything.
+    refactoring :: Maybe Value,
     -- | Each function's definition and imports, given how to define @merge@.
     implementations :: Text -> [(Text, (Text, [Text]))]
   }
@@ -118,6 +122,7 @@ sortedMerge package =
           "prop_mergeIsSortedUnion :: Sorted -> Sorted -> Bool\nprop_mergeIsSortedUnion a b = toList (merge a b) == sort (toList a ++ toList b)",
       draft = Nothing,
       draftUntil = "",
+      refactoring = Nothing,
       implementations = \mergeDefinition ->
         [ ("fromList", ("fromList = Sorted . sort", ["import Data.List (sort)"])),
           ("toList", ("toList (Sorted xs) = xs", [])),
@@ -199,6 +204,7 @@ changedGreeting =
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = n `isInfixOf` greeting (Name n) && n `isInfixOf` farewell (Name n)",
       draft = Nothing,
       draftUntil = "",
+      refactoring = Nothing,
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = \"hi \" ++ n", [])),
@@ -241,6 +247,7 @@ dependentPackage =
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = maybe False (n `isInfixOf`) (greeting (Name n))",
       draft = Nothing,
       draftUntil = "",
+      refactoring = Nothing,
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = Just (\"hi \" ++ n)", [])),
@@ -496,6 +503,52 @@ brokenProperties layout =
       draftUntil = "because of what this step wrote"
     }
 
+-- | A review that redefines @merge@ with the given definition, and adds
+-- @mergeLists@.
+refactored :: Text -> Layout -> Layout
+refactored mergeDefinition layout =
+  layout
+    { refactoring =
+        Just $
+          object
+            [ "functions"
+                .= [ object ["module" .= ("Sorted.Merge" :: Text), "name" .= ("merge" :: Text), "signature" .= ("" :: Text), "doc" .= ("" :: Text), "definition" .= mergeDefinition, "imports" .= ([] :: [Text])],
+                     object ["module" .= ("Sorted.Merge" :: Text), "name" .= ("mergeLists" :: Text), "signature" .= ("[Int] -> [Int] -> [Int]" :: Text), "doc" .= ("Merges two ascending lists." :: Text), "definition" .= mergeListsDefinition, "imports" .= ([] :: [Text])]
+                   ]
+            ]
+    }
+  where
+    mergeListsDefinition =
+      T.unlines
+        [ "mergeLists [] bs = bs",
+          "mergeLists as' [] = as'",
+          "mergeLists (a : as') (b : bs)",
+          "  | a <= b = a : mergeLists as' (b : bs)",
+          "  | otherwise = b : mergeLists (a : as') bs"
+        ]
+
+mergeLists :: Text
+mergeLists = "merge (Sorted xs) (Sorted ys) = Sorted (mergeLists xs ys)"
+
+keepsRefactor :: FilePath -> Run -> String -> IO [String]
+keepsRefactor _ run source =
+  pure $
+    allPassed run
+      ++ concat
+        [ expect ("refactor kept: " <> show (history run)) (history run == ["Review: refactored merge, mergeLists to remove duplication."]),
+          expect "merge uses the helper" ("merge (Sorted xs) (Sorted ys) = Sorted (mergeLists xs ys)" `isInfixOf` source),
+          expect "helper added with its documentation" ("-- | Merges two ascending lists.\nmergeLists :: [Int] -> [Int] -> [Int]" `isInfixOf` source)
+        ]
+
+undoesRefactor :: FilePath -> Run -> String -> IO [String]
+undoesRefactor _ run source =
+  pure $
+    allPassed run
+      ++ concat
+        [ expect ("refactor undone: " <> show (history run)) (case history run of [n] -> "Review: undid the refactor of merge, mergeLists, because " `T.isPrefixOf` n; _ -> False),
+          expect "the implemented merge is back" ("a <= b" `isInfixOf` source && not ("mergeLists" `isInfixOf` source))
+        ]
+
 -- | One request for corrected properties fixes the skeleton, with no redesign.
 fixesProperties :: FilePath -> Run -> String -> IO [String]
 fixesProperties _ run source =
@@ -541,7 +594,9 @@ designer layout strategy chat = case latestText chat of
         Just SetTypes -> CallTool SetTypes types
         Just SetFunctions -> CallTool SetFunctions functions'
         Just SetProperties -> CallTool SetProperties properties'
-        _ -> Say "Nothing to do."
+        _ -> case refactoring layout of
+          Just changes | "Step 4: review" `T.isInfixOf` instructions chat -> CallTool Refactor changes
+          _ -> Say "Nothing to do."
   where
     tools' = availableTools chat
     -- Every design step offers all the design tools; the latest instruction

@@ -55,6 +55,7 @@ data Step
   | Implement
   | TypeCheck
   | RunProperties
+  | Review
   deriving (Eq, Ord, Show, Enum, Bounded, Generic, ToJSON, FromJSON)
 
 data StepStatus = Pending | Running | Passed | Failed Text
@@ -196,6 +197,7 @@ stepLabel CheckSkeleton = "Checking skeleton"
 stepLabel Implement = "Implementing functions"
 stepLabel TypeCheck = "Type checking"
 stepLabel RunProperties = "Running properties"
+stepLabel Review = "Reviewing for duplication"
 
 emptyArtefact :: Artefact
 emptyArtefact = Artefact [] [] [] "" []

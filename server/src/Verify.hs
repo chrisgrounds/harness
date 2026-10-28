@@ -6,6 +6,7 @@ module Verify
   ( GhcError (..),
     Blame (..),
     buildAll,
+    failOnFatalWarnings,
     buildTarget,
     runSuite,
     ghcErrors,
@@ -36,7 +37,16 @@ import System.Timeout (timeout)
 -- each package's errors after its "Building" line. 'Left' holds the output
 -- of a failed build, 'Right' that of one that passed.
 buildAll :: FilePath -> IO (Either Text Text)
-buildAll root = cabal root ["build", "all", "--enable-tests", "-j1"]
+buildAll root = failOnFatalWarnings <$> cabal root ["build", "all", "--enable-tests", "-j1"]
+
+-- | A build that only warns about a record built without some of its fields
+-- has still failed: reading the field would crash at runtime.
+failOnFatalWarnings :: Either Text Text -> Either Text Text
+failOnFatalWarnings (Right output) | any fatalWarning (T.lines output) = Left output
+failOnFatalWarnings built = built
+
+fatalWarning :: Text -> Bool
+fatalWarning l = ": warning:" `T.isInfixOf` l && "[-Wmissing-fields]" `T.isInfixOf` l
 
 buildTarget :: FilePath -> Text -> IO (Either Text ())
 buildTarget root target = fmap (const ()) <$> cabal root ["build", "--enable-tests", T.unpack target]
@@ -74,7 +84,7 @@ ghcErrors = go Nothing . T.lines
         let (body, rest') = break (T.null . T.strip) rest
          in GhcError file line (T.unlines (l : body)) package : go package rest'
       Nothing -> go (maybe package Just (building l)) rest
-    header l = case T.breakOn ": error" l of
+    header l = case T.breakOn (if fatalWarning l then ": warning" else ": error") l of
       (location, suffix)
         | T.null suffix -> Nothing
         | T.strip location == noLocation -> Just (T.unpack noLocation, 0)
