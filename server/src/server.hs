@@ -13,11 +13,12 @@ import Tools (registerTool, toolToApiDefinition)
 main :: IO ()
 main = do
   args <- getArgs
-  run <- maybe (die usage) (uncurry holey) (options args Mercury3 Revert)
+  (model, failure) <- maybe (die usage) pure (options args Mercury3 Revert)
+  run <- holey model failure
   let socketPath = "/tmp/harness.sock"
   putStrLn "opening server, listening..."
   -- Every requirement starts a run.
-  Socket.serve socketPath $ \publish (StartRun dir req) -> newProgress publish (newRun req) >>= run dir
+  Socket.serve socketPath model $ \publish (StartRun dir req) -> newProgress publish (newRun req) >>= run dir
   where
     usage =
       "Usage: server [--model MODEL] [--keep-failed]\n"

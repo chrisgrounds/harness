@@ -13,8 +13,15 @@ import qualified Data.Text.IO as TIO
 import Network.Socket (Socket)
 import System.IO (isEOF)
 
+-- | As before, but first reads the server's greeting with `receiveEvent sock B.empty` before reading any input line. If it is `Connected m`, print `renderLine "holey" ("model " <> modelId m)` and start the input loop with the leftover bytes; any other first event raises `ioError (userError "Server did not announce its model.")`. In `follow`, a `Connected _` event is ignored (keep following with the same previous run and the rest bytes); the other cases are unchanged.
 runConsole :: FilePath -> Socket -> IO ()
-runConsole dir sock = loop B.empty
+runConsole dir sock = do
+  (greeting, leftover) <- receiveEvent sock B.empty
+  case greeting of
+    Connected m -> do
+      TIO.putStrLn (renderLine "holey" ("model " <> modelId m))
+      loop leftover
+    _ -> ioError (userError "Server did not announce its model.")
   where
     loop pending = do
       done <- isEOF
@@ -32,6 +39,7 @@ runConsole dir sock = loop B.empty
     follow previous pending = do
       (event, rest) <- receiveEvent sock pending
       case event of
+        Connected _ -> follow previous rest
         TurnFinished -> pure rest
         RunUpdated run -> do
           mapM_ (TIO.putStrLn . renderLine "holey" . ("warning: " <>)) (newItems warnings previous run)

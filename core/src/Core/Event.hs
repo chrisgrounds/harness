@@ -6,6 +6,7 @@ module Core.Event (StartRun (..), ServerEvent (..)) where
 import Core.Run (Requirement, Run)
 import Data.Aeson (FromJSON, ToJSON)
 import GHC.Generics (Generic)
+import Core.Model (Model)
 
 -- | What the client sends: a requirement to run against a cabal project.
 data StartRun = StartRun
@@ -15,9 +16,11 @@ data StartRun = StartRun
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
--- | The server replies to each 'StartRun' with any number of 'RunUpdated'
--- snapshots of that requirement's run, then one 'TurnFinished'.
+-- | On each new connection the server first sends one 'Connected' naming the
+-- model it runs with. It then replies to each 'StartRun' with any number of
+-- 'RunUpdated' snapshots of that requirement's run, then one 'TurnFinished'.
 data ServerEvent
-  = RunUpdated Run
+  = Connected Model
+  | RunUpdated Run
   | TurnFinished
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
