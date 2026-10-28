@@ -57,12 +57,14 @@ data FunctionArg = FunctionArg
     argSignature :: Text,
     argDoc :: Text,
     -- | For an existing function, what to change.
-    argChange :: Text
+    argChange :: Text,
+    -- | The short name of the model to implement it with, if chosen.
+    argModel :: Maybe Text
   }
 
 instance FromJSON FunctionArg where
   parseJSON = withObject "function" $ \o ->
-    FunctionArg <$> o .: "module" <*> o .: "name" <*> o .: "signature" <*> o .:? "doc" .!= "" <*> o .:? "change" .!= ""
+    FunctionArg <$> o .: "module" <*> o .: "name" <*> o .: "signature" <*> o .:? "doc" .!= "" <*> o .:? "change" .!= "" <*> o .:? "model"
 
 newtype FunctionsArgs = FunctionsArgs [FunctionArg]
 
@@ -135,9 +137,10 @@ applyModules plans run = do
 
 -- | Replaces the function list. Every body is cleared, since the design
 -- changed. A function named like an existing one in its module replaces it;
--- the previous declaration is kept for its implementer.
-applyFunctions :: (FunctionRef -> Maybe Text) -> FunctionsArgs -> Run -> Either Text Run
-applyFunctions previous (FunctionsArgs args) run = do
+-- the previous declaration is kept for its implementer. A chosen model must
+-- be one of those offered, and is ignored if there is no choice.
+applyFunctions :: [Model] -> (FunctionRef -> Maybe Text) -> FunctionsArgs -> Run -> Either Text Run
+applyFunctions offered previous (FunctionsArgs args) run = do
   when (null args) $ Left "Declare at least one function."
   specs <- traverse spec args
   let refs = map fnRef specs
@@ -145,7 +148,7 @@ applyFunctions previous (FunctionsArgs args) run = do
   pure (overFunctions (const specs) run)
   where
     plans = modules (artefact run)
-    spec (FunctionArg moduleName name signature doc change) = do
+    spec (FunctionArg moduleName name signature doc change chosen) = do
       let n = T.strip name
           m = T.strip moduleName
       plan <- case [p | p <- plans, moduleNameText (planModule p) == m] of
@@ -156,7 +159,12 @@ applyFunctions previous (FunctionsArgs args) run = do
       when (T.null sig) $ Left ("Missing signature for " <> n)
       let ref = FunctionRef (planPath plan) (FunctionName n)
       let before = if planIsNew plan then Nothing else previous ref
-      pure (FunctionSpec ref Designed sig (T.strip doc) (T.strip change) Nothing (maybe Undefined (const PreviousBody) before) [] before)
+      implementedBy <- case T.toLower . T.strip <$> chosen of
+        Just short | length offered > 1 -> case [o | o <- offered, modelName o == short] of
+          o : _ -> Right (Just o)
+          [] -> Left ("Unknown model " <> short <> " for " <> n <> ". Use one of: " <> T.intercalate ", " (map modelName offered))
+        _ -> Right Nothing
+      pure (FunctionSpec ref Designed sig (T.strip doc) (T.strip change) Nothing (maybe Undefined (const PreviousBody) before) [] before implementedBy)
 
 applyProperties :: PropertiesArgs -> Run -> Either Text Run
 applyProperties (PropertiesArgs importLines helpers props) run = do
@@ -268,14 +276,14 @@ applyRefactor (RefactorArgs args) run = do
           signature = stripPrefixes [n <> " ::", n <> "::", "::"] (T.strip (refactorSignature arg))
           new = ref `notElem` map fnRef existing
       when (new && T.null signature) $ Left ("Give the new helper " <> n <> " a signature.")
-      pure (FunctionSpec ref Designed signature (T.strip (refactorDoc arg)) "" (Just body) Undefined imports' Nothing, new)
+      pure (FunctionSpec ref Designed signature (T.strip (refactorDoc arg)) "" (Just body) Undefined imports' Nothing Nothing, new)
 
 -- | Adds existing functions the design broke, as holes, given each one's
 -- declaration before the run. Functions already in the run are skipped.
 addRepairs :: [(FunctionRef, Text)] -> Run -> Run
 addRepairs broken = overFunctions (\fns -> fns ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef fns])
   where
-    repair ref previous = FunctionSpec ref Repair "" "" "" Nothing Undefined [] (Just previous)
+    repair ref previous = FunctionSpec ref Repair "" "" "" Nothing Undefined [] (Just previous) Nothing
 
 -- | Fails with the message if any item repeats.
 unique :: (Eq a) => Text -> [a] -> Either Text ()

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module UI (runUI, runsSummary) where
+module UI (runUI, runsSummary, toolCallLabel) where
 
 import Brick
 import Brick.BChan (newBChan, writeBChan)
@@ -286,7 +286,7 @@ status :: UI -> Widget Name
 status state = case failure state of
   Just err -> withAttr danger (txtWrap ("Disconnected · " <> safeText err <> "  ·  Ctrl-C to exit"))
   Nothing -> case (waiting state, latest) of
-    (True, Just (step, _)) -> withAttr accent $ txt (spinner state <> "  " <> stepLabel step <> progress step <> iterationNote)
+    (True, Just (step, _)) -> withAttr accent $ txt (spinner state <> "  " <> stepLabel step <> progress step <> iterationNote <> toolCallNote)
     (True, Nothing) -> withAttr accent $ txt (spinner state <> "  Starting" <> T.replicate (frame state `div` 8 `mod` 4) ".")
     (False, Just (step, Failed _)) -> withAttr danger $ txt ("✗  Stopped at " <> stepLabel step)
     _ -> withAttr successAttr (txt "●  Ready")
@@ -297,6 +297,11 @@ status state = case failure state of
     iterationNote = case run of
       Just r | iteration r > 1 -> "  ·  iteration " <> T.pack (show (iteration r))
       _ -> ""
+    toolCallNote = case run of
+      Just r -> case latestToolCall r of
+        Just tc -> "  ·  " <> toolCallLabel tc
+        Nothing -> ""
+      Nothing -> ""
 
 spinner :: UI -> Text
 spinner state = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] !! (frame state `mod` 10)
@@ -376,3 +381,12 @@ runsSummary rate known count =
     <> maybe "" (\m -> modelId m <> "  ·  ") known
     <> T.pack (show count)
     <> (if count == 1 then " run" else " runs")
+
+-- | A tool call as the status bar shows it: the tool's name and what it was
+-- called on, shortened to fit.
+toolCallLabel :: ToolCall -> Text
+toolCallLabel c = toolNameText (callTool c) <> maybe "" ((" " <>) . shorten) (callSubject c)
+  where
+    shorten s
+      | T.length s > 60 = T.take 59 s <> "…"
+      | otherwise = s

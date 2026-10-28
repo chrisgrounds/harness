@@ -8,14 +8,19 @@ module Core.Tool
     ToolType (..),
     ToolRequestFunctionParams (..),
     ToolRequest (..),
+    ToolCall (..),
+    toolCallOf,
     ToolFunction (..),
     ToolDefinition (..),
   )
 where
 
 import Data.Aeson
+import qualified Data.Aeson.KeyMap as KeyMap
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
 
 type ToolCallId = Text
@@ -80,6 +85,24 @@ instance FromJSON ToolRequest where
 
 instance ToJSON ToolRequest where
   toJSON = genericToJSON (jsonOptions "toolRequest")
+
+-- | A tool request as the client shows it: the tool, and the path or
+-- pattern it was called with, if it takes one.
+data ToolCall = ToolCall
+  { callTool :: ToolName,
+    callSubject :: Maybe Text
+  }
+  deriving (Eq, Show, Generic)
+
+instance FromJSON ToolCall
+
+instance ToJSON ToolCall
+
+toolCallOf :: ToolRequest -> ToolCall
+toolCallOf r = ToolCall (toolRequestFunctionParamsName f) (subject =<< decodeStrict (TE.encodeUtf8 (toolRequestFunctionParamsArguments f)))
+  where
+    f = toolRequestFunction r
+    subject args = listToMaybe [s | key <- ["path", "pattern"], Just (String s) <- [KeyMap.lookup key args]]
 
 data ToolFunction = ToolFunction
   { toolFunctionName :: ToolName,

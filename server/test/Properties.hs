@@ -10,7 +10,7 @@ import Data.Aeson (Value (..), decodeStrict, object, parseJSON, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Aeson.Types (parseEither)
-import Edits (ImplementArgs (..), applyImplementation, applyRefactor)
+import Edits (ImplementArgs (..), applyFunctions, applyImplementation, applyRefactor)
 import Data.Foldable (toList)
 import Data.List (dropWhileEnd, nub, sort)
 import Data.Maybe (isJust)
@@ -66,6 +66,10 @@ propertyTests =
         check "only known functions are reimplemented" prop_reimplementsKnownFunctions,
         check "repeated property failures are redesigned" prop_repeatedFailureRedesigned,
         check "an unmet requirement is redesigned with the review's reason" prop_unmetRequirementRedesigned,
+        check "arguments, lambdas and generators bind names, so they are not uses" prop_boundNamesNotFree,
+        check "an implementer sees the existing types its signature uses, and theirs" prop_usedTypesFollowed,
+        check "implementers are no larger than the run's model, and failures move up" prop_implementersOrdered,
+        check "a function's model must be one offered, and is ignored without a choice" prop_functionModelChecked,
         check "cabal edits keep the file valid and list the module and its suite" prop_cabalEditsParse,
         check "cabal edits are idempotent" prop_cabalEditsIdempotent,
         check "a module already listed, on any line, is not listed again" prop_moduleListedOnce,
@@ -115,7 +119,7 @@ functionSpec path name = do
   doc <- paragraph
   body <- oneof [pure Nothing, Just . T.intercalate "\n" . map ((name <> " ") <>) . map ("= " <>) <$> resize 4 (listOf1 word)]
   extra <- resize 2 (listOf importLine)
-  pure (FunctionSpec (FunctionRef path (FunctionName name)) Designed signature doc "" body Undefined extra Nothing)
+  pure (FunctionSpec (FunctionRef path (FunctionName name)) Designed signature doc "" body Undefined extra Nothing Nothing)
 
 -- | A new module and its functions.
 data NewModule = NewModule ModulePlan [FunctionSpec]
@@ -143,10 +147,10 @@ instance Arbitrary Existing where
   arbitrary = do
     count <- chooseInt (2, 6)
     fnNames <- identifiers count
-    typeNames <- map (("T" <>) . T.toTitle) <$> identifiers 2
+    tyNames <- map (("T" <>) . T.toTitle) <$> identifiers 2
     fns <- mapM existingFunction fnNames
-    types <- mapM existingType typeNames
-    let instanceDecl = ("instance Show " <> head typeNames, InstanceDecl, "instance Show " <> head typeNames <> " where\n  show _ = \"t\"")
+    types <- mapM existingType tyNames
+    let instanceDecl = ("instance Show " <> head tyNames, InstanceDecl, "instance Show " <> head tyNames <> " where\n  show _ = \"t\"")
     declsInOrder <- shuffle (fns ++ types ++ [instanceDecl])
     exportStyle <- elements [Nothing, Just Inline, Just Ormolu, Just LeadingCommas]
     imports <- elements [[], ["import Data.List (sort)"], ["import qualified Data.Map as Map", "import Data.Maybe\n  ( fromMaybe,\n  )"]]
@@ -239,9 +243,9 @@ prop_changeKeepsOthers e =
       ref = FunctionRef path . FunctionName
       plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") path False ["TupleSections"] ["import Data.Char (toUpper)"] ("data " <> changedType <> " = Changed\n\ndata TNew = New\n  deriving (Show)")
       fns =
-        [ FunctionSpec (ref replaced) Designed "Text -> Text" "Replaced." "" (Just (replaced <> " t = t")) PreviousBody [] Nothing,
-          FunctionSpec (ref "fresh") Designed "Int" "Added." "" Nothing Undefined ["import Data.Ord (comparing)"] Nothing,
-          FunctionSpec (ref repaired) Repair "" "" "" (Just (repaired <> " _ = 0")) Undefined [] Nothing
+        [ FunctionSpec (ref replaced) Designed "Text -> Text" "Replaced." "" (Just (replaced <> " t = t")) PreviousBody [] Nothing Nothing,
+          FunctionSpec (ref "fresh") Designed "Int" "Added." "" Nothing Undefined ["import Data.Ord (comparing)"] Nothing Nothing,
+          FunctionSpec (ref repaired) Repair "" "" "" (Just (repaired <> " _ = 0")) Undefined [] Nothing Nothing
         ]
       before = splitSource (exSource e)
       -- A declaration without the blank lines and comments after it.
@@ -300,7 +304,7 @@ prop_equationsAdapted e =
 prop_previousBodyKept :: Property
 prop_previousBodyKept =
   let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
-      spec placeholder = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" "Greets the name." "" Nothing placeholder [] Nothing
+      spec placeholder = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" "Greets the name." "" Nothing placeholder [] Nothing Nothing
       rendered placeholder = renderChanged (const False) source Nothing [spec placeholder]
    in rendered PreviousBody === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting _ = \"hi\"\n"
         .&&. rendered Undefined === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting = undefined\n"
@@ -309,7 +313,7 @@ prop_changeNotesNotWritten :: Property
 prop_changeNotesNotWritten =
   forAll (elements ["", "Greets the name."]) $ \doc ->
     let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
-        spec = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" doc "Take the name to greet." (Just "greeting (Name n) = n") PreviousBody [] Nothing
+        spec = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" doc "Take the name to greet." (Just "greeting (Name n) = n") PreviousBody [] Nothing Nothing
         expected = "module Demo (greeting) where\n\n-- | " <> (if T.null doc then "How to greet." else doc) <> "\ngreeting :: Name -> String\ngreeting (Name n) = n\n"
      in renderChanged (const False) source Nothing [spec] === Right expected
 
@@ -317,7 +321,7 @@ prop_changedDeclarationsKept :: Property
 prop_changedDeclarationsKept =
   let source = "module Demo (Mode (..), greeting) where\n\n-- | The mode.\ndata Mode = A\n\n-- | How to greet,\n-- warmly.\ngreeting :: String\ngreeting = \"hi\"\n\n-- | Internal.\nhelper :: Int\nhelper = 1\n"
       plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") "src/Demo.hs" False [] [] "data Mode = A | B"
-      fn name doc = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName name)) Designed "Int" doc "" (Just (name <> " = 2")) Undefined [] Nothing
+      fn name doc = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName name)) Designed "Int" doc "" (Just (name <> " = 2")) Undefined [] Nothing Nothing
       rendered used = renderChanged used source (Just plan) [fn "greeting" "How to greet, warmly.", fn "helper" "Internal, changed.", fn "fresh" "New."]
    in rendered (const False)
         === Right "module Demo (Mode (..), greeting, fresh) where\n\n-- | The mode.\ndata Mode = A | B\n\n-- | How to greet,\n-- warmly.\ngreeting :: Int\ngreeting = 2\n\n-- | Internal, changed.\nhelper :: Int\nhelper = 2\n\n-- | New.\nfresh :: Int\nfresh = 2\n"
@@ -343,7 +347,7 @@ prop_errorsBlamed e =
       source = splitSource (exSource e)
       fnKeys = [k | (k, ValueDecl) <- exDecls e]
       planned = take 1 fnKeys
-      fns = [FunctionSpec (FunctionRef path (FunctionName k)) Designed "" "" "" Nothing Undefined [] Nothing | k <- planned]
+      fns = [FunctionSpec (FunctionRef path (FunctionName k)) Designed "" "" "" Nothing Undefined [] Nothing Nothing | k <- planned]
    in conjoin
         [ forAll (chooseInt (from, to)) $ \line ->
             counterexample (show (declKey d, line)) $
@@ -391,7 +395,7 @@ prop_repeatedBuildFailureRedesigned = forAll functionRefs $ \refs ->
 mergeRun :: Run
 mergeRun =
   let plan = ModulePlan (ComponentName "demo") (ModuleName "M") "src/M.hs" True [] [] ""
-      merge = FunctionSpec (FunctionRef "src/M.hs" (FunctionName "merge")) Designed "[Int] -> [Int] -> [Int]" "" "" Nothing Undefined [] Nothing
+      merge = FunctionSpec (FunctionRef "src/M.hs" (FunctionName "merge")) Designed "[Int] -> [Int] -> [Int]" "" "" Nothing Undefined [] Nothing Nothing
    in overArtefact (\art -> art {modules = [plan], functions = [merge]}) (newRun (Requirement "merge"))
 
 prop_onlyOwnDefinition :: Property
@@ -442,7 +446,7 @@ prop_workDescribed =
 prop_instanceRepaired :: Property
 prop_instanceRepaired =
   let source = "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n  show Greeter = greeting\n\nx :: Int\nx = 1\n"
-      spec body = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "instance Show Greeter")) Repair "" "" "" body Undefined [] Nothing
+      spec body = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "instance Show Greeter")) Repair "" "" "" body Undefined [] Nothing Nothing
    in renderChanged (const False) source Nothing [spec Nothing] === Right "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n\nx :: Int\nx = 1\n"
         .&&. renderChanged (const False) source Nothing [spec (Just "instance Show Greeter where\n  show _ = \"hi\"")]
           === Right "module Demo where\n\ninstance Show Greeter where\n  show _ = \"hi\"\n\nx :: Int\nx = 1\n"
@@ -530,6 +534,65 @@ prop_unmetRequirementRedesigned = forAll functionRefs $ \refs ->
       case decide i refs [] (RequirementUnmet why) of
         Redesign feedback -> counterexample (T.unpack feedback) (why `T.isInfixOf` feedback && redesignReason (RequirementUnmet why) == why)
         other -> counterexample (show other) False
+
+-- Rendering
+
+prop_boundNamesNotFree :: Property
+prop_boundNamesNotFree = forAll (identifiers 4) $ \names -> case names of
+  [arg, lam, gen, used] ->
+    let code =
+          T.unlines
+            [ "prop_x :: Int -> Bool",
+              "prop_x " <> arg <> " = all (\\" <> lam <> " -> " <> used <> " " <> arg <> " " <> lam <> ") [y | " <> gen <> " <- [1], y <- [" <> gen <> "]]"
+            ]
+        free = freeNames code
+     in counterexample (show free) (used `elem` free && all (`notElem` free) [arg, lam, gen, "prop_x"])
+  _ -> property Discard
+
+prop_usedTypesFollowed :: Property
+prop_usedTypesFollowed =
+  let source =
+        T.unlines
+          [ "module Core.Tool where",
+            "",
+            "data Request = Request {requestId :: Text, requestParams :: Params}",
+            "",
+            "data Params = Params {paramsName :: Name}",
+            "",
+            "data Unrelated = Unrelated",
+            "",
+            "data Name = Name"
+          ]
+      fn = FunctionSpec (FunctionRef "src/UI.hs" (FunctionName "label")) Designed "Request -> Text" "" "" Nothing Undefined [] Nothing Nothing
+      designed = emptyArtefact {modules = [ModulePlan (ComponentName "ui") (ModuleName "UI") "src/UI.hs" False [] [] "data Name = Name Text"]}
+      shown = usedTypes [source] designed fn
+   in counterexample (T.unpack shown) $
+        all (`T.isInfixOf` shown) ["data Request", "data Params"]
+          && not (any (`T.isInfixOf` shown) ["Unrelated", "data Name"])
+
+-- Implementers
+
+prop_implementersOrdered :: Property
+prop_implementersOrdered = forAll (elements allModels) $ \m ->
+  let offered = implementers m
+   in counterexample (show offered) $
+        last offered == m
+          && defaultImplementer m `elem` offered
+          && (length offered < 2 || defaultImplementer m /= m)
+          && and [largerImplementer m o == next | (o, next) <- zip offered (drop 1 offered)]
+          && largerImplementer m m == m
+
+prop_functionModelChecked :: Property
+prop_functionModelChecked =
+  let plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") "src/Demo.hs" True [] [] ""
+      run = (newRun (Requirement "r")) {artefact = emptyArtefact {modules = [plan]}}
+      args chosen = either (Left . T.pack) Right (parseEither parseJSON (object ["functions" .= [object (["module" .= ("Demo" :: Text), "name" .= ("f" :: Text), "signature" .= ("Int" :: Text)] ++ ["model" .= c | Just c <- [chosen]])]]))
+      chosenFor :: [Model] -> Maybe Text -> Either Text [Maybe Model]
+      chosenFor offered chosen = map fnModel . functions . artefact <$> (args chosen >>= \a -> applyFunctions offered (const Nothing) a run)
+   in chosenFor (implementers ClaudeOpus) (Just ("haiku" :: Text)) === Right [Just ClaudeHaiku]
+        .&&. chosenFor (implementers ClaudeOpus) Nothing === Right [Nothing]
+        .&&. either (T.isPrefixOf "Unknown model gpt for f.") (const False) (chosenFor (implementers ClaudeSonnet) (Just "gpt"))
+        .&&. chosenFor (implementers Mercury3) (Just "haiku") === Right [Nothing]
 
 -- Project
 

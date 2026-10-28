@@ -9,6 +9,7 @@ module Project
     componentName,
     findProject,
     locateModule,
+    sourceFiles,
     describeComponent,
     validModuleName,
     modulePath,
@@ -22,7 +23,7 @@ module Project
   )
 where
 
-import Control.Monad (filterM)
+import Control.Monad (filterM, forM)
 import Core (ComponentName (..), ModuleName (..))
 import qualified Data.ByteString as B
 import Data.Char (isSpace, isUpper, toLower)
@@ -103,6 +104,19 @@ locateModule root c (ModuleName name) = do
   existing <- filterM (doesFileExist . (root </>)) candidates
   pure (listToMaybe existing)
 
+
+-- | The Haskell files in the components' source directories, relative to
+-- the project root.
+sourceFiles :: FilePath -> [Component] -> IO [FilePath]
+sourceFiles root cs = nub . concat <$> mapM walk (nub [normalise (packageDir c </> d) | c <- cs, d <- sourceDirs c])
+  where
+    walk dir = do
+      exists <- doesDirectoryExist (root </> dir)
+      entries <- if exists then filter (not . ("." `isPrefixOf`)) <$> listDirectory (root </> dir) else pure []
+      fmap concat . forM entries $ \e -> do
+        let path = dir </> e
+        isDir <- doesDirectoryExist (root </> path)
+        if isDir then walk path else pure [path | takeExtension e == ".hs"]
 
 findCabalFiles :: FilePath -> FilePath -> Int -> IO [FilePath]
 findCabalFiles root dir depth = do

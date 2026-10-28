@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Turns an 'Artefact' into Haskell source.
-module Render (renderFile, renderNewModule, renderChanged, renderProperties, designSummary) where
+module Render (renderFile, renderNewModule, renderChanged, renderProperties, designSummary, usedTypes) where
 
 import Control.Monad (foldM)
 import Core
@@ -40,7 +40,7 @@ renderNewModule plan fns = T.unlines (header ++ concatMap (\f -> functionLines f
 -- | Whether the run uses a name outside a file: in its properties, or in
 -- another file's types and functions.
 usedOutside :: Artefact -> FilePath -> Text -> Bool
-usedOutside art path name = name `elem` concatMap (T.split (not . isIdentChar)) texts
+usedOutside art path name = name `elem` concatMap freeNames texts
   where
     texts =
       propertyHelpers art
@@ -168,6 +168,22 @@ designSummary art = T.intercalate "\n" (map summarise (modules art))
               fnKind f == Designed,
               refPath (fnRef f) == planPath plan
             ]
+
+-- | The project's declarations of the types and classes a function's
+-- signature names, and those they name in turn, up to twelve, without
+-- those the design declares, so an implementer knows their constructors
+-- and fields.
+usedTypes :: [Text] -> Artefact -> FunctionSpec -> Text
+usedTypes sources art fn = T.intercalate "\n" [T.unlines (declLines d) | d <- take 12 (go (typeNames (fnSignature fn)) [])]
+  where
+    known = [(key, d) | s <- sources, d <- sourceDecls (splitSource s), declKind d `elem` [DataDecl, TypeDecl], Just key <- [declKey d]]
+    designed = [key | p <- modules art, d <- sourceDecls (splitSource (planTypes p)), Just key <- [declKey d]]
+    go [] _ = []
+    go (name : rest) seen
+      | name `elem` seen || name `elem` designed = go rest seen
+      | otherwise = case lookup name known of
+          Just d -> d : go (rest ++ typeNames (T.unlines (declLines d))) (name : seen)
+          Nothing -> go rest (name : seen)
 
 pragma :: Text -> Text
 pragma ext = "{-# LANGUAGE " <> T.strip ext <> " #-}"

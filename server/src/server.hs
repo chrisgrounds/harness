@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Agent (loadLlm)
-import Core (Model (..), StartRun (..), allModels, modelId, newRun)
+import Core (Model (..), StartRun (..), allModels, modelId, modelName, newRun)
 import qualified Data.Text as T
 import Holey (Config (..), OnFailure (..), runHoley)
 import Progress (Progress, newProgress)
@@ -33,13 +33,12 @@ main = do
 -- | Short names and full model names.
 models :: [(String, Model)]
 models =
-  [("mercury", Mercury3), ("opus", ClaudeOpus), ("sonnet", ClaudeSonnet), ("haiku", ClaudeHaiku)]
-    ++ [(T.unpack (modelId m), m) | m <- allModels]
+  [(T.unpack (modelName m), m) | m <- allModels] ++ [(T.unpack (modelId m), m) | m <- allModels]
 
 holey :: Model -> OnFailure -> IO (FilePath -> Progress -> IO ())
 holey m failure = do
   llm' <- loadLlm m
-  definitions <- loadToolDefinitions
+  definitions <- loadToolDefinitions m
   putStrLn ("using " <> T.unpack (modelId m))
   pure $
     runHoley

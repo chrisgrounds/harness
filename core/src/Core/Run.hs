@@ -36,6 +36,7 @@ module Core.Run
     restartFrom,
     currentStep,
     taskProgress,
+    setToolCall,
   )
 where
 
@@ -43,6 +44,8 @@ import Data.Aeson (FromJSON, ToJSON)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+import Core.Model (Model)
+import Core.Tool (ToolCall, ToolRequest, toolCallOf)
 
 newtype Requirement = Requirement {requirementText :: Text}
   deriving newtype (Eq, Show, ToJSON, FromJSON)
@@ -123,7 +126,9 @@ data FunctionSpec = FunctionSpec
     fnImports :: [Text],
     -- | The declaration as it was before the run, for functions that already
     -- existed.
-    fnPrevious :: Maybe Text
+    fnPrevious :: Maybe Text,
+    -- | The model the design chose to implement it, if it chose one.
+    fnModel :: Maybe Model
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
@@ -182,7 +187,9 @@ data Run = Run
     touchedFiles :: [FilePath],
     warnings :: [Text],
     -- | Why the run looped back or gave up, oldest first.
-    history :: [Text]
+    history :: [Text],
+    -- | The most recent tool call the model made, for the status bar.
+    latestToolCall :: Maybe ToolCall
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
@@ -217,7 +224,8 @@ newRun req =
       artefact = emptyArtefact,
       touchedFiles = [],
       warnings = [],
-      history = []
+      history = [],
+      latestToolCall = Nothing
     }
 
 addHistory :: Text -> Run -> Run
@@ -265,3 +273,8 @@ currentStep run = case filter (active . snd) (steps run) of
 -- | Finished and total task counts.
 taskProgress :: Run -> (Int, Int)
 taskProgress run = (length [() | (_, Done) <- tasks run], length (tasks run))
+
+-- | Records the most recent tool request the model made, replacing any
+-- earlier one, for the client's status bar.
+setToolCall :: ToolRequest -> Run -> Run
+setToolCall t run = run {latestToolCall = Just (toolCallOf t)}

@@ -8,7 +8,7 @@ Each message is a requirement and starts a *holey run*, which moves through thes
 2. Creating functions (signatures only): new functions, and existing ones to change. Each has documentation, written into the code as its Haddock comment (empty keeps an existing function's), and for an existing function a change note that only its implementer sees. Until they are implemented, new functions are `undefined` and changed ones keep their old equations, with a `_` pattern for each new parameter, or are `undefined` when those cannot fit the new signature
 3. Creating properties (invariants the types can't express)
 4. Checking skeleton (the code type-checks before any implementation)
-5. Implementing functions (one cheap agent per function, in parallel)
+5. Implementing functions (one agent per function, in parallel, on the model the design chose for it; each sees the design, its module, the project's existing types its signature uses and its properties)
 6. Type checking
 7. Running properties
 8. Reviewing against the requirement: the design conversation checks every function the run wrote against the requirement, for what properties cannot test (when something happens, what reaches the user), and for duplication, and is told which modules and components the run changed and which it left alone. It may fix what it finds with `Refactor`, kept only if everything still builds and the properties pass. If meeting the requirement needs more than new definitions of the run's functions, such as changes to another module or component, it calls `RequirementNotMet` with the reason, and the run goes back to design with it. Otherwise its one-line conclusion goes in the run's history
@@ -55,6 +55,8 @@ Choose a model with `--model`: `mercury` (Inception's Mercury 3, the default) or
 cabal run server                      # Mercury 3
 cabal run server -- --model opus      # Claude Opus 5.5
 ```
+
+The model designs, and on Claude it also chooses which model implements each function: Haiku, Sonnet or, for the hardest, its own model. Without a choice, the next cheaper model than the design's implements it (Sonnet under Opus, Haiku under Sonnet), and a function that fails is reimplemented by the next more capable one. Mercury is the only Inception model, so a Mercury run implements with Mercury and is offered no choice.
 
 In a second terminal, start the client with the Haskell project to work on. It defaults to the current directory:
 
@@ -114,4 +116,3 @@ The only listener is `/tmp/harness.sock`, an `AF_UNIX` stream socket. Requests a
 - **User checkpoints in holey runs.** Pause after the signatures and properties steps so the user can approve or edit the design before the parallel implementation step starts. Runs currently go straight through without stopping.
 - **Repairing other declarations that break.** Functions and instances with methods are repaired; a pattern synonym or type family instance the design breaks sends the run back to design, which must replace it in `SetTypes`.
 - **Running existing tests.** Runs build the project's test suites but do not run them, which would be slow. Running them would need a baseline taken before the run's first write, so suites that already fail are not blamed on the run.
-- **A cheaper model for implementation.** Every step uses the one model chosen with `--model`; implementation agents could use a cheaper one, such as Haiku while Opus designs.

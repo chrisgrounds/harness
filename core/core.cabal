@@ -41,3 +41,11 @@ test-suite core-tests
     , text
   ghc-options: -Wall -Werror=missing-fields
   default-language: Haskell2010
+
+test-suite holey-core-run
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: HoleyCoreRunProperties.hs
+  build-depends: base, QuickCheck, core, aeson, attoparsec, attoparsec-aeson, bytestring, network, text
+  default-language: Haskell2010
+  ghc-options: -Wall

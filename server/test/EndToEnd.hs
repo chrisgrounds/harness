@@ -326,7 +326,7 @@ scenario :: String -> Layout -> MergeStrategy -> (FilePath -> Run -> String -> I
 scenario label layout strategy checks = do
   failures <- withProject layout $ \root -> do
     counter <- newIORef 0
-    definitions <- loadToolDefinitions
+    definitions <- loadToolDefinitions Mercury3
     events <- newIORef []
     progress <- newProgress (\e -> modifyIORef events (e :)) (newRun (Requirement "Merge sorted lists of integers"))
     runHoley

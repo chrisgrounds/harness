@@ -6,6 +6,7 @@ import Control.Exception (IOException, try)
 import Core
 import Data.Aeson
 import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Aeson.Types (parseEither)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -17,6 +18,18 @@ import qualified System.Directory as Dir
 import System.Exit (ExitCode (..))
 import System.FilePath ((<.>), (</>))
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
+
+-- | Sets the choices of a function's model field, or removes the field.
+offerImplementers :: [Model] -> ToolDefinition -> ToolDefinition
+offerImplementers offered d = d {toolFunction = f {toolFunctionParameters = edit (toolFunctionParameters f)}}
+  where
+    f = toolFunction d
+    edit = at "properties" . at "functions" . at "items" . at "properties" $ case offered of
+      _ : _ : _ -> at "model" (at' (KeyMap.insert "enum" (toJSON (map modelName offered))))
+      _ -> at' (KeyMap.delete "model")
+    at key g = at' (KeyMap.mapWithKey (\k v -> if k == key then g v else v))
+    at' g (Object o) = Object (g o)
+    at' _ v = v
 
 -- | Runs a tool that only reads the project at @root@, against which paths
 -- resolve, or 'Nothing' for tools that change the run and are handled by the
@@ -62,9 +75,11 @@ reportIOError context action = do
 
 -- | Every tool's definition, from its packaged schema, @tools/read_file.json@
 -- for 'ReadFile' and so on.
-loadToolDefinitions :: IO (ToolName -> ToolDefinition)
-loadToolDefinitions = do
-  loaded <- Map.fromList <$> mapM (\name -> (,) name <$> load name) [minBound .. maxBound]
+-- | The tools, for a run on the given model: SetFunctions offers the models
+-- it may implement with, or no model field if there is no choice.
+loadToolDefinitions :: Model -> IO (ToolName -> ToolDefinition)
+loadToolDefinitions m = do
+  loaded <- Map.adjust (offerImplementers (implementers m)) SetFunctions . Map.fromList <$> mapM (\name -> (,) name <$> load name) [minBound .. maxBound]
   -- Every tool was loaded, so the lookup cannot fail.
   pure (loaded Map.!)
   where

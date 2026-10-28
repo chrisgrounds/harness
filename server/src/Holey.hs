@@ -24,7 +24,7 @@ import Policy
 import Progress (Progress, publishEvent, readRun, tryUpdate, update)
 import Project
 import Prompts
-import Render (designSummary, renderFile)
+import Render (designSummary, renderFile, usedTypes)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.FilePath (isAbsolute, takeDirectory, takeExtension, (</>))
 import Tools (readOnlyTool)
@@ -119,7 +119,7 @@ pipeline = do
     design :: Text -> Chat -> Holey ()
     design typesStep chat = do
       chat1 <- designStep DesignTypes SetTypes typesStep chat
-      chat2 <- designStep DesignSignatures SetFunctions functionsInstruction chat1
+      chat2 <- designStep DesignSignatures SetFunctions (functionsInstruction (model chat1)) chat1
       chat3 <- designStep WriteProperties SetProperties propertiesInstruction chat2
       verify typesStep chat3 maxFixUps
 
@@ -306,6 +306,7 @@ setFunctions :: FunctionsArgs -> Holey (Either Text ())
 setFunctions args = do
   plans <- modules . artefact <$> getRun
   Env {projectRoot = root, originals = origs} <- ask
+  offered <- asks (implementers . llmModel . config)
   previous <- liftIO . fmap concat . forM [p | p <- plans, not (planIsNew p)] $ \p -> do
     before <- original root origs (planPath p)
     pure
@@ -315,7 +316,7 @@ setFunctions args = do
         declKind d == ValueDecl,
         Just key <- [declKey d]
       ]
-  tryModifyRun (applyFunctions (`Map.lookup` Map.fromList previous) args)
+  tryModifyRun (applyFunctions offered (`Map.lookup` Map.fromList previous) args)
 
 -- | Builds the skeleton. Existing functions and instances it breaks become
 -- holes to repair, a changed function whose old equations do not fit its
@@ -456,6 +457,7 @@ untilAccepted budget attempts tool handler chat = do
   env <- ask
   accepted <- liftIO (newIORef False)
   let respond request = do
+        runReaderT (modifyRun (setToolCall request)) env
         reply <- runReaderT (handler request) env
         case reply of
           Answer text -> pure text
@@ -465,7 +467,7 @@ untilAccepted budget attempts tool handler chat = do
         replied <- llm (config env) c
         let reply = listToMaybe (messages replied)
         mapM_ (publishEvent (progress env) . TokenRate) (reply >>= tokensPerSecond)
-        mapM_ (TIO.appendFile (buildLog env) . logReply) reply
+        mapM_ (TIO.appendFile (buildLog env) . logReply (model c)) reply
         pure replied
       attempt :: Int -> Chat -> IO Chat
       attempt remaining c = do
@@ -480,10 +482,10 @@ untilAccepted budget attempts tool handler chat = do
     pure (done, final)
 
 -- | A model reply as it appears in the build log.
-logReply :: Message -> Text
-logReply m =
+logReply :: Model -> Message -> Text
+logReply from m =
   T.unlines $
-    ["-- Model reply --"]
+    ["-- Reply from " <> modelId from <> " --"]
       ++ maybe [] (\t -> [t | not (T.null (T.strip t))]) (content m)
       ++ ["Calls " <> toolNameText (toolRequestFunctionParamsName f) <> ": " <> toolRequestFunctionParamsArguments f | r <- toolCalls m, let f = toolRequestFunction r]
 
@@ -502,6 +504,9 @@ implementStep work = do
   sources <- liftIO . forM (nub (map (refPath . fst) work)) $ \path -> do
     before <- original root origs path
     pure (path, either id id (renderFile holes path before))
+  -- The project as it was, for the existing types the signatures use.
+  project' <- liftIO (sourceFiles root (components (project env)) >>= mapM (\path -> original root origs path))
+  let existing = [s | Just s <- project']
   modifyRun (\r -> (setStep Implement Running r) {tasks = [(fnRef f, if fnRef f `elem` queued then Queued else Done) | f <- functions art]})
   slots <- liftIO (newQSem 4)
   liftIO . forConcurrently_ work $ \(ref, feedback) ->
@@ -509,7 +514,9 @@ implementStep work = do
       case [f | f <- functions art, fnRef f == ref] of
         fn : _ ->
           implementOne
+            (implementer (llmModel (config env)) fn feedback)
             (designSummary art)
+            (usedTypes existing art fn)
             (fromMaybe "" (lookup (refPath ref) sources))
             fn
             [p | p <- properties art, mentions (fnName fn) (propSource p)]
@@ -522,12 +529,16 @@ implementStep work = do
       else Failed ("No implementation for " <> T.intercalate ", " (map (functionNameText . refName) missing) <> ".")
   pure missing
 
-implementOne :: Text -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> Holey ()
-implementOne design moduleSource fn props feedback = do
+-- | The model to implement a function with: the design's choice or the
+-- default, and the next larger one after a failure.
+implementer :: Model -> FunctionSpec -> Maybe Text -> Model
+implementer run fn feedback = maybe id (const (largerImplementer run)) feedback (fromMaybe (defaultImplementer run) (fnModel fn))
+
+implementOne :: Model -> Text -> Text -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> Holey ()
+implementOne m design types moduleSource fn props feedback = do
   modifyRun (setTask (fnRef fn) Working)
-  m <- asks (llmModel . config)
   definitions <- definitionsFor [ImplementFunction]
-  let chat = Chat [textMessage User (implementInstruction design moduleSource fn props feedback), textMessage System implementSystemPrompt] m definitions
+  let chat = Chat [textMessage User (implementInstruction design types moduleSource fn props feedback), textMessage System implementSystemPrompt] m definitions
   env <- ask
   outcome <- liftIO (try (runReaderT (untilAccepted 6 3 ImplementFunction handler chat) env))
   modifyRun . setTask (fnRef fn) $ case outcome of
@@ -577,14 +588,15 @@ reviewStep chat = do
         _ -> designTool Refactor request
   (recorded, reviewed) <- untilAccepted 30 1 Refactor handler (addMessage (textMessage User instruction) chat {tools = definitions})
   found <- liftIO (readIORef gap)
-  current <- iteration <$> getRun
-  logPath <- asks buildLog
-  liftIO . TIO.appendFile logPath $
-    "== Iteration " <> T.pack (show current) <> ", " <> stepLabel Review <> ": "
-      <> maybe "requirement met ==\n" (\reason -> "requirement not met ==\n" <> reason <> "\n") found
-      <> "\n"
+  -- After any refactor's build, so the log reads in order.
+  let verdict headline details = do
+        current <- iteration <$> getRun
+        logPath <- asks buildLog
+        liftIO . TIO.appendFile logPath $
+          "== Iteration " <> T.pack (show current) <> ", " <> stepLabel Review <> ": " <> headline <> " ==\n" <> T.unlines details <> "\n"
   case found of
     Just reason -> do
+      verdict "requirement not met" [reason]
       modifyRun (setStep Review (Failed reason))
       pure (Just reason, reviewed)
     Nothing -> do
@@ -594,14 +606,20 @@ reviewStep chat = do
           let changed = describeWork (map fnRef (functions after)) [fnRef f | f <- functions after, f `notElem` functions before]
           checked <- writeFiles >>= either (pure . Left) (const (buildProject Review)) >>= either (pure . Left) (const runProperties)
           case checked of
-            Right () -> note ("Review: refactored " <> changed <> ".")
+            Right () -> do
+              verdict "requirement met, refactor kept" ["Refactored " <> changed <> "."]
+              note ("Review: refactored " <> changed <> ".")
             Left output -> do
               modifyRun (overArtefact (const before))
               _ <- writeFiles
-              note ("Review: undid the refactor of " <> changed <> ", because " <> maybe "the properties failed" (<> ".") (firstProblem output))
+              let why = maybe "the properties failed" (<> ".") (firstProblem output)
+              verdict "requirement met, refactor undone" ["Undid the refactor of " <> changed <> ", because " <> why]
+              note ("Review: undid the refactor of " <> changed <> ", because " <> why)
         else case [t | m <- takeWhile ((/= Just instruction) . content) (messages reviewed), role m == Assistant, Just t <- [content m], not (T.null (T.strip t))] of
-          conclusion : _ -> note ("Review: " <> T.strip (T.takeWhile (/= '\n') conclusion))
-          [] -> pure ()
+          conclusion : _ -> do
+            verdict "requirement met" [T.strip conclusion]
+            note ("Review: " <> T.strip (T.takeWhile (/= '\n') conclusion))
+          [] -> verdict "requirement met" []
       modifyRun (setStep Review Passed)
       pure (Nothing, reviewed)
 

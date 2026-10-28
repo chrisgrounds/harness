@@ -26,13 +26,15 @@ module Decls
     exportName,
     exportedNames,
     isIdentChar,
+    freeNames,
+    typeNames,
     addPragmas,
     addImports,
     addExports,
   )
 where
 
-import Data.Char (isAlphaNum, isLower, isSpace)
+import Data.Char (isAlphaNum, isLower, isSpace, isUpper)
 import Data.List (findIndex, isPrefixOf, nub)
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
@@ -566,6 +568,34 @@ isVariable name = case T.uncons name of
   Nothing -> False
   where
     keywords = ["case", "do", "if", "let", "of", "then", "else", "in", "where"]
+
+-- | The identifiers code uses without binding them, line by line: not the
+-- names an equation's left side, a lambda or a @<-@ binds, nor those a
+-- column-0 signature declares. A heuristic, so that a local variable is not
+-- taken for a use of a function of the same name.
+freeNames :: Text -> [Text]
+freeNames code = nub [w | w <- concatMap (words' . snd) lines', w `notElem` concatMap bound lines']
+  where
+    lines' = [(t, filter ((`notElem` [Space, CommentToken]) . tokenKind) (tokens t)) | t <- T.lines code]
+    words' = map tokenText . filter ((== Word) . tokenKind)
+    bound (line, toks) =
+      equation toks ++ lambdas toks ++ generators toks
+        ++ [w | not (T.null line), not (isSpace (T.head line)), (lhs, _ : _) <- [break (isToken Symbol "::") (topLevel toks)], w <- words' lhs]
+    equation toks = case break (isToken Symbol "=") (topLevel toks) of
+      (lhs, _ : _) | not (any (isToken Symbol "|") lhs) -> words' lhs
+      _ -> []
+    lambdas toks = case break (isToken Symbol "\\") toks of
+      (_, _ : rest) -> let (args, after) = break (isToken Symbol "->") rest in words' args ++ lambdas after
+      _ -> []
+    generators toks = case break (isToken Symbol "<-") toks of
+      (before, _ : rest) -> words' (reverse (takeWhile (not . separates) (reverse before))) ++ generators rest
+      _ -> []
+    separates t = isToken Symbol "|" t || isToken Punctuation "," t || tokenKind t == Open
+
+-- | The capitalised names in code: its types, classes and constructors,
+-- unqualified.
+typeNames :: Text -> [Text]
+typeNames code = nub [w | t <- tokens code, tokenKind t == Word, let w = tokenText t, maybe False (isUpper . fst) (T.uncons w)]
 
 -- | A character that can follow the first one in an identifier.
 isIdentChar :: Char -> Bool

@@ -27,7 +27,7 @@ designSystemPrompt =
       "You turn a requirement into changes to the codebase in three design steps: types, then function signatures, then QuickCheck properties.",
       "The changes can create new modules and change existing ones: add types and functions, change existing types, and change or rewrite existing functions.",
       "Integrate the work: if the requirement needs existing code to use the new code (a key binding, a call site, a new case), change those existing functions too.",
-      "You never implement functions. After design, each function is implemented by a separate, cheaper agent that sees only its module, the design, its signature and documentation, and the properties. So:",
+      "You never implement functions. After design, each function is implemented by a separate agent that sees only its module, the design, its signature and documentation, and the properties. So:",
       "- Make the types as precise as possible: newtypes for distinct values, sum types for alternatives, no stringly-typed data. An implementer must be able to rely on the types alone.",
       "- Prefer small pure functions; keep IO at the edges and only where the requirement needs it.",
       "- Write each function's documentation precisely enough to implement from it and the types alone. It becomes the function's documentation in the code,",
@@ -56,9 +56,9 @@ typesInstruction req components =
       "The first module is the main one: the property suite is named after it and built against its component."
     ]
 
-functionsInstruction :: Text
-functionsInstruction =
-  T.unlines
+functionsInstruction :: Model -> Text
+functionsInstruction run =
+  T.unlines $
     [ "Step 2: functions. Call SetFunctions with every function to add or change, each with its module (from step 1),",
       "its name, its signature (the type only), documentation stating exactly what it does, and, for an existing function, a change note.",
       "The documentation is written into the code, so it describes the function as it will be, not the change; leave it empty to keep an",
@@ -67,6 +67,14 @@ functionsInstruction =
       "Include existing functions whose behaviour must change even if their signature does not. Leave out functions that stay as they are.",
       "Functions may use each other. Do not implement them."
     ]
+      ++ case implementers run of
+        offered@(_ : _ : _) ->
+          [ "Choose each function's implementer with its model field: " <> T.intercalate ", " (map modelName offered) <> ", from cheapest to most capable.",
+            "Pick the cheapest that will get it right: " <> modelName (head offered) <> " for short definitions that follow from the types,",
+            "and the most capable only for intricate logic. Without a choice, " <> modelName (defaultImplementer run) <> " implements it.",
+            "A function that fails is reimplemented by the next more capable model."
+          ]
+        _ -> []
 
 propertiesInstruction :: Text
 propertiesInstruction =
@@ -165,15 +173,20 @@ implementSystemPrompt =
       "beyond the module's imports, using only packages the module already uses. Then finish your turn."
     ]
 
-implementInstruction :: Text -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> Text
-implementInstruction design moduleSource fn props feedback =
+implementInstruction :: Text -> Text -> Text -> FunctionSpec -> [PropertySpec] -> Maybe Text -> Text
+implementInstruction design existing moduleSource fn props feedback =
   T.unlines $
     [ "The design:",
       "```haskell",
       design,
       "```",
-      "",
-      "The module, " <> T.pack (refPath (fnRef fn)) <> ":",
+      ""
+    ]
+      ++ ( if T.null (T.strip existing)
+             then []
+             else ["Existing types its signature uses, as the project declares them:", "```haskell", T.stripEnd existing, "```", ""]
+         )
+      ++ [ "The module, " <> T.pack (refPath (fnRef fn)) <> ":",
       "```haskell",
       moduleSource,
       "```",
