@@ -17,6 +17,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isNothing, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import Decls (Decl (..), DeclKind (..), SourceFile (..), findDecl, splitSource)
 import Edits
 import Policy
@@ -24,8 +25,8 @@ import Progress (Progress, readRun, tryUpdate, update)
 import Project
 import Prompts
 import Render (designSummary, renderFile)
-import System.Directory (doesDirectoryExist)
-import System.FilePath (isAbsolute, takeExtension, (</>))
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.FilePath (isAbsolute, takeDirectory, takeExtension, (</>))
 import Tools (readOnlyTool)
 import Verify
 import Workspace
@@ -49,7 +50,9 @@ data Env = Env
     projectRoot :: FilePath,
     progress :: Progress,
     project :: ProjectInfo,
-    originals :: Originals
+    originals :: Originals,
+    -- | Where every build's output is kept, so a failed run can be diagnosed.
+    buildLog :: FilePath
   }
 
 -- | The steps of a run, which read its environment.
@@ -78,14 +81,22 @@ runHoley cfg root prog = do
         info <- findProject root
         if null (components info)
           then failStart ("No cabal library or executable was found in " <> T.pack root <> ".")
-          else True <$ runReaderT pipeline (Env cfg root prog info origs)
+          else do
+            createDirectoryIfMissing True (takeDirectory (root </> logFile))
+            req <- requirement <$> readRun prog
+            TIO.writeFile (root </> logFile) ("Requirement: " <> requirementText req <> "\n\n")
+            True <$ runReaderT pipeline (Env cfg root prog info origs (root </> logFile))
   finished <- case result of
     Right done -> pure done
     Left err
       | Just Stopped <- fromException err -> pure False
       | otherwise -> failCurrent prog ("Internal error: " <> T.pack (displayException err)) >> pure False
+  unless finished $ do
+    logged <- doesFileExist (root </> logFile)
+    when logged $ update prog (addHistory ("Each build's output is in " <> T.pack logFile <> "."))
   unless (finished || onFailure cfg == Keep) (undo origs)
   where
+    logFile = "dist-newstyle" </> "holey" </> "last-run.log"
     failStart reason = update prog (setStep DesignTypes (Failed reason)) >> pure False
     undo origs = do
       run <- readRun prog
@@ -169,13 +180,9 @@ pipeline = do
           modifyRun (restartFrom DesignTypes)
           design typesStep (addMessage (textMessage User (revisionNote (current + 1) feedback)) chat)
         Reimplement work -> do
-          note (atIteration current (describeOutcome outcome <> ", so reimplementing " <> T.intercalate ", " (map (functionNameText . refName . fst) work) <> "."))
+          note (atIteration current (describeOutcome outcome <> ", so reimplementing " <> describeWork refs (map fst work) <> "."))
           modifyRun (restartFrom Implement)
-          build typesStep chat failedNow work
-      where
-        failedNow = case outcome of
-          PropertiesFailed failed _ _ -> failed
-          _ -> []
+          build typesStep chat (failedChecks outcome) work
 
 -- | Skeleton errors sent back to a design step before the run redesigns.
 maxFixUps :: Int
@@ -362,7 +369,14 @@ writeAndBuild step = do
     Left err -> stop step err
     Right touched -> do
       modifyRun (\r -> r {touchedFiles = touched})
-      liftIO (buildAll root)
+      built <- liftIO (buildAll root)
+      current <- iteration <$> getRun
+      logPath <- asks buildLog
+      liftIO . TIO.appendFile logPath $
+        "== Iteration " <> T.pack (show current) <> ", " <> stepLabel step <> ": " <> either (const "failed") (const "passed") built <> " ==\n"
+          <> either id id built
+          <> "\n"
+      pure (() <$ built)
 
 -- | Blames each error in build output on where it is in the files as
 -- written, with the file it is in. An instance the run declared in step 1

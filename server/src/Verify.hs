@@ -33,9 +33,10 @@ import System.Timeout (timeout)
 
 -- | Builds every package in the project with its test suites, so code that
 -- uses what the run changed is type checked too. One job at a time keeps
--- each package's errors after its "Building" line. 'Left' holds the output.
-buildAll :: FilePath -> IO (Either Text ())
-buildAll root = fmap (const ()) <$> cabal root ["build", "all", "--enable-tests", "-j1"]
+-- each package's errors after its "Building" line. 'Left' holds the output
+-- of a failed build, 'Right' that of one that passed.
+buildAll :: FilePath -> IO (Either Text Text)
+buildAll root = cabal root ["build", "all", "--enable-tests", "-j1"]
 
 buildTarget :: FilePath -> Text -> IO (Either Text ())
 buildTarget root target = fmap (const ()) <$> cabal root ["build", "--enable-tests", T.unpack target]
@@ -74,8 +75,11 @@ ghcErrors = go Nothing . T.lines
          in GhcError file line (T.unlines (l : body)) package : go package rest'
       Nothing -> go (maybe package Just (building l)) rest
     header l = case T.breakOn ": error" l of
-      (location, suffix) | not (T.null suffix) -> parseLocation location
-      _ -> Nothing
+      (location, suffix)
+        | T.null suffix -> Nothing
+        | T.strip location == noLocation -> Just (T.unpack noLocation, 0)
+        | otherwise -> parseLocation location
+    noLocation = "<no location info>"
 
 -- | The package in a line such as @Building library for core-0.1.0.0..@.
 building :: Text -> Maybe Text
@@ -159,7 +163,7 @@ firstError output = case ghcErrors output of
           [] -> []
         sentence = T.unwords (map (T.strip . dropBullet) firstPoint)
         clipped = if T.length sentence > 160 then T.take 157 sentence <> "..." else sentence
-     in Just (clipped <> " (" <> T.pack (errorFile e) <> ":" <> T.pack (show (errorLine e)) <> ")")
+     in Just (clipped <> if errorLine e == 0 then "" else " (" <> T.pack (errorFile e) <> ":" <> T.pack (show (errorLine e)) <> ")")
   [] -> Nothing
   where
     -- The source excerpt, @12 | code@ and its gutter, and GHC's suggestions.
@@ -179,14 +183,16 @@ failedProperties = go Nothing . T.lines
       | "*** " `T.isPrefixOf` l, Just name <- current = name : go Nothing rest
       | otherwise = go current rest
 
--- | The errors in build output, or its tail if none could be found, limited
--- to a size that fits in a prompt.
+-- | The GHC errors in build output, or else cabal's error and what follows
+-- it, or else the output's tail, limited to a size that fits in a prompt.
 summarise :: Text -> Text
 summarise output = T.take 6000 $ case ghcErrors output of
-  [] -> T.unlines (lastN 40 (T.lines output))
+  [] -> case dropWhile (not . ("Error:" `T.isPrefixOf`) . T.strip) ls of
+    [] -> T.unlines (drop (length ls - 40) ls)
+    cabalError -> T.unlines cabalError
   errors -> T.intercalate "\n" (map errorText errors)
   where
-    lastN n xs = drop (length xs - n) xs
+    ls = T.lines output
 
 -- | The output of the failed properties, with their counterexamples.
 propertyReport :: Text -> Text

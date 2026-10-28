@@ -8,7 +8,7 @@ import Core
 import Data.Aeson (Value (..), object, (.=))
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.IORef
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Clock (getMonotonicTimeNSec)
@@ -193,7 +193,7 @@ changedGreeting =
           ],
       propertiesArgs =
         propertiesArg
-          ["import Data.List (isInfixOf)"]
+          ["import Data.List (isInfixOf, isPrefixOf)"]
           ""
           "prop_greetingNamesThem"
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = n `isInfixOf` greeting (Name n) && n `isInfixOf` farewell (Name n)",
@@ -235,7 +235,7 @@ dependentPackage =
       functionsArgs = object ["functions" .= [fn "Greet" "greeting" "Name -> Maybe String" "Greets the name."]],
       propertiesArgs =
         propertiesArg
-          ["import Data.List (isInfixOf)"]
+          ["import Data.List (isInfixOf, isPrefixOf)"]
           ""
           "prop_greetingNamesThem"
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = maybe False (n `isInfixOf`) (greeting (Name n))",
@@ -389,6 +389,7 @@ undone layout = layout {changedFiles = []}
 -- and the module and property suite, with their directories, gone.
 givesUpAndUndoes :: FilePath -> Run -> String -> IO [String]
 givesUpAndUndoes root run _ = do
+  buildLog <- readFile (root </> "dist-newstyle/holey/last-run.log")
   files <- mapM (\(path, contents) -> (,) path . (== contents) <$> readFile (root </> path)) projectFiles'
   leftovers <- filterM (doesPathExist . (root </>)) ["src/Sorted", "test"]
   pure $
@@ -399,10 +400,13 @@ givesUpAndUndoes root run _ = do
             _ -> False,
         expect ("used every iteration: " <> show (iteration run)) (iteration run == maxIterations),
         expect ("alternately reimplemented and redesigned, gave up, then undid its changes: " <> show (history run)) $
-          length (history run) == maxIterations + 1
+          length (history run) == maxIterations + 2
             && and (zipWith T.isInfixOf (cycle ["so reimplementing", "they still fail after the functions they mention were reimplemented"]) (take (maxIterations - 1) (history run)))
             && ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` (history run !! (maxIterations - 1))
-            && "The run did not finish, so its changes to 3 files were undone." == last (history run),
+            && drop maxIterations (history run) == ["Each build's output is in dist-newstyle/holey/last-run.log.", "The run did not finish, so its changes to 3 files were undone."],
+        expect ("every build logged: " <> show (length (filter ("== Iteration " `isPrefixOf`) (lines buildLog)))) $
+          length (filter ("== Iteration " `isPrefixOf`) (lines buildLog)) > maxIterations
+            && "== Iteration 10, Type checking: passed ==" `elem` lines buildLog,
         expect ("files restored: " <> show [p | (p, False) <- files]) (all snd files),
         expect ("created paths removed: " <> show leftovers) (null leftovers)
       ]

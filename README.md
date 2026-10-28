@@ -20,10 +20,10 @@ A failed verification loops back and starts a new iteration:
 | --- | --- |
 | The skeleton does not type check | Errors in existing functions and instances, or in changed functions' old equations, become repairs or `undefined` and the skeleton is checked again. Errors in what one design step wrote go back to that step to correct, in the same iteration and up to three times: the property suite to step 3, a function's signature to step 2, a changed module's types and imports to step 1. Anything else is a redesign from step 1 with the errors |
 | An agent submits no implementation | Reimplement that function |
-| Type errors | Reimplement the functions whose declarations (or added imports) the errors are in, each with its own errors, including existing functions that broke; all functions if none can be blamed |
+| Type errors | Reimplement the functions whose declarations (or added imports) the errors are in, each with its own errors, including existing functions that broke; all functions if none can be blamed, and redesign if the same unblamed error comes back after that |
 | Properties fail | Reimplement the functions the failing properties mention, with the counterexamples; redesign if the same properties failed last iteration too |
 
-After ten iterations the run gives up. A run that does not finish, because it gave up, a step failed or something went wrong, puts every file it changed back as it was and removes the files and directories it created; start the server with `--keep-failed` to leave them for inspection. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back: what it reimplemented, or, for a redesign, the failure in one sentence (for a skeleton, the first GHC error and where it is).
+After ten iterations the run gives up. A run that does not finish, because it gave up, a step failed or something went wrong, puts every file it changed back as it was and removes the files and directories it created; start the server with `--keep-failed` to leave them for inspection. Every build's output is kept in the project's `dist-newstyle/holey/last-run.log`. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back: what it reimplemented, or, for a redesign, the failure in one sentence (for a skeleton, the first GHC error and where it is).
 
 A run writes into the project the client was started in (or `--project DIR`):
 

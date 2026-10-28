@@ -49,6 +49,9 @@ propertyTests =
         check "errors are blamed on the declaration they are in" prop_errorsBlamed,
         check "errors record the package being built" prop_errorsRecordPackage,
         check "a failure without a GHC error is summarised by cabal's error" prop_cabalErrorSummarised,
+        check "errors without a location are read" prop_noLocationErrorsRead,
+        check "a build failure outside every function that repeats is redesigned" prop_repeatedBuildFailureRedesigned,
+        check "long lists of functions are shortened" prop_workDescribed,
         check "a repaired instance keeps its head while it is a hole" prop_instanceRepaired,
         check "a property suite sees its component and the libraries it depends on" prop_suiteVisibility,
         check "failed properties are read from suite output" prop_failedPropertiesRead,
@@ -341,6 +344,38 @@ prop_cabalErrorSummarised =
   forAll (elements ["Resolving dependencies...", "Build profile: -w ghc-9.6.7 -O1\nIn order, the following will be built:"]) $ \before ->
     firstProblem (before <> "\nError: [Cabal-7107]\nCould not resolve dependencies:\n[__0] trying: demo-0.1\n")
       === Just "Error: [Cabal-7107] Could not resolve dependencies:"
+
+prop_noLocationErrorsRead :: Property
+prop_noLocationErrorsRead =
+  let output = "Building test suite 'server-tests' for server-1.0.0.2..\n<no location info>: error: [GHC-29235]\n    module \8216Main\8217 is defined in multiple files: src/server.hs\n\nError: [Cabal-7125]\nFailed to build test:server-tests from server-1.0.0.2.\n"
+   in map (\e -> (errorFile e, errorLine e, errorPackage e)) (ghcErrors output) === [("<no location info>", 0, Just "server")]
+        .&&. firstProblem output === Just "module \8216Main\8217 is defined in multiple files: src/server.hs"
+        .&&. summarise "Resolving dependencies...\nBuilding library for core-0.1.0.0..\nError: [Cabal-7107]\nCould not resolve dependencies:\n" === "Error: [Cabal-7107]\nCould not resolve dependencies:\n"
+
+prop_repeatedBuildFailureRedesigned :: Property
+prop_repeatedBuildFailureRedesigned = forAll functionRefs $ \refs ->
+  forAll (chooseInt (1, maxIterations - 1)) $ \i ->
+    let failure line = TypeErrors [] ["<no location info>: error:\n    module \8216Main\8217 is defined in multiple files: src/server.hs\n", "src/X.hs:" <> T.pack (show line) <> ":1: error:\n    bad\n"]
+        first = failure (3 :: Int)
+     in conjoin
+          [ case decide i refs [] first of
+              Reimplement work -> map fst work === refs
+              other -> counterexample (show other) False,
+            -- The same error at another line is the same failure.
+            case decide i refs (failedChecks first) (failure (9 :: Int)) of
+              Redesign _ -> property True
+              other -> counterexample (show other) False,
+            case decide i refs ["build: something else"] first of
+              Reimplement _ -> property True
+              other -> counterexample (show other) False
+          ]
+
+prop_workDescribed :: Property
+prop_workDescribed =
+  let refs = [FunctionRef "src/A.hs" (FunctionName ("f" <> T.pack (show n))) | n <- [1 .. 9 :: Int]]
+   in describeWork refs refs === "all 9 functions"
+        .&&. describeWork refs (take 8 (drop 1 refs)) === "f2, f3, f4, f5, f6 and 3 more"
+        .&&. describeWork refs (take 2 refs) === "f1, f2"
 
 prop_instanceRepaired :: Property
 prop_instanceRepaired =
