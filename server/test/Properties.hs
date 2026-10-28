@@ -41,6 +41,8 @@ propertyTests =
         check "splitting a rendered module finds each function's signature and definition" prop_renderedFunctionsFound,
         check "changing a module keeps every other declaration as it was" prop_changeKeepsOthers,
         check "new names are added to every style of export list" prop_exportsAdded,
+        check "a function's equations get a wildcard for each new parameter" prop_equationsAdapted,
+        check "a changed function keeps its old equations until implemented" prop_previousBodyKept,
         check "errors are blamed on the declaration they are in" prop_errorsBlamed,
         check "errors record the package being built" prop_errorsRecordPackage,
         check "failed properties are read from suite output" prop_failedPropertiesRead,
@@ -95,7 +97,7 @@ functionSpec path name = do
   doc <- paragraph
   body <- oneof [pure Nothing, Just . T.intercalate "\n" . map ((name <> " ") <>) . map ("= " <>) <$> resize 4 (listOf1 word)]
   extra <- resize 2 (listOf importLine)
-  pure (FunctionSpec (FunctionRef path (FunctionName name)) Designed signature doc body extra Nothing)
+  pure (FunctionSpec (FunctionRef path (FunctionName name)) Designed signature doc body Undefined extra Nothing)
 
 -- | A new module and its functions.
 data NewModule = NewModule ModulePlan [FunctionSpec]
@@ -219,9 +221,9 @@ prop_changeKeepsOthers e =
       ref = FunctionRef path . FunctionName
       plan = ModulePlan "demo" (ModuleName "Demo") path False ["TupleSections"] ["import Data.Char (toUpper)"] ("data " <> changedType <> " = Changed\n\ndata TNew = New\n  deriving (Show)")
       fns =
-        [ FunctionSpec (ref replaced) Designed "Text -> Text" "Replaced." (Just (replaced <> " t = t")) [] Nothing,
-          FunctionSpec (ref "fresh") Designed "Int" "Added." Nothing ["import Data.Ord (comparing)"] Nothing,
-          FunctionSpec (ref repaired) Repair "" "" (Just (repaired <> " _ = 0")) [] Nothing
+        [ FunctionSpec (ref replaced) Designed "Text -> Text" "Replaced." (Just (replaced <> " t = t")) PreviousBody [] Nothing,
+          FunctionSpec (ref "fresh") Designed "Int" "Added." Nothing Undefined ["import Data.Ord (comparing)"] Nothing,
+          FunctionSpec (ref repaired) Repair "" "" (Just (repaired <> " _ = 0")) Undefined [] Nothing
         ]
       before = splitSource (exSource e)
       -- A declaration without the blank lines and comments after it.
@@ -253,6 +255,38 @@ prop_changeKeepsOthers e =
                        )
 
 -- | New names are added once; names already exported are left alone.
+prop_equationsAdapted :: Existing -> Property
+prop_equationsAdapted e =
+  conjoin
+    [ forAll (elements [0, 1 :: Int]) $ \position ->
+        let newSignature = if position == 0 then "Bool -> Int -> Int" else "Int -> Bool -> Int"
+            code = dropWhileEnd (\l -> T.null (T.strip l) || "--" `T.isPrefixOf` l) (drop (declHeadLength d) (declLines d))
+            expected =
+              [ case T.stripPrefix (name <> " ") l of
+                  Just rest ->
+                    let (pattern, after) = T.breakOn " " rest
+                        patterns = if position == 0 then ["_", pattern] else [pattern, "_"]
+                     in T.unwords (name : patterns) <> after
+                  Nothing -> l
+              | l <- code
+              ]
+         in counterexample (T.unpack (T.unlines (declLines d))) $
+              adaptEquations name newSignature d === Just expected
+                .&&. adaptEquations name "Int -> Int" d === Just code
+                .&&. adaptEquations name "Int" d === Nothing
+    | d <- sourceDecls (splitSource (exSource e)),
+      declKind d == ValueDecl,
+      Just name <- [declKey d]
+    ]
+
+prop_previousBodyKept :: Property
+prop_previousBodyKept =
+  let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
+      spec placeholder = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" "Greets the name." Nothing placeholder [] Nothing
+      rendered placeholder = renderChanged source Nothing [spec placeholder]
+   in rendered PreviousBody === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting _ = \"hi\"\n"
+        .&&. rendered Undefined === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting = undefined\n"
+
 prop_exportsAdded :: Property
 prop_exportsAdded =
   forAll (elements [Inline, Ormolu, LeadingCommas]) $ \style ->
@@ -273,7 +307,7 @@ prop_errorsBlamed e =
       source = splitSource (exSource e)
       fnKeys = [k | (k, ValueDecl) <- exDecls e]
       planned = take 1 fnKeys
-      fns = [FunctionSpec (FunctionRef path (FunctionName k)) Designed "" "" Nothing [] Nothing | k <- planned]
+      fns = [FunctionSpec (FunctionRef path (FunctionName k)) Designed "" "" Nothing Undefined [] Nothing | k <- planned]
    in conjoin
         [ forAll (chooseInt (from, to)) $ \line ->
             counterexample (show (declKey d, line)) $

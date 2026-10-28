@@ -136,7 +136,8 @@ applyFunctions previous (FunctionsArgs args) run = do
       let sig = stripPrefixes [n <> " ::", n <> "::", "::"] (T.strip signature)
       when (T.null sig) $ Left ("Missing signature for " <> n)
       let ref = FunctionRef (planPath plan) (FunctionName n)
-      pure (FunctionSpec ref Designed sig (T.strip doc) Nothing [] (if planIsNew plan then Nothing else previous ref))
+      let before = if planIsNew plan then Nothing else previous ref
+      pure (FunctionSpec ref Designed sig (T.strip doc) Nothing (maybe Undefined (const PreviousBody) before) [] before)
 
 applyProperties :: PropertiesArgs -> Run -> Either Text Run
 applyProperties (PropertiesArgs importLines helpers props) run = do
@@ -182,7 +183,7 @@ addRepairs broken run =
   run {artefact = art {functions = functions art ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef (functions art)]}}
   where
     art = artefact run
-    repair ref previous = FunctionSpec ref Repair "" "" Nothing [] (Just previous)
+    repair ref previous = FunctionSpec ref Repair "" "" Nothing Undefined [] (Just previous)
 
 checkImport :: Text -> Either Text Text
 checkImport line

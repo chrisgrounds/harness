@@ -5,7 +5,7 @@ A Haskell LLM harness for type-driven development, with a Brick terminal interfa
 Each message is a requirement and starts a *holey run*, which moves through these steps:
 
 1. Creating types: the modules to create or change, with their imports and types
-2. Creating functions (signatures only, bodies left as `undefined`): new functions, and existing ones to change
+2. Creating functions (signatures only): new functions, and existing ones to change. Until they are implemented, new functions are `undefined` and changed ones keep their old equations, with a `_` pattern for each new parameter, or are `undefined` when those cannot fit the new signature
 3. Creating properties (invariants the types can't express)
 4. Checking skeleton (the code type-checks before any implementation)
 5. Implementing functions (one cheap agent per function, in parallel)
@@ -18,12 +18,12 @@ A failed verification loops back and starts a new iteration:
 
 | Failure | Next |
 | --- | --- |
-| The skeleton does not type check | Redesign from step 1 with the errors, unless they are all in existing functions: those become repairs and the skeleton is checked again |
+| The skeleton does not type check | Redesign from step 1 with the errors, unless they are all in existing functions or in changed functions' old equations: those become repairs or `undefined` and the skeleton is checked again |
 | An agent submits no implementation | Reimplement that function |
 | Type errors | Reimplement the functions whose declarations (or added imports) the errors are in, each with its own errors, including existing functions that broke; all functions if none can be blamed |
 | Properties fail | Reimplement the functions the failing properties mention, with the counterexamples; redesign if the same properties failed last iteration too |
 
-After ten iterations the run gives up. A run that does not finish, because it gave up, a step failed or something went wrong, puts every file it changed back as it was and removes the files and directories it created; start the server with `--keep-failed` to leave them for inspection. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back.
+After ten iterations the run gives up. A run that does not finish, because it gave up, a step failed or something went wrong, puts every file it changed back as it was and removes the files and directories it created; start the server with `--keep-failed` to leave them for inspection. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back: what it reimplemented, or, for a redesign, the failure in one sentence (for a skeleton, the first GHC error and where it is).
 
 A run writes into the project the client was started in (or `--project DIR`):
 

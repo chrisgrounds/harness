@@ -141,7 +141,7 @@ pipeline env = do
       case decide current refs previouslyFailed outcome of
         GiveUp reason -> record reason >> throwE ()
         Redesign feedback -> do
-          record ("Iteration " <> T.pack (show current) <> ": " <> describeOutcome outcome <> ", so redesigning.")
+          record ("Iteration " <> T.pack (show current) <> ": " <> describeOutcome outcome <> ": " <> redesignReason outcome)
           liftIO (update (progress env) (restartFrom DesignTypes))
           design typesStep (addMessage (userMessage (revisionNote (current + 1) feedback)) chat)
         Reimplement work -> do
@@ -237,8 +237,9 @@ setFunctions env args = do
   tryUpdate (progress env) (applyFunctions (`Map.lookup` Map.fromList previous) args)
 
 -- | Builds the skeleton. Existing functions it breaks become holes to
--- repair, and it is built again; any other error sends the run back to
--- design.
+-- repair, a changed function whose old equations do not fit its new
+-- signature becomes @undefined@, and it is built again; any other error
+-- sends the run back to design.
 checkSkeleton :: Env -> ExceptT () IO (Either Text ())
 checkSkeleton env = do
   liftIO (update (progress env) (setStep CheckSkeleton Running))
@@ -251,12 +252,15 @@ checkSkeleton env = do
         Left output -> do
           blamed <- liftIO (blameErrors env output)
           repairs <- liftIO (repairRefs env)
+          kept <- liftIO (keptBodies env)
           let others = nub [ref | (_, InOther ref) <- blamed]
               planned = nub [ref | (_, InPlanned ref) <- blamed]
               unblamed = [e | (e, Unblamed) <- blamed]
-          if not (null others) && null planned && null unblamed && rounds < 8
+              unfit = filter (`elem` kept) planned
+          if (not (null others) || not (null unfit)) && all (`elem` unfit) planned && null unblamed && rounds < 8
             then do
               liftIO (previousDecls env others >>= update (progress env) . addRepairs)
+              liftIO (update (progress env) (withUndefined unfit))
               attempt (rounds + 1)
             else do
               let stuck = filter (`elem` repairs) planned
@@ -308,6 +312,14 @@ blameErrors env output = do
         source <- splitSource <$> readText (projectRoot env </> p)
         pure (e, blame fns p source (errorLine e))
       _ -> pure (e, Unblamed)
+
+-- | Changed functions that keep their old equations until implemented.
+keptBodies :: Env -> IO [FunctionRef]
+keptBodies env = (\run -> [fnRef f | f <- functions (artefact run), fnPlaceholder f == PreviousBody, fnBody f == Nothing]) <$> readRun (progress env)
+
+withUndefined :: [FunctionRef] -> Run -> Run
+withUndefined refs run =
+  run {artefact = (artefact run) {functions = [if fnRef f `elem` refs then f {fnPlaceholder = Undefined} else f | f <- functions (artefact run)]}}
 
 repairRefs :: Env -> IO [FunctionRef]
 repairRefs env = (\run -> [fnRef f | f <- functions (artefact run), fnKind f == Repair]) <$> readRun (progress env)

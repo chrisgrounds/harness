@@ -10,6 +10,7 @@ module Verify
     runSuite,
     ghcErrors,
     blame,
+    firstError,
     failedProperties,
     propertyReport,
     mentions,
@@ -127,6 +128,26 @@ blame fns path source line = case declAt line source of
     Just imported
       | f : _ <- [f | f <- fns, refPath (fnRef f) == path, imported `elem` map (T.unwords . T.words) (fnImports f)] -> InPlanned (fnRef f)
     _ -> Unblamed
+
+-- | The first GHC error in output as one line: its message and where it is.
+firstError :: Text -> Maybe Text
+firstError output = case ghcErrors output of
+  e : _ ->
+    let message = takeWhile (not . aside) . dropWhile T.null . map T.strip . drop 1 . T.lines $ errorText e
+        firstPoint = case message of
+          first : rest -> first : takeWhile (not . ("•" `T.isPrefixOf`)) rest
+          [] -> []
+        sentence = T.unwords (map (T.strip . dropBullet) firstPoint)
+        clipped = if T.length sentence > 160 then T.take 157 sentence <> "..." else sentence
+     in Just (clipped <> " (" <> T.pack (errorFile e) <> ":" <> T.pack (show (errorLine e)) <> ")")
+  [] -> Nothing
+  where
+    -- The source excerpt, @12 | code@ and its gutter, and GHC's suggestions.
+    aside l =
+      "|" `T.isPrefixOf` l
+        || "Suggested fix" `T.isPrefixOf` l
+        || let (number, rest) = T.breakOn " |" l in not (T.null rest) && not (T.null number) && T.all isDigit number
+    dropBullet l = maybe l T.strip (T.stripPrefix "•" l)
 
 -- | Properties reported as failed (or given up on) in the suite's output.
 failedProperties :: Text -> [Text]

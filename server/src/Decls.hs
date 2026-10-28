@@ -18,6 +18,8 @@ module Decls
     importAt,
     upsertDecl,
     rewriteEquations,
+    adaptEquations,
+    parameters,
     exportName,
     exportedNames,
     addPragmas,
@@ -122,6 +124,120 @@ rewriteEquations name body d =
     after = trailing d
     code = length (declLines d) - length after
     equations = maybe [name <> " = undefined"] (T.lines . T.stripEnd) body
+
+-- | A function's equations adapted to a new signature, to stand in for it
+-- until it is reimplemented: as they are when the signature has as many
+-- parameters as before, or with a wildcard pattern for each new parameter
+-- when the old parameters appear in the new signature in order. 'Nothing'
+-- when that cannot be done: the function has no signature or is defined
+-- infix, a parameter was dropped, or an equation binds fewer patterns than
+-- the function has parameters.
+adaptEquations :: Text -> Text -> Decl -> Maybe [Text]
+adaptEquations name newSignature d = do
+  old <- signatureOf name d
+  let before = parameters old
+      after = parameters newSignature
+  wildcards <- case compare (length after) (length before) of
+    EQ -> Just []
+    GT | not (isOperatorName name) -> newPositions before (zip [0 ..] after)
+    _ -> Nothing
+  if null wildcards then Just equations else traverse (adapt (length before) (length after) wildcards) equations
+  where
+    after' = trailing d
+    equations = take (length (declLines d) - length after' - declHeadLength d) (drop (declHeadLength d) (declLines d))
+    adapt arity total wildcards l = case T.stripPrefix name l of
+      Just rest | T.null rest || isSpace (T.head rest) -> do
+        let (patterns, body) = splitEquation rest
+            tokens = patternTokens patterns
+        if length tokens /= arity
+          then Nothing
+          else Just (T.unwords (name : place total wildcards tokens) <> (if T.null (T.strip body) then "" else " " <> T.stripStart body))
+      _ -> Just l
+    place total wildcards = go 0
+      where
+        go i tokens
+          | i >= total = []
+          | i `elem` wildcards = "_" : go (i + 1) tokens
+          | otherwise = case tokens of
+              t : rest -> t : go (i + 1) rest
+              [] -> []
+
+-- | The positions in the new parameters of those that are not old ones,
+-- matching the old ones in order.
+newPositions :: [Text] -> [(Int, Text)] -> Maybe [Int]
+newPositions [] news = Just (map fst news)
+newPositions _ [] = Nothing
+newPositions (o : os) ((i, n) : ns)
+  | o == n = newPositions os ns
+  | otherwise = (i :) <$> newPositions (o : os) ns
+
+-- | The type of a function's signature in its declaration, without comments.
+signatureOf :: Text -> Decl -> Maybe Text
+signatureOf name d = case break isSignature headLines of
+  (_, first : rest) ->
+    let continued = takeWhile (\l -> not (T.null l) && isSpace (T.head l)) rest
+     in Just (T.drop 2 (snd (T.breakOn "::" (T.unwords (map withoutComment (first : continued))))))
+  (_, []) -> Nothing
+  where
+    headLines = take (declHeadLength d) (declLines d)
+    isSignature l = maybe False (name `elem`) (signatureNames (collapse l))
+    withoutComment l = case T.breakOn "--" l of
+      (before, rest) | not (T.null rest), lineComment rest -> before
+      _ -> l
+
+-- | The parameter types of a signature, after any @forall@ and context.
+parameters :: Text -> [Text]
+parameters signature = map collapse (dropLast (splitArrows (afterContext (afterForall (T.strip signature)))))
+  where
+    afterForall t
+      | "forall" `T.isPrefixOf` t = T.strip (T.drop 1 (snd (T.breakOn "." t)))
+      | otherwise = t
+    dropLast xs = take (length xs - 1) xs
+
+-- | A type split at its top-level arrows.
+splitArrows :: Text -> [Text]
+splitArrows = map (T.strip . T.pack) . go (0 :: Int) "" . T.unpack
+  where
+    go _ acc [] = [reverse acc]
+    go depth acc ('-' : '>' : rest) | depth == 0 = reverse acc : go depth "" rest
+    go depth acc (c : rest)
+      | c `elem` ("([{" :: String) = go (depth + 1) (c : acc) rest
+      | c `elem` (")]}" :: String) = go (depth - 1) (c : acc) rest
+      | otherwise = go depth (c : acc) rest
+
+-- | An equation's patterns and the rest from its @=@ or first guard.
+splitEquation :: Text -> (Text, Text)
+splitEquation t = T.splitAt (go (0 :: Int) 0 (T.unpack t)) t
+  where
+    go _ i [] = i
+    go depth i (c : rest)
+      | c `elem` ("([{" :: String) = go (depth + 1) (i + 1) rest
+      | c `elem` (")]}" :: String) = go (depth - 1) (i + 1) rest
+      | c == '"' = let n = stringLength rest in go depth (i + 1 + n) (drop n rest)
+      | depth == 0, c `elem` ("=|" :: String), not (symbolAround i) = i
+      | otherwise = go depth (i + 1) rest
+    symbolAround i = any isSymbol [ch | j <- [i - 1, i + 1], j >= 0, j < T.length t, let ch = T.index t j]
+
+-- | An equation's patterns, split at top-level spaces.
+patternTokens :: Text -> [Text]
+patternTokens = filter (not . T.null) . map (T.strip . T.pack) . go (0 :: Int) "" . T.unpack
+  where
+    go _ acc [] = [reverse acc]
+    go depth acc (c : rest)
+      | c `elem` ("([{" :: String) = go (depth + 1) (c : acc) rest
+      | c `elem` (")]}" :: String) = go (depth - 1) (c : acc) rest
+      | c == '"' = let n = stringLength rest in go depth (reverse (take n rest) ++ c : acc) (drop n rest)
+      | depth == 0 && isSpace c = reverse acc : go depth "" rest
+      | otherwise = go depth (c : acc) rest
+
+-- | The length of a string literal's rest, up to and including its closing quote.
+stringLength :: String -> Int
+stringLength = go 0
+  where
+    go n ('\\' : _ : rest) = go (n + 2) rest
+    go n ('"' : _) = n + 1
+    go n (_ : rest) = go (n + 1) rest
+    go n [] = n
 
 -- | How a declaration is exported, if it defines a name.
 exportName :: Decl -> Maybe Text

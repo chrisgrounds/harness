@@ -13,6 +13,7 @@ module Core.Run
     ModuleName (..),
     FunctionRef (..),
     FunctionKind (..),
+    Placeholder (..),
     FunctionSpec (..),
     fnName,
     PropertySpec (..),
@@ -80,15 +81,23 @@ data FunctionKind
     Repair
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
+-- | What stands in for a function's body until it is implemented.
+data Placeholder
+  = -- | The previous definition, with a wildcard for each new parameter.
+    PreviousBody
+  | Undefined
+  deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
 data FunctionSpec = FunctionSpec
   { fnRef :: FunctionRef,
     fnKind :: FunctionKind,
     -- | The type, without the name or @::@.
     fnSignature :: Text,
     fnDoc :: Text,
-    -- | The complete definition (every equation, no signature). 'Nothing' is
-    -- rendered as @undefined@.
+    -- | The complete definition (every equation, no signature). 'Nothing'
+    -- is rendered as the placeholder.
     fnBody :: Maybe Text,
+    fnPlaceholder :: Placeholder,
     -- | Extra import lines the implementation needs.
     fnImports :: [Text],
     -- | The declaration as it was before the run, for functions that already

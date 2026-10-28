@@ -39,8 +39,10 @@ renderNewModule plan fns = T.unlines (header ++ concatMap (\f -> functionLines f
 -- | An existing module with the run's changes. Type declarations and
 -- designed functions replace the declaration of the same name or are added
 -- after the others, and are exported, so properties and other modules can
--- use them; repairs keep their comments and signature and get new
--- equations. Every other line is left as it was.
+-- use them; until it is implemented, a designed function that replaces one
+-- keeps the old equations where its placeholder says so and they fit.
+-- Repairs keep their comments and signature and get new equations. Every
+-- other line is left as it was.
 renderChanged :: Text -> Maybe ModulePlan -> [FunctionSpec] -> Either Text Text
 renderChanged original plan fns = do
   repaired <- foldM repair (foldl (flip upsertDecl) source (typeDecls ++ map designedDecl designed)) repairs
@@ -55,7 +57,16 @@ renderChanged original plan fns = do
       SourceFile leading (d : ds) -> map tidy (d {declLines = filter (not . T.null . T.strip) leading ++ declLines d} : ds)
       SourceFile _ [] -> []
     tidy d = d {declLines = dropWhileEnd (T.null . T.strip) (declLines d)}
-    designedDecl f = Decl ValueDecl (Just (functionNameText (fnName f))) (functionLines f) 0
+    designedDecl f = Decl ValueDecl (Just name) (functionHead f ++ body) 0
+      where
+        name = functionNameText (fnName f)
+        kept = do
+          old <- findDecl name source
+          adaptEquations name (fnSignature f) old
+        body = case (fnBody f, fnPlaceholder f, kept) of
+          (Just b, _, _) -> T.lines (T.stripEnd b)
+          (Nothing, PreviousBody, Just equations) -> equations
+          _ -> [name <> " = undefined"]
     repair sf f = case break ((== Just name) . declKey) (sourceDecls sf) of
       (before, d : after) -> Right sf {sourceDecls = before ++ rewriteEquations name (fnBody f) d : after}
       (_, []) -> Left ("No declaration of " <> name <> " to repair.")

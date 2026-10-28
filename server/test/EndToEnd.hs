@@ -196,9 +196,11 @@ changedGreeting =
           ]
     }
 
--- | A library whose @greeting@ takes a name from now on, which breaks an
--- executable in another package. Both packages have a @src/Main.hs@, so the
--- error can only be placed by the package cabal was building.
+-- | A library whose @greeting@ takes a name and may not answer from now on,
+-- so its old body no longer fits and its skeleton is @undefined@, which
+-- breaks an executable in another package. Both packages have a
+-- @src/Main.hs@, so the error can only be placed by the package cabal was
+-- building.
 dependentPackage :: Layout
 dependentPackage =
   Layout
@@ -218,18 +220,18 @@ dependentPackage =
       registration = Nothing,
       suiteHeader = "test-suite holey-greet",
       typesArgs = modulesArg "core" "Greet" "newtype Name = Name String",
-      functionsArgs = object ["functions" .= [fn "Greet" "greeting" "Name -> String" "Greets the name."]],
+      functionsArgs = object ["functions" .= [fn "Greet" "greeting" "Name -> Maybe String" "Greets the name."]],
       propertiesArgs =
         propertiesArg
           ["import Data.List (isInfixOf)"]
           ""
           "prop_greetingNamesThem"
-          "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = n `isInfixOf` greeting (Name n)",
+          "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = maybe False (n `isInfixOf`) (greeting (Name n))",
       draft = Nothing,
       implementations =
         const
-          [ ("greeting", ("greeting (Name n) = \"hi \" ++ n", [])),
-            ("main", ("main = putStrLn (greeting (Name \"you\") ++ \"!\")", ["import Greet (Name (..))"]))
+          [ ("greeting", ("greeting (Name n) = Just (\"hi \" ++ n)", [])),
+            ("main", ("main = putStrLn (maybe \"\" id (greeting (Name \"you\")) ++ \"!\")", ["import Greet (Name (..))"]))
           ]
     }
 
@@ -380,7 +382,7 @@ givesUpAndUndoes root run _ = do
         expect ("used every iteration: " <> show (iteration run)) (iteration run == maxIterations),
         expect ("alternately reimplemented and redesigned, gave up, then undid its changes: " <> show (history run)) $
           length (history run) == maxIterations + 1
-            && and (zipWith T.isInfixOf (cycle ["reimplementing", "redesigning"]) (take (maxIterations - 1) (history run)))
+            && and (zipWith T.isInfixOf (cycle ["so reimplementing", "they still fail after the functions they mention were reimplemented"]) (take (maxIterations - 1) (history run)))
             && ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` (history run !! (maxIterations - 1))
             && "The run did not finish, so its changes to 3 files were undone." == last (history run),
         expect ("files restored: " <> show [p | (p, False) <- files]) (all snd files),
@@ -445,7 +447,10 @@ dropsOldSuite root run source = do
   pure $
     allPassed run
       ++ concat
-        [ expect ("redesigned once: " <> show (history run)) (history run == ["Iteration 1: the skeleton did not type check, so redesigning."]),
+        [ expect ("redesigned once, saying why: " <> show (history run)) $
+            case history run of
+              [note] -> "Iteration 1: the skeleton did not type check: Variable not in scope: missingHelper" `T.isPrefixOf` note && "(test/HoleyDemoProperties.hs:" `T.isInfixOf` note
+              _ -> False,
           expect "old suite file removed" (not oldSuite),
           expect "old suite stanza removed" (not ("test-suite holey-demo" `isInfixOf` cabal)),
           expect "no holes left" (not ("undefined" `isInfixOf` source))
@@ -463,7 +468,7 @@ repairsDependent root run source = do
           [(fnRef f, fnKind f) | f <- functions (artefact run)]
             == [(FunctionRef "core/src/Greet.hs" (FunctionName "greeting"), Designed), (FunctionRef "app/src/Main.hs" (FunctionName "main"), Repair)],
         expect "the app's main keeps its documentation and gets the import" $
-          all (`isInfixOf` source) ["import Greet (Name (..))", "-- | Greets loudly.\nmain :: IO ()\nmain = putStrLn (greeting (Name \"you\") ++ \"!\")"],
+          all (`isInfixOf` source) ["import Greet (Name (..))", "-- | Greets loudly.\nmain :: IO ()\nmain = putStrLn (maybe \"\" id (greeting (Name \"you\")) ++ \"!\")"],
         expect "the library's executable untouched" ("main = putStrLn \"core\"" `isInfixOf` coreMain)
       ]
 
