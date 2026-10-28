@@ -68,7 +68,7 @@ original root (Originals ref dirs) path = do
 -- removed. Returns the files restored or removed.
 rollback :: FilePath -> Originals -> Run -> IO [FilePath]
 rollback root originals@(Originals _ dirs) run = do
-  undone <- fmap catMaybes . forM (touchedFiles run) $ \path -> do
+  undone <- fmap catMaybes . forM (touchedPaths run) $ \path -> do
     before <- original root originals path
     case before of
       Just text -> writeIfChanged (root </> path) text >> pure (Just path)
@@ -110,8 +110,8 @@ plannedFiles art = nub (map planPath (modules art) ++ map (refPath . fnRef) (fun
 -- | Writes every file in the plan from its original, restores files the
 -- plan no longer changes, and registers new modules and the property suite
 -- in the cabal files. Refuses to overwrite files the run did not create.
--- Returns every file the run has changed.
-writeArtefact :: FilePath -> [Component] -> Originals -> Run -> IO (Either Text [FilePath])
+-- Returns every file the run has changed, and whether it created each.
+writeArtefact :: FilePath -> [Component] -> Originals -> Run -> IO (Either Text [ChangedFile])
 writeArtefact root cs originals run = case suiteOf cs art of
   Nothing -> pure (Left "No module was chosen.")
   Just suite -> do
@@ -127,17 +127,20 @@ writeArtefact root cs originals run = case suiteOf cs art of
             forM_ rendered $ \(path, _, text) -> writeIfChanged (root </> path) text
             -- Suites written for an earlier main module, which would still be built.
             -- Only suites the run created; it may also have repaired existing ones.
-            oldSuites <- filterM (fmap isNothing . original root originals) [p | p <- touchedFiles run, isPropertiesFile p, p /= suiteFile suite]
+            oldSuites <- filterM (fmap isNothing . original root originals) [p | p <- touchedPaths run, isPropertiesFile p, p /= suiteFile suite]
             mapM_ (removeIfPresent . (root </>)) oldSuites
-            restored <- restore [p | p <- touchedFiles run, p `notElem` plannedFiles art, p `notElem` newFiles, p `notElem` oldSuites]
+            restored <- restore [p | p <- touchedPaths run, p `notElem` plannedFiles art, p `notElem` newFiles, p `notElem` oldSuites]
             _ <- original root originals (suiteFile suite)
             writeIfChanged (root </> suiteFile suite) (renderProperties (suiteImports cs suite art) art)
             cabalFiles <- registerModules suite oldSuites
             let changed = [path | (path, source, text) <- rendered, source /= Just text]
-                kept = [p | p <- touchedFiles run, p `notElem` restored, p `notElem` oldSuites]
-            pure (Right (nub (kept ++ changed ++ [suiteFile suite] ++ cabalFiles)))
+                kept = [p | p <- touchedPaths run, p `notElem` restored, p `notElem` oldSuites]
+            Right <$> mapM classify (nub (kept ++ changed ++ [suiteFile suite] ++ cabalFiles))
   where
     art = artefact run
+    -- Every file written has had its original read first, so this is how it
+    -- was before the run rather than now.
+    classify path = ChangedFile path . maybe NewFile (const ExistingFile) <$> original root originals path
     -- Files an earlier design changed, back to how they were.
     restore paths = fmap catMaybes . mapM restoreOne $ paths
     restoreOne path = do
@@ -148,7 +151,7 @@ writeArtefact root cs originals run = case suiteOf cs art of
     registerModules suite oldSuites = do
       let newModules = [(c, planModule p) | p <- modules art, planIsNew p, Just c <- [find ((== planComponent p) . componentName) cs]]
           main = maybe (ModuleName "") planModule (mainModule art)
-          cabals = nub (cabalFile (suiteComponent suite) : [p | p <- touchedFiles run, takeExtension p == ".cabal"])
+          cabals = nub (cabalFile (suiteComponent suite) : [p | p <- touchedPaths run, takeExtension p == ".cabal"])
           edits =
             [(cabal, removeTestSuite (takeFileName old)) | old <- oldSuites, cabal <- cabals]
               ++ [(cabalFile c, \text -> either (const text) id (addModule c m text)) | (c, m) <- newModules]
@@ -163,7 +166,7 @@ writeArtefact root cs originals run = case suiteOf cs art of
       before <- readText (root </> file)
       let after = foldl' (\text (_, edit) -> edit text) before [e | e@(f, _) <- edits, f == file]
       unless (after == before) $ writeText (root </> file) after
-      pure (if after /= before || file `elem` touchedFiles run then Just file else Nothing)
+      pure (if after /= before || file `elem` touchedPaths run then Just file else Nothing)
 
 -- | A property suite holey writes, @Holey<Module>Properties.hs@.
 isPropertiesFile :: FilePath -> Bool
@@ -180,7 +183,7 @@ removeIfPresent path = do
 existingFiles :: FilePath -> Run -> [FilePath] -> IO [FilePath]
 existingFiles root run paths = do
   existing <- mapM (\p -> (,) p <$> doesFileExist (root </> p)) paths
-  pure [p | (p, True) <- existing, p `notElem` touchedFiles run]
+  pure [p | (p, True) <- existing, p `notElem` touchedPaths run]
 
 -- | The file in the project an error is in, relative to the project root.
 -- GHC reports paths relative to the package being built, so the package

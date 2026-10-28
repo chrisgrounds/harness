@@ -48,9 +48,9 @@ data Layout = Layout
   { -- | Every file of the project, including its cabal files.
     projectFiles :: [(FilePath, String)],
     cabalPath :: FilePath,
-    -- | The file the checks read, and the files the run should change.
+    -- | The file the checks read, and the files the run should create or edit.
     moduleFile :: FilePath,
-    changedFiles :: [FilePath],
+    changedFiles :: [ChangedFile],
     -- | The line that registers a new module, if the run creates one.
     registration :: Maybe String,
     suiteHeader :: String,
@@ -102,7 +102,7 @@ sortedMerge package =
     { projectFiles = singlePackage (packageStanza package) [packageSeed package],
       cabalPath = "demo.cabal",
       moduleFile = path,
-      changedFiles = [path, "test/HoleySortedMergeProperties.hs", "demo.cabal"],
+      changedFiles = [ChangedFile path NewFile, ChangedFile "test/HoleySortedMergeProperties.hs" NewFile, ChangedFile "demo.cabal" ExistingFile],
       registration = Just ("    " <> packageField package <> ": Sorted.Merge"),
       suiteHeader = "test-suite holey-sorted-merge",
       typesArgs =
@@ -190,7 +190,7 @@ changedGreeting =
           ],
       cabalPath = "demo.cabal",
       moduleFile = "src/Demo.hs",
-      changedFiles = ["src/Demo.hs", "test/HoleyDemoProperties.hs", "demo.cabal"],
+      changedFiles = [ChangedFile "src/Demo.hs" ExistingFile, ChangedFile "test/HoleyDemoProperties.hs" NewFile, ChangedFile "demo.cabal" ExistingFile],
       registration = Nothing,
       suiteHeader = "test-suite holey-demo",
       typesArgs = modulesArg "demo" "Demo" "-- | Who to greet.\nnewtype Name = Name String\n  deriving (Eq, Show)",
@@ -240,7 +240,7 @@ dependentPackage =
         ],
       cabalPath = "core/core.cabal",
       moduleFile = "app/src/Main.hs",
-      changedFiles = ["core/src/Greet.hs", "core/test/HoleyGreetProperties.hs", "core/core.cabal", "app/src/Main.hs"],
+      changedFiles = [ChangedFile "core/src/Greet.hs" ExistingFile, ChangedFile "core/test/HoleyGreetProperties.hs" NewFile, ChangedFile "core/core.cabal" ExistingFile, ChangedFile "app/src/Main.hs" ExistingFile],
       registration = Nothing,
       suiteHeader = "test-suite holey-greet",
       typesArgs = modulesArg "core" "Greet" "newtype Name = Name String",
@@ -468,7 +468,7 @@ repairsCaller root run source = do
 firstDraft :: Layout -> Layout
 firstDraft layout =
   layout
-    { changedFiles = ["src/Sorted/Merge.hs", "demo.cabal", "test/HoleySortedMergeProperties.hs"],
+    { changedFiles = [ChangedFile "src/Sorted/Merge.hs" NewFile, ChangedFile "demo.cabal" ExistingFile, ChangedFile "test/HoleySortedMergeProperties.hs" NewFile],
       draftUntil = "the previous design failed verification",
       draft =
         Just

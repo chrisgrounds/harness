@@ -58,6 +58,12 @@ instance Arbitrary Artefact where
   arbitrary =
     Artefact <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
+instance Arbitrary ChangeKind where
+  arbitrary = elements [NewFile, ExistingFile]
+
+instance Arbitrary ChangedFile where
+  arbitrary = ChangedFile <$> arbitrary <*> arbitrary
+
 -- | Runs reachable from 'newRun', plus arbitrary contents in the other fields.
 instance Arbitrary Run where
   arbitrary = do

@@ -1,5 +1,6 @@
 module Core
-  ( module Core.Chat,
+  ( module Core.ChangedFile,
+    module Core.Chat,
     module Core.Event,
     module Core.Message,
     module Core.Model,
@@ -9,6 +10,7 @@ module Core
   )
 where
 
+import Core.ChangedFile
 import Core.Chat
 import Core.Event
 import Core.Message

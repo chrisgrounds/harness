@@ -61,6 +61,12 @@ instance Arbitrary Artefact where
   arbitrary =
     Artefact <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
+instance Arbitrary ChangeKind where
+  arbitrary = elements [NewFile, ExistingFile]
+
+instance Arbitrary ChangedFile where
+  arbitrary = ChangedFile <$> arbitrary <*> arbitrary
+
 instance Arbitrary ToolName where
   arbitrary = arbitraryBoundedEnum
 

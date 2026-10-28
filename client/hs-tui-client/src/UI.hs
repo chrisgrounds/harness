@@ -359,7 +359,7 @@ drawRun state run =
            ]
         ++ [ padTop (Pad 1) $
                padLeft (Pad 2) $
-                 vBox (withAttr muted (txt "Files") : [withAttr metadataAttr (txt ("   " <> safeText (T.pack file))) | file <- touchedFiles run])
+                 vBox (withAttr muted (txt "Files") : [withAttr metadataAttr (txt ("   " <> safeText (changeTag file))) | file <- touchedFiles run])
            | not (null (touchedFiles run))
            ]
 

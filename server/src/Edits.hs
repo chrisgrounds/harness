@@ -128,7 +128,7 @@ applyModules :: [ModulePlan] -> Run -> Either Text Run
 applyModules plans run = do
   let paths = map planPath plans
   unique "Two modules have the same file." paths
-  case [planPath p | p <- modules (artefact run), planIsNew p, planPath p `elem` touchedFiles run, planPath p `notElem` paths] of
+  case [planPath p | p <- modules (artefact run), planIsNew p, planPath p `elem` touchedPaths run, planPath p `notElem` paths] of
     [] -> pure ()
     dropped -> Left ("This run has already created " <> T.intercalate ", " (map T.pack dropped) <> "; keep those modules.")
   let art = artefact run

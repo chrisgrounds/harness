@@ -23,6 +23,7 @@ module Core.Run
     Artefact (..),
     mainModule,
     Run (..),
+    touchedPaths,
     allSteps,
     stepLabel,
     emptyArtefact,
@@ -44,6 +45,7 @@ import Data.Aeson (FromJSON, ToJSON)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+import Core.ChangedFile (ChangedFile (..))
 import Core.Model (Model)
 import Core.Tool (ToolCall, ToolRequest, toolCallOf)
 
@@ -184,7 +186,7 @@ data Run = Run
     tasks :: [(FunctionRef, TaskStatus)],
     artefact :: Artefact,
     -- | Files the run created or edited, relative to the working directory.
-    touchedFiles :: [FilePath],
+    touchedFiles :: [ChangedFile],
     warnings :: [Text],
     -- | Why the run looped back or gave up, oldest first.
     history :: [Text],
@@ -192,6 +194,9 @@ data Run = Run
     latestToolCall :: Maybe ToolCall
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+touchedPaths :: Run -> [FilePath]
+touchedPaths = map changedPath . touchedFiles
 
 allSteps :: [Step]
 allSteps = [minBound .. maxBound]
