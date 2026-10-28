@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module UI (runUI, runsSummary, toolCallLabel) where
+module UI (runUI, runsSummary, toolCallLabel, UI (..), allToolNames, drawTools) where
 
 import Brick
 import Brick.BChan (newBChan, writeBChan)
@@ -9,6 +9,7 @@ import Brick.Widgets.Border.Style (unicodeRounded)
 import Brick.Widgets.Center (center, hCenter)
 import Brick.Widgets.Edit
 import Client
+import Client.Commands (Command (..), parseCommand)
 import Control.Concurrent (Chan, forkIO, killThread, newChan, threadDelay, writeChan)
 import Control.Exception (bracket)
 import Control.Monad (forever, void, when)
@@ -43,14 +44,16 @@ data UI = UI
     -- | The model the server runs with, once its 'Connected' greeting arrives.
     serverModel :: Maybe Model,
     -- | Token-rate statistics across every message received from the server.
-    tokenStats :: TokenStats
+    tokenStats :: TokenStats,
+    -- | Whether the tools panel is open: '/tools' opens it, and Esc or the next requirement closes it.
+    showingTools :: Bool
   }
 
 runUI :: FilePath -> FilePath -> Socket -> IO ()
 runUI path dir sock = do
   events <- newBChan 16
   requests <- newChan
-  let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing "" Nothing emptyTokenStats
+  let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing "" Nothing emptyTokenStats False
       publish = writeBChan events
       ticker = forever (threadDelay 120000 >> publish Tick)
       buildVty = do
@@ -98,7 +101,7 @@ handleEvent dir requests event = do
     AppEvent (ReplyRate r) -> modify' (\s -> s {tokenStats = addRate (tokenStats s) r})
     VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl]) -> halt
     VtyEvent (V.EvKey (V.KChar 'd') [V.MCtrl]) | T.null (draft state) -> halt
-    VtyEvent (V.EvKey V.KEsc []) -> pure ()
+    VtyEvent (V.EvKey V.KEsc []) -> modify' (\s -> s {showingTools = False})
     MouseDown Transcript V.BScrollUp _ _ -> scrollBack (vScrollBy transcript (-3))
     MouseDown Transcript V.BScrollDown _ _ -> scrollBack (vScrollBy transcript 3)
     VtyEvent (V.EvKey V.KPageUp []) -> scrollBack (vScrollPage transcript Up)
@@ -134,25 +137,37 @@ submit :: FilePath -> Chan StartRun -> EventM Name UI ()
 submit dir requests = do
   state <- get
   let value = draft state
-  if T.strip value == "/quit"
-    then halt
-    else when (not (waiting state) && failure state == Nothing && not (T.null (T.strip value))) $ do
-      let req = Requirement value
-      liftIO $ writeChan requests (StartRun dir req)
+  case parseCommand value of
+    Quit -> halt
+    ListTools ->
       modify'
         ( \s ->
             s
-              { runs = newRun req : runs s,
-                composer = editorText Composer Nothing "",
-                waiting = True,
-                frame = 0,
-                followLatest = True,
+              { composer = editorText Composer Nothing "",
                 inputHistory = value : inputHistory s,
                 historyIndex = Nothing,
-                savedDraft = ""
+                savedDraft = "",
+                showingTools = True
               }
         )
-      scrollEnd
+    RunRequirement req ->
+      when (not (waiting state) && failure state == Nothing && not (T.null (T.strip value))) $ do
+        liftIO $ writeChan requests (StartRun dir req)
+        modify'
+          ( \s ->
+              s
+                { runs = newRun req : runs s,
+                  composer = editorText Composer Nothing "",
+                  waiting = True,
+                  frame = 0,
+                  followLatest = True,
+                  inputHistory = value : inputHistory s,
+                  historyIndex = Nothing,
+                  savedDraft = "",
+                  showingTools = False
+                }
+          )
+        scrollEnd
 
 recall :: Bool -> EventM Name UI ()
 recall older = do
@@ -214,6 +229,7 @@ drawUI path dir state = [screen]
                           withAttr muted $
                             txt (safeText (runsSummary (averageTokens (tokenStats state)) (serverModel state) (length (runs state))))
                       ],
+                  if showingTools state then padTop (Pad 1) drawTools else emptyWidget,
                   padTop (Pad 1) $
                     withAttr borderAttr $
                       borderWithLabel (txt " Message ") $
@@ -222,6 +238,17 @@ drawUI path dir state = [screen]
                   padTop (Pad 1) $ withAttr muted $ txt "Enter send   Shift-Enter newline   Scroll/PgUp/PgDn history   Ctrl-C exit",
                   withAttr muted $ txt ("AF_UNIX  " <> safeText (T.pack path))
                 ]
+
+-- | The name of every tool the harness can call, in declaration order.
+allToolNames :: [Text]
+allToolNames = map toolNameText [minBound .. maxBound]
+
+-- | The panel '/tools' opens: every tool name in the accent colour.
+drawTools :: Widget Name
+drawTools =
+  withAttr borderAttr $
+    borderWithLabel (txt " Tools ") $
+      vBox [withAttr accent (txt name) | name <- allToolNames]
 
 -- | The editor soft-wrapped to the full available width, growing from
 -- 'minRows' to 'maxRows' and then scrolling to keep the cursor in view. Brick's 'renderEditor'

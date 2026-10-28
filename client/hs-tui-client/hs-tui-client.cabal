@@ -11,7 +11,7 @@ executable hs-tui-client
   other-modules: Client.Tokens
   hs-source-dirs: src
   main-is: Main.hs
-  other-modules: Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
+  other-modules: Client, Client.Commands, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
   autogen-modules: Paths_hs_tui_client
   build-depends:
       base >= 4.14 && < 5
@@ -36,7 +36,7 @@ test-suite holey-client-tokens
   main-is: HoleyClientTokensProperties.hs
   build-depends: base, QuickCheck, aeson, core, brick, bytestring, containers, directory, mtl, network, text, toml-parser, vty, vty-crossplatform
   default-language: Haskell2010
-  other-modules: Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client, Client.Tokens
+  other-modules: Client, Client.Commands, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client, Client.Tokens
   autogen-modules: Paths_hs_tui_client
   ghc-options: -Wall
 
@@ -47,5 +47,15 @@ test-suite holey-ui
   build-depends: base, QuickCheck, aeson, core, brick, bytestring, containers, directory, mtl, network, text, toml-parser, vty, vty-crossplatform
   default-language: Haskell2010
   ghc-options: -Wall -Werror=missing-fields
-  other-modules: Client, Client.Tokens, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
+  other-modules: Client, Client.Commands, Client.Tokens, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client
+  autogen-modules: Paths_hs_tui_client
+
+test-suite holey-client-commands
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test, src
+  main-is: HoleyClientCommandsProperties.hs
+  build-depends: base, QuickCheck, aeson, core, brick, bytestring, containers, directory, mtl, network, text, toml-parser, vty, vty-crossplatform
+  default-language: Haskell2010
+  ghc-options: -Wall
+  other-modules: Client.Tokens, Client, Console, TerminalWidth, Theme, UI, Paths_hs_tui_client, Client.Commands
   autogen-modules: Paths_hs_tui_client
