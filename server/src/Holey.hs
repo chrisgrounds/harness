@@ -244,7 +244,7 @@ designStep step tool instruction chat = do
 -- | The tools the design conversation offers at every step, the review's
 -- included.
 designTools :: [ToolName]
-designTools = [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties, Refactor, RequirementNotMet]
+designTools = [ReadFile, ListFiles, RipGrep, SetTypes, SetFunctions, SetProperties, Refactor, RequirementNotMet]
 
 -- | What a tool call did: answered the model, or tried to record the step's
 -- result, which was rejected with a reason or accepted.

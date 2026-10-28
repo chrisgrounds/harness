@@ -1,8 +1,8 @@
 {
   "type": "function",
   "function": {
-    "name": "Search",
-    "description": "Searches Haskell and cabal files in the workspace for a fixed string and returns matching lines with their file and line number",
+    "name": "RipGrep",
+    "description": "Searches Haskell and cabal files in the workspace for a fixed string with ripgrep and returns matching lines with their file and line number",
     "parameters": {
       "type": "object",
       "properties": {

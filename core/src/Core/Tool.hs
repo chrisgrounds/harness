@@ -27,8 +27,8 @@ type ToolCallId = Text
 
 data ToolName
   = ReadFile
-  | Discover
-  | Search
+  | ListFiles
+  | RipGrep
   | SetTypes
   | SetFunctions
   | SetProperties

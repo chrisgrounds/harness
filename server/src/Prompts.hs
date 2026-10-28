@@ -34,7 +34,7 @@ designSystemPrompt =
       "  so describe what the function does, never how it changed; for a changed existing function, say what to change in its separate change note.",
       "- Express every invariant the types cannot capture as a property.",
       "Existing functions that stop type checking because of your changes are found and repaired automatically, keeping their signatures.",
-      "Use ReadFile, Discover and Search to understand the existing code before designing, and reuse its types where they fit.",
+      "Use ReadFile, ListFiles and RipGrep to understand the existing code before designing, and reuse its types where they fit.",
       "Each step tells you which tool records its result. Call it, then finish your turn with a one-line summary."
     ]
 
@@ -150,7 +150,7 @@ reviewInstruction req plans untouched written =
         ]
       ++ [ "First, check them against the requirement, phrase by phrase: does the code do everything it asks, where and when it asks?",
            "Pay attention to what properties cannot test, such as when something happens, what reaches the user, and which code path is taken.",
-           "Then look for duplication: logic repeated across these functions, or code that already exists elsewhere in the codebase (use ReadFile and Search).",
+           "Then look for duplication: logic repeated across these functions, or code that already exists elsewhere in the codebase (use ReadFile and RipGrep).",
            "If anything falls short or is duplicated and new definitions of these functions can fix it, call Refactor with them, and any helpers they should share.",
            "Each definition must define only its function. The refactor is kept only if the code still builds and the properties still pass.",
            "If the requirement is not met and fixing it needs more than that, such as changes to other modules or components, call RequirementNotMet",

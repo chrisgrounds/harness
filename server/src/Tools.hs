@@ -9,6 +9,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Aeson.Types (parseEither)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -37,21 +38,30 @@ offerImplementers offered d = d {toolFunction = f {toolFunctionParameters = edit
 readOnlyTool :: FilePath -> ToolName -> Text -> Maybe (IO Text)
 readOnlyTool root ReadFile args = Just $ withArgument "path" args $ \path ->
   reportIOError ("Could not read " <> path) (TIO.readFile (root </> T.unpack path))
-readOnlyTool root Discover args = Just $ withArgument "path" args $ \path ->
+readOnlyTool root ListFiles args = Just $ withArgument "path" args $ \path ->
   reportIOError ("Could not list " <> path) (T.unlines . map T.pack <$> Dir.listDirectory (root </> T.unpack path))
-readOnlyTool root Search args = Just $ withArgument "pattern" args (search root)
+readOnlyTool root RipGrep args = Just $ withArgument "pattern" args (ripGrep root)
 readOnlyTool _ _ _ = Nothing
 
-search :: FilePath -> Text -> IO Text
-search root pattern = do
-  (code, out, err) <-
-    readCreateProcessWithExitCode
-      (proc "grep" ["-rnIF", "--include=*.hs", "--include=*.cabal", "--exclude-dir=dist-newstyle", "--exclude-dir=.git", "--", T.unpack pattern, "."]) {cwd = Just root}
-      ""
-  pure $ case code of
-    ExitSuccess -> truncateLines 200 (T.pack out)
-    ExitFailure 1 -> "No matches."
-    ExitFailure _ -> "Search failed: " <> T.pack err
+-- | Searches the project's Haskell and cabal files for a fixed string with
+-- ripgrep, ignoring the user's ripgrep config so results do not depend on it.
+-- The path is given explicitly, as ripgrep would otherwise search its stdin,
+-- and results are sorted by path so the same search gives the same lines.
+ripGrep :: FilePath -> Text -> IO Text
+ripGrep root pattern = do
+  result <-
+    try $
+      readCreateProcessWithExitCode
+        (proc "rg" ["--no-config", "--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--sort=path", "--glob=*.hs", "--glob=*.cabal", "--glob=!dist-newstyle", "--", T.unpack pattern, "."]) {cwd = Just root}
+        ""
+  pure $ case result of
+    Left err -> "RipGrep failed: " <> T.pack (show (err :: IOException))
+    Right (ExitSuccess, out, _) -> truncateLines 200 (T.unlines (map relative (T.lines (T.pack out))))
+    Right (ExitFailure 1, _, _) -> "No matches."
+    Right (ExitFailure _, _, err) -> "RipGrep failed: " <> T.pack err
+  where
+    -- ripgrep prefixes paths with the "./" it was asked to search.
+    relative line = fromMaybe line (T.stripPrefix "./" line)
 
 truncateLines :: Int -> Text -> Text
 truncateLines n value

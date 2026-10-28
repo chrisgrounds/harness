@@ -1,7 +1,7 @@
 {
   "type": "function",
   "function": {
-    "name": "Discover",
+    "name": "ListFiles",
     "description": "Lists files in a directory",
     "parameters": {
       "type": "object",
