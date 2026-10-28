@@ -2,8 +2,6 @@
 module Main (main) where
 
 import UI
-import Client
-import Console
 import Core.Event
 import Test.QuickCheck
 import qualified Test.QuickCheck as HoleyQuickCheck

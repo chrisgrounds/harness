@@ -93,7 +93,11 @@ data FunctionSpec = FunctionSpec
     fnKind :: FunctionKind,
     -- | The type, without the name or @::@.
     fnSignature :: Text,
+    -- | What the function does, written into the code as its documentation.
     fnDoc :: Text,
+    -- | For a function that already existed, what to change, for its
+    -- implementer only.
+    fnChange :: Text,
     -- | The complete definition (every equation, no signature). 'Nothing'
     -- is rendered as the placeholder.
     fnBody :: Maybe Text,

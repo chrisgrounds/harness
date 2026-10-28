@@ -19,6 +19,7 @@ module Decls
     upsertDecl,
     rewriteEquations,
     instanceHeadLines,
+    leadingComments,
     rewriteInstance,
     adaptEquations,
     parameters,
@@ -126,6 +127,10 @@ rewriteEquations name body d =
     after = trailing d
     code = length (declLines d) - length after
     equations = maybe [name <> " = undefined"] (T.lines . T.stripEnd) body
+
+-- | The comments and pragmas directly above a declaration.
+leadingComments :: Decl -> [Text]
+leadingComments = takeWhile ((`elem` [Comment, Pragma]) . lineKind) . declLines
 
 -- | An instance's comments and head, up to its @where@, without its methods.
 -- 'Nothing' for an instance without methods.

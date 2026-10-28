@@ -25,7 +25,9 @@ receiveEvent sock pending = do
   reply <- receiveJSON sock pending
   maybe (ioError (userError "Server disconnected before the run finished.")) pure reply
 
--- | As before, but before waiting for the first request it reads the server's greeting with `receiveEvent sock B.empty`: if it is `Connected m`, publish `ServerModel m` and continue the request loop with the leftover bytes; any other first event is a protocol error raised with `ioError (userError "Server did not announce its model.")` (caught like the other IOExceptions and published as 'Disconnected'). Inside the per-request event loop, a `Connected m` event publishes `ServerModel m` and keeps reading; 'RunUpdated' and 'TurnFinished' are handled as before.
+-- | Publishes the model from the server's greeting, then sends each
+-- requested run and publishes its events until the turn finishes. A lost
+-- connection is published as 'Disconnected'.
 worker :: Socket -> Chan StartRun -> (NetworkEvent -> IO ()) -> IO ()
 worker sock requests publish = do
   result <- try (greet >>= loop) :: IO (Either IOException ())

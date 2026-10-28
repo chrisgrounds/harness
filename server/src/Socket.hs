@@ -1,4 +1,4 @@
-module Socket (serve, talk) where
+module Socket (serve) where
 
 import Control.Concurrent (forkFinally)
 import Control.Concurrent.MVar (newMVar, withMVar)
@@ -16,7 +16,8 @@ import Core (Model)
 -- for it; 'TurnFinished' is sent once the handler returns.
 type Handler = (ServerEvent -> IO ()) -> StartRun -> IO ()
 
--- | As before, with a new Model argument: the model the server runs with, which is passed to `talk` for every accepted connection so each client is greeted with it. (The server's main must pass the model selected by --model, i.e. the one given to `holey`.)
+-- | Listens on the socket path, greeting each client with the model the
+-- server runs with.
 serve :: FilePath -> Model -> Handler -> IO ()
 serve path model handle = bracket open closeListener $ \listener ->
   forever $ mask $ \restore -> do
@@ -33,7 +34,7 @@ serve path model handle = bracket open closeListener $ \listener ->
         `onException` close listener
     closeListener listener = close listener `finally` removeFile path
 
--- | As before, but immediately after creating the publish lock and before reading any request it publishes `Connected model` (through the same locked publish function), so the greeting is the first value the client receives. Then the request loop runs unchanged: each request is handled and followed by 'TurnFinished'.
+-- | Greets the client with the model, then handles its requests in turn.
 talk :: Socket -> Model -> Handler -> IO ()
 talk conn model handle = do
   -- Handlers may publish from several threads at once.

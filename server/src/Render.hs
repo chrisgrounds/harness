@@ -57,9 +57,13 @@ renderChanged original plan fns = do
       SourceFile leading (d : ds) -> map tidy (d {declLines = filter (not . T.null . T.strip) leading ++ declLines d} : ds)
       SourceFile _ [] -> []
     tidy d = d {declLines = dropWhileEnd (T.null . T.strip) (declLines d)}
-    designedDecl f = Decl ValueDecl (Just name) (functionHead f ++ body) 0
+    designedDecl f = Decl ValueDecl (Just name) (docs ++ signatureLines f ++ body) 0
       where
         name = functionNameText (fnName f)
+        -- No documentation keeps the existing function's.
+        docs = case findDecl name source of
+          Just old | T.null (T.strip (fnDoc f)) -> leadingComments old
+          _ -> docLines f
         kept = do
           old <- findDecl name source
           adaptEquations name (fnSignature f) old
@@ -85,11 +89,15 @@ functionLines f = functionHead f ++ maybe [name <> " = undefined"] (T.lines . T.
 
 -- | A function's documentation and signature.
 functionHead :: FunctionSpec -> [Text]
-functionHead f = docLines ++ T.lines (functionNameText (fnName f) <> " :: " <> T.strip (fnSignature f))
-  where
-    docLines = case T.lines (T.strip (fnDoc f)) of
-      [] -> []
-      first : rest -> ("-- | " <> first) : map ("--   " <>) rest
+functionHead f = docLines f ++ signatureLines f
+
+docLines :: FunctionSpec -> [Text]
+docLines f = case T.lines (T.strip (fnDoc f)) of
+  [] -> []
+  first : rest -> ("-- | " <> first) : map ("--   " <>) rest
+
+signatureLines :: FunctionSpec -> [Text]
+signatureLines f = T.lines (functionNameText (fnName f) <> " :: " <> T.strip (fnSignature f))
 
 -- | Renders the property suite: a @Main@ module that imports the plan's
 -- modules it can see (never an executable's @Main@), checks every property

@@ -46,12 +46,13 @@ instance FromJSON ModuleArg where
   parseJSON = withObject "module" $ \o ->
     ModuleArg <$> o .: "component" <*> o .: "module" <*> o .:? "extensions" .!= [] <*> o .:? "imports" .!= [] <*> o .:? "types" .!= ""
 
--- | A function's module, name, signature and documentation.
-data FunctionArg = FunctionArg Text Text Text Text
+-- | A function's module, name, signature, documentation and, for an
+-- existing function, what to change.
+data FunctionArg = FunctionArg Text Text Text Text Text
 
 instance FromJSON FunctionArg where
   parseJSON = withObject "function" $ \o ->
-    FunctionArg <$> o .: "module" <*> o .: "name" <*> o .: "signature" <*> o .:? "doc" .!= ""
+    FunctionArg <$> o .: "module" <*> o .: "name" <*> o .: "signature" <*> o .:? "doc" .!= "" <*> o .:? "change" .!= ""
 
 newtype FunctionsArgs = FunctionsArgs [FunctionArg]
 
@@ -127,7 +128,7 @@ applyFunctions previous (FunctionsArgs args) run = do
   pure run {artefact = (artefact run) {functions = specs}}
   where
     plans = modules (artefact run)
-    spec (FunctionArg moduleName name signature doc) = do
+    spec (FunctionArg moduleName name signature doc change) = do
       let n = T.strip name
           m = T.strip moduleName
       plan <- case [p | p <- plans, moduleNameText (planModule p) == m] of
@@ -138,7 +139,7 @@ applyFunctions previous (FunctionsArgs args) run = do
       when (T.null sig) $ Left ("Missing signature for " <> n)
       let ref = FunctionRef (planPath plan) (FunctionName n)
       let before = if planIsNew plan then Nothing else previous ref
-      pure (FunctionSpec ref Designed sig (T.strip doc) Nothing (maybe Undefined (const PreviousBody) before) [] before)
+      pure (FunctionSpec ref Designed sig (T.strip doc) (T.strip change) Nothing (maybe Undefined (const PreviousBody) before) [] before)
 
 applyProperties :: PropertiesArgs -> Run -> Either Text Run
 applyProperties (PropertiesArgs importLines helpers props) run = do
@@ -188,7 +189,7 @@ addRepairs broken run =
   run {artefact = art {functions = functions art ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef (functions art)]}}
   where
     art = artefact run
-    repair ref previous = FunctionSpec ref Repair "" "" Nothing Undefined [] (Just previous)
+    repair ref previous = FunctionSpec ref Repair "" "" "" Nothing Undefined [] (Just previous)
 
 checkImport :: Text -> Either Text Text
 checkImport line

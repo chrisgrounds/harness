@@ -40,7 +40,7 @@ instance Arbitrary Placeholder where
   arbitrary = elements [PreviousBody, Undefined]
 
 instance Arbitrary FunctionSpec where
-  arbitrary = FunctionSpec <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = FunctionSpec <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary ModulePlan where
   arbitrary = ModulePlan <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

@@ -43,6 +43,7 @@ propertyTests =
         check "new names are added to every style of export list" prop_exportsAdded,
         check "a function's equations get a wildcard for each new parameter" prop_equationsAdapted,
         check "a changed function keeps its old equations until implemented" prop_previousBodyKept,
+        check "change notes stay out of the code, and empty documentation keeps the old" prop_changeNotesNotWritten,
         check "errors are blamed on the declaration they are in" prop_errorsBlamed,
         check "errors record the package being built" prop_errorsRecordPackage,
         check "a failure without a GHC error is summarised by cabal's error" prop_cabalErrorSummarised,
@@ -100,7 +101,7 @@ functionSpec path name = do
   doc <- paragraph
   body <- oneof [pure Nothing, Just . T.intercalate "\n" . map ((name <> " ") <>) . map ("= " <>) <$> resize 4 (listOf1 word)]
   extra <- resize 2 (listOf importLine)
-  pure (FunctionSpec (FunctionRef path (FunctionName name)) Designed signature doc body Undefined extra Nothing)
+  pure (FunctionSpec (FunctionRef path (FunctionName name)) Designed signature doc "" body Undefined extra Nothing)
 
 -- | A new module and its functions.
 data NewModule = NewModule ModulePlan [FunctionSpec]
@@ -224,9 +225,9 @@ prop_changeKeepsOthers e =
       ref = FunctionRef path . FunctionName
       plan = ModulePlan "demo" (ModuleName "Demo") path False ["TupleSections"] ["import Data.Char (toUpper)"] ("data " <> changedType <> " = Changed\n\ndata TNew = New\n  deriving (Show)")
       fns =
-        [ FunctionSpec (ref replaced) Designed "Text -> Text" "Replaced." (Just (replaced <> " t = t")) PreviousBody [] Nothing,
-          FunctionSpec (ref "fresh") Designed "Int" "Added." Nothing Undefined ["import Data.Ord (comparing)"] Nothing,
-          FunctionSpec (ref repaired) Repair "" "" (Just (repaired <> " _ = 0")) Undefined [] Nothing
+        [ FunctionSpec (ref replaced) Designed "Text -> Text" "Replaced." "" (Just (replaced <> " t = t")) PreviousBody [] Nothing,
+          FunctionSpec (ref "fresh") Designed "Int" "Added." "" Nothing Undefined ["import Data.Ord (comparing)"] Nothing,
+          FunctionSpec (ref repaired) Repair "" "" "" (Just (repaired <> " _ = 0")) Undefined [] Nothing
         ]
       before = splitSource (exSource e)
       -- A declaration without the blank lines and comments after it.
@@ -285,10 +286,18 @@ prop_equationsAdapted e =
 prop_previousBodyKept :: Property
 prop_previousBodyKept =
   let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
-      spec placeholder = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" "Greets the name." Nothing placeholder [] Nothing
+      spec placeholder = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" "Greets the name." "" Nothing placeholder [] Nothing
       rendered placeholder = renderChanged source Nothing [spec placeholder]
    in rendered PreviousBody === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting _ = \"hi\"\n"
         .&&. rendered Undefined === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting = undefined\n"
+
+prop_changeNotesNotWritten :: Property
+prop_changeNotesNotWritten =
+  forAll (elements ["", "Greets the name."]) $ \doc ->
+    let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
+        spec = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" doc "Take the name to greet." (Just "greeting (Name n) = n") PreviousBody [] Nothing
+        expected = "module Demo (greeting) where\n\n-- | " <> (if T.null doc then "How to greet." else doc) <> "\ngreeting :: Name -> String\ngreeting (Name n) = n\n"
+     in renderChanged source Nothing [spec] === Right expected
 
 prop_exportsAdded :: Property
 prop_exportsAdded =
@@ -310,7 +319,7 @@ prop_errorsBlamed e =
       source = splitSource (exSource e)
       fnKeys = [k | (k, ValueDecl) <- exDecls e]
       planned = take 1 fnKeys
-      fns = [FunctionSpec (FunctionRef path (FunctionName k)) Designed "" "" Nothing Undefined [] Nothing | k <- planned]
+      fns = [FunctionSpec (FunctionRef path (FunctionName k)) Designed "" "" "" Nothing Undefined [] Nothing | k <- planned]
    in conjoin
         [ forAll (chooseInt (from, to)) $ \line ->
             counterexample (show (declKey d, line)) $
@@ -332,7 +341,7 @@ prop_cabalErrorSummarised =
 prop_instanceRepaired :: Property
 prop_instanceRepaired =
   let source = "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n  show Greeter = greeting\n\nx :: Int\nx = 1\n"
-      spec body = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "instance Show Greeter")) Repair "" "" body Undefined [] Nothing
+      spec body = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "instance Show Greeter")) Repair "" "" "" body Undefined [] Nothing
    in renderChanged source Nothing [spec Nothing] === Right "module Demo where\n\n-- | Shown.\ninstance Show Greeter where\n\nx :: Int\nx = 1\n"
         .&&. renderChanged source Nothing [spec (Just "instance Show Greeter where\n  show _ = \"hi\"")]
           === Right "module Demo where\n\ninstance Show Greeter where\n  show _ = \"hi\"\n\nx :: Int\nx = 1\n"

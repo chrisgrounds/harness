@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module UI (runUI, UI (..), runsSummary, drawUI, handleEvent) where
+module UI (runUI, runsSummary) where
 
 import Brick
 import Brick.BChan (newBChan, writeBChan)
@@ -42,7 +42,6 @@ data UI = UI
     serverModel :: Maybe Model
   }
 
--- | As before; the only change is that the initial UI state also sets the new field `serverModel = Nothing` (the worker publishes 'ServerModel' once the server's greeting arrives).
 runUI :: FilePath -> FilePath -> Socket -> IO ()
 runUI path dir sock = do
   events <- newBChan 16
@@ -81,7 +80,6 @@ app path dir requests attrs =
       appAttrMap = const attrs
     }
 
--- | As before, plus a new case: `AppEvent (ServerModel m)` sets `serverModel = Just m` in the state (modify'), doing nothing else. All other cases are unchanged.
 handleEvent :: FilePath -> Chan StartRun -> BrickEvent Name NetworkEvent -> EventM Name UI ()
 handleEvent dir requests event = do
   state <- get
@@ -171,7 +169,6 @@ recall older = do
             }
       )
 
--- | Unchanged layout, except the right-hand muted text of the status row (after `status state`, under `padLeft Max`) is now `txt (safeText (runsSummary (serverModel state) (length (runs state)) (followLatest state)))` instead of the inline run-count text, so the model name appears to the left of the number of runs.
 drawUI :: FilePath -> FilePath -> UI -> [Widget Name]
 drawUI path dir state = [screen]
   where
@@ -365,10 +362,12 @@ stepAttr Running = accent
 stepAttr Passed = successAttr
 stepAttr (Failed _) = danger
 
--- | The muted footer text at the right of the status line. Arguments: the server's model if known, the number of runs, and whether the transcript follows the latest output (followLatest). Result is the concatenation of: (1) if the model is Just m, `modelId m <> "  ·  "` (two spaces, middle dot U+00B7, two spaces), otherwise nothing; (2) the count shown with `show` followed by " run" when the count is exactly 1 and " runs" otherwise; (3) "  ·  scrollback" when the Bool is False, nothing when True. Examples: runsSummary (Just ClaudeOpus) 3 True == "claude-opus-5-5  ·  3 runs"; runsSummary Nothing 1 False == "1 run  ·  scrollback".
+-- | The text at the right of the status line: the server's model if known,
+-- the number of runs, and whether the transcript is scrolled back, e.g.
+-- @claude-opus-5-5  ·  3 runs  ·  scrollback@.
 runsSummary :: Maybe Model -> Int -> Bool -> Text
-runsSummary model count following =
-  maybe "" (\m -> modelId m <> "  ·  ") model
+runsSummary known count following =
+  maybe "" (\m -> modelId m <> "  ·  ") known
     <> T.pack (show count)
     <> (if count == 1 then " run" else " runs")
     <> (if following then "" else "  ·  scrollback")

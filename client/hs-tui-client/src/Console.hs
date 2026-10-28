@@ -13,7 +13,8 @@ import qualified Data.Text.IO as TIO
 import Network.Socket (Socket)
 import System.IO (isEOF)
 
--- | As before, but first reads the server's greeting with `receiveEvent sock B.empty` before reading any input line. If it is `Connected m`, print `renderLine "holey" ("model " <> modelId m)` and start the input loop with the leftover bytes; any other first event raises `ioError (userError "Server did not announce its model.")`. In `follow`, a `Connected _` event is ignored (keep following with the same previous run and the rest bytes); the other cases are unchanged.
+-- | The plain transcript: prints the model from the server's greeting, then
+-- runs each requirement read from standard input, printing its progress.
 runConsole :: FilePath -> Socket -> IO ()
 runConsole dir sock = do
   (greeting, leftover) <- receiveEvent sock B.empty

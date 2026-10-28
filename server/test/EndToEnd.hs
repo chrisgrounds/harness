@@ -5,7 +5,8 @@
 module EndToEnd (endToEndTests) where
 
 import Core
-import Data.Aeson (Value, object, (.=))
+import Data.Aeson (Value (..), object, (.=))
+import qualified Data.Aeson.KeyMap as KeyMap
 import Data.IORef
 import Data.List (isInfixOf)
 import Data.Text (Text)
@@ -186,7 +187,7 @@ changedGreeting =
       functionsArgs =
         object
           [ "functions"
-              .= [ fn "Demo" "greeting" "Name -> String" "Greets the name.",
+              .= [ changing (fn "Demo" "greeting" "Name -> String" "Greets the name.") "Take the name to greet.",
                    fn "Demo" "farewell" "Name -> String" "Says goodbye to the name."
                  ]
           ],
@@ -278,6 +279,11 @@ propertiesArg imports helpers name source =
 
 fn :: Text -> Text -> Text -> Text -> Value
 fn moduleName name sig doc = object ["module" .= moduleName, "name" .= name, "signature" .= sig, "doc" .= doc]
+
+-- | A function with a change note for its implementer.
+changing :: Value -> Text -> Value
+changing (Object o) change = Object (o <> KeyMap.fromList [("change", String change)])
+changing v _ = v
 
 -- | How the scripted implementer defines @merge@, given its instructions.
 type MergeStrategy = Text -> Text
@@ -429,6 +435,7 @@ repairsCaller root run source = do
               == [(FunctionName "greeting", Designed), (FunctionName "farewell", Designed), (FunctionName "shout", Repair), (FunctionName "instance Show Greeter", Repair)],
           expect "instance repaired in place" ("-- | Says hello when shown.\ndata Greeter = Greeter\n\ninstance Show Greeter where\n  show Greeter = greeting (Name \"greeter\")" `isInfixOf` source),
           expect "greeting replaced in place" ("-- | Greets the name.\ngreeting :: Name -> String\ngreeting (Name n) = \"hi \" ++ n" `isInfixOf` source),
+          expect "the change note is not in the code" (not ("Take the name to greet." `isInfixOf` source)),
           expect "shout keeps its documentation and signature" ("-- | The greeting, loudly.\nshout :: String\nshout = greeting (Name \"you\") ++ \"!\"" `isInfixOf` source),
           expect ("new names exported: " <> takeWhile (/= '\n') source) ("module Demo (greeting, shout, Name (..), farewell) where" `isInfixOf` source),
           expect "existing tests untouched" ("main = if last shout == '!' then exitSuccess else exitFailure" `isInfixOf` tests)
