@@ -29,7 +29,7 @@ data Decision
 
 -- | Iterations a run may use, including the first.
 maxIterations :: Int
-maxIterations = 4
+maxIterations = 10
 
 -- | Decides how to continue on the given iteration, knowing every function in
 -- the module and the properties that failed on the previous iteration.

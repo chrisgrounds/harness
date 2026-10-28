@@ -12,6 +12,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Clock (getMonotonicTimeNSec)
 import Holey (Config (..), runHoley)
+import Policy (maxIterations)
 import Progress (newProgress, readRun)
 import ScriptedModel
 import System.Directory
@@ -155,15 +156,11 @@ givesUp run _ =
         case lookup RunProperties (steps run) of
           Just (Failed _) -> True
           _ -> False,
-      expect ("four iterations: " <> show (iteration run)) (iteration run == 4),
-      expect ("reimplemented, redesigned, reimplemented, gave up: " <> show (history run)) $
-        case history run of
-          [first, second, third, final] ->
-            "reimplementing" `T.isInfixOf` first
-              && "redesigning" `T.isInfixOf` second
-              && "reimplementing" `T.isInfixOf` third
-              && "Gave up after 4 iterations" `T.isPrefixOf` final
-          _ -> False
+      expect ("used every iteration: " <> show (iteration run)) (iteration run == maxIterations),
+      expect ("alternately reimplemented and redesigned, then gave up: " <> show (history run)) $
+        length (history run) == maxIterations
+          && and (zipWith T.isInfixOf (cycle ["reimplementing", "redesigning"]) (init (history run)))
+          && ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` last (history run)
     ]
 
 -- | Checks of the finished run and its module that need nothing else.

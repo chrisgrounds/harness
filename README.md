@@ -21,7 +21,7 @@ A failed verification loops back and starts a new iteration:
 | Type errors | Reimplement the functions whose lines (or added imports) the errors are in, each with its own errors; all functions if none can be blamed |
 | Properties fail | Reimplement the functions the failing properties mention, with the counterexamples; redesign if the same properties failed last iteration too |
 
-After four iterations the run gives up, leaving its files in place. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back.
+After ten iterations the run gives up, leaving its files in place. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back.
 
 A run writes into the project the client was started in (or `--project DIR`):
 
