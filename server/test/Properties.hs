@@ -600,13 +600,16 @@ data CabalCase = CabalCase
   { caseComponent :: Component,
     caseCabal :: Text,
     caseModules :: [Text],
-    caseNew :: Text
+    caseNew :: Text,
+    -- | Whether the component imports the common stanza, which adds @text@
+    -- to its dependencies.
+    caseImports :: Bool
   }
   deriving (Show)
 
 -- | A cabal file whose library or executable lists its modules in one of
--- several layouts, sometimes followed by a stanza that already lists the new
--- module, and a new module for it.
+-- several layouts, sometimes importing a common stanza, sometimes followed
+-- by a stanza that already lists the new module, and a new module for it.
 instance Arbitrary CabalCase where
   arbitrary = do
     modules' <- map T.toTitle . nub <$> resize 4 (listOf1 identifier)
@@ -614,17 +617,19 @@ instance Arbitrary CabalCase where
     indent <- elements ["  ", "    "]
     new <- (\a b -> "Holey" <> T.toTitle a <> "." <> T.toTitle b) <$> identifier <*> identifier
     layout <- elements [inline, leadingCommas, oneModulePerLine]
-    before <- elements ["", "common shared\n  ghc-options: -Wall\n\n"]
-    after <- elements ["", "\nbenchmark other\n" <> indent <> "type: exitcode-stdio-1.0\n" <> indent <> "main-is: Bench.hs\n" <> indent <> "other-modules: " <> new <> "\n" <> indent <> "build-depends: base\n" <> indent <> "default-language: Haskell2010\n"]
+    before <- elements ["", "common shared\n  ghc-options: -Wall\n  build-depends: text\n\n"]
+    imports <- if T.null before then pure False else arbitrary
+    after <-elements ["", "\nbenchmark other\n" <> indent <> "type: exitcode-stdio-1.0\n" <> indent <> "main-is: Bench.hs\n" <> indent <> "other-modules: " <> new <> "\n" <> indent <> "build-depends: base\n" <> indent <> "default-language: Haskell2010\n"]
     let (header, field, extra) = case componentKind component of
           Lib -> ("library", "exposed-modules", ["hs-source-dirs: src"])
           Exe exe -> ("executable " <> exe, "other-modules", ["main-is: Main.hs", "hs-source-dirs: app"])
         stanza =
           T.unlines $
             [header]
+              ++ [indent <> "import: shared" | imports]
               ++ map (indent <>) (layout indent field modules')
               ++ map (indent <>) (extra ++ ["build-depends: base, containers", "default-language: Haskell2010"])
-    pure (CabalCase component (preamble <> before <> stanza <> after) modules' new)
+    pure (CabalCase component (preamble <> before <> stanza <> after) modules' new imports)
     where
       preamble = "cabal-version: 2.2\nname: demo\nversion: 0.1.0.0\nbuild-type: Simple\n\n"
       inline _ field ms = [field <> ": " <> T.intercalate ", " ms]
@@ -637,9 +642,10 @@ edited :: CabalCase -> Either Text Text
 edited c =
   upsertTestSuite (caseComponent c) (ModuleName (caseNew c)) [ModuleName (caseNew c)] <$> addModule (caseComponent c) (ModuleName (caseNew c)) (caseCabal c)
 
--- | The component lists its old modules and the new one; the suite runs the
--- new module's properties, depending on the library or, for an executable,
--- compiling its modules from its source directories.
+-- | The component lists its old modules and the new one, and keeps its
+-- import; the suite runs the new module's properties, depending on the
+-- library or, for an executable, compiling its modules from its source
+-- directories.
 prop_cabalEditsParse :: CabalCase -> Property
 prop_cabalEditsParse c = case edited c of
   Left err -> counterexample (T.unpack err) False
@@ -647,13 +653,17 @@ prop_cabalEditsParse c = case edited c of
     Nothing -> property False
     Just description ->
       let expected = sort (map (fromString . T.unpack) (caseNew c : caseModules c))
-          listed = case componentKind (caseComponent c) of
-            Lib -> maybe [] (exposedModules . condTreeData) (condLibrary description)
-            Exe exe -> maybe [] (otherModules . buildInfo . condTreeData) (lookup (mkUnqualComponentName (T.unpack exe)) (condExecutables description))
+          component = case componentKind (caseComponent c) of
+            Lib -> (\l -> (exposedModules l, libBuildInfo l)) . condTreeData <$> condLibrary description
+            Exe exe -> (\e -> (otherModules (buildInfo e), buildInfo e)) . condTreeData <$> lookup (mkUnqualComponentName (T.unpack exe)) (condExecutables description)
+          listed = maybe [] fst component
+          imported = maybe False (elem "text" . dependsOf . snd) component
           suite = lookup (mkUnqualComponentName (T.unpack (suiteName (ModuleName (caseNew c))))) (condTestSuites description)
           suiteInfo = testBuildInfo . condTreeData <$> suite
-          depends = maybe [] (map (unPackageName . depPkgName) . targetBuildDepends) suiteInfo
+          depends = maybe [] dependsOf suiteInfo
+          dependsOf = map (unPackageName . depPkgName) . targetBuildDepends
        in sort listed === expected
+            .&&. counterexample "the component's import of the common stanza" (imported === caseImports c)
             .&&. case (componentKind (caseComponent c), suiteInfo) of
               (_, Nothing) -> counterexample "no property suite" False
               (Lib, Just _) -> property ("demo" `elem` depends)

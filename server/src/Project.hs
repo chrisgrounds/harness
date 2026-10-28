@@ -214,8 +214,8 @@ visibleFrom cs suite owner = owner == componentName suite || owner `elem` librar
 
 -- | Lists the module in the component's stanza, under @exposed-modules@ for
 -- a library or @other-modules@ for an executable, unless it already is. Adds
--- a field line directly under the stanza header, indented like the stanza's
--- fields; Cabal merges repeated fields.
+-- a field line under the stanza header and its imports, indented like the
+-- stanza's fields; Cabal merges repeated fields.
 addModule :: Component -> ModuleName -> Text -> Either Text Text
 addModule c (ModuleName name) cabal = do
   all' <- maybe (Left "The cabal file could not be read.") Right (stanzas cabal)
@@ -223,8 +223,12 @@ addModule c (ModuleName name) cabal = do
   pure $
     if name `elem` concat [fieldValues ls | Field (Name _ n) ls <- stanzaFields s, lower n == field]
       then cabal
-      else insertAfter (fst (stanzaLines s)) (indent s <> field <> ": " <> name) cabal
+      else insertAfter (afterImports s) (indent s <> field <> ": " <> name) cabal
   where
+    -- Cabal ignores an import that is not at the top of its stanza.
+    afterImports s = maximum (fst (stanzaLines s) : concatMap fieldRows (takeWhile isImport (stanzaFields s)))
+    isImport (Field (Name _ n) _) = lower n == "import"
+    isImport (Section _ _ _) = False
     (describe, field, matches) = case componentKind c of
       Lib -> ("main library", "exposed-modules", \s -> stanzaKeyword s == "library" && null (stanzaArgs s))
       Exe exe -> ("executable " <> exe, "other-modules", \s -> stanzaKeyword s == "executable" && stanzaArgs s == [exe])
@@ -289,13 +293,16 @@ stanzas :: Text -> Maybe [Stanza]
 stanzas cabal = either (const Nothing) (Just . mapMaybe stanza) (readFields (TE.encodeUtf8 cabal))
   where
     stanza (Section (Name (Position row _) keyword) args fields) =
-      Just (Stanza (lower keyword) (map argument args) fields (row, maximum (row : concatMap rows fields)))
+      Just (Stanza (lower keyword) (map argument args) fields (row, maximum (row : concatMap fieldRows fields)))
     stanza (Field _ _) = Nothing
     argument (SecArgName _ a) = TE.decodeUtf8 a
     argument (SecArgStr _ a) = TE.decodeUtf8 a
     argument (SecArgOther _ a) = TE.decodeUtf8 a
-    rows (Field (Name (Position row _) _) ls) = row : [r | FieldLine (Position r _) _ <- ls]
-    rows (Section (Name (Position row _) _) _ fields) = row : concatMap rows fields
+
+-- | The lines a field or section spans, 1-based.
+fieldRows :: Field Position -> [Int]
+fieldRows (Field (Name (Position row _) _) ls) = row : [r | FieldLine (Position r _) _ <- ls]
+fieldRows (Section (Name (Position row _) _) _ fields) = row : concatMap fieldRows fields
 
 -- | The comma- or space-separated values of a field.
 fieldValues :: [FieldLine Position] -> [Text]
