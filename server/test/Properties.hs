@@ -3,7 +3,13 @@
 -- | Properties of the pure parts of the server.
 module Properties (propertyTests) where
 
+import Anthropic (replyMessage, requestBody)
 import Core
+import Data.Aeson (Value (..), decodeStrict, object, toJSON, (.=))
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
+import Data.Aeson.Types (parseEither)
+import Data.Foldable (toList)
 import Data.List (dropWhileEnd, nub, sort)
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -22,6 +28,7 @@ import Policy
 import Project
 import Render
 import Test.QuickCheck hiding (once, output)
+import System.FilePath (takeFileName)
 import Verify
 
 -- | Returns failure messages; an empty list means every property held.
@@ -43,7 +50,13 @@ propertyTests =
         check "repeated property failures are redesigned" prop_repeatedFailureRedesigned,
         check "cabal edits keep the file valid and list the module and its suite" prop_cabalEditsParse,
         check "cabal edits are idempotent" prop_cabalEditsIdempotent,
-        check "rewriting the suite replaces it" prop_suiteReplaced
+        check "rewriting the suite replaces it" prop_suiteReplaced,
+        check "removing the suite leaves the rest of the cabal file" prop_suiteRemoved,
+        check "Claude requests alternate turns, starting with the user" prop_requestsAlternate,
+        check "Claude requests answer every tool call in the next turn" prop_toolResultsFollowCalls,
+        check "Claude's replies are sent back unchanged" prop_repliesReplayed,
+        check "a growing chat keeps its earlier request unchanged" prop_growingChatKeepsPrefix,
+        check "Claude replies are read into messages" prop_repliesRead
       ]
   where
     check :: (Testable p) => String -> p -> IO [String]
@@ -149,9 +162,9 @@ exportList Inline names = ["module Demo (" <> T.intercalate ", " names <> ") whe
 exportList Ormolu names = ["module Demo", "  ( -- * Things"] ++ ["    " <> n <> "," | n <- names] ++ ["  )", "where"]
 exportList LeadingCommas names = ["module Demo"] ++ zipWith (\i n -> (if i == (0 :: Int) then "  ( " else "  , ") <> n) [0 ..] names ++ ["  ) where"]
 
--- | The names in a module header's export list.
-exportedNames :: Text -> [Text]
-exportedNames source =
+-- | The names in a module header's export list, read independently of 'Decls'.
+exportItems :: Text -> [Text]
+exportItems source =
   filter (not . T.null) . map T.strip . splitTop . T.unlines . map dropComment . T.lines . T.drop 1 . T.dropWhile (/= '(') $ before
   where
     before = fst (T.breakOn "where" (snd (T.breakOn "module" source)))
@@ -231,18 +244,28 @@ prop_changeKeepsOthers e =
                   .&&. length (filter (== "import Data.Char (toUpper)") (sourceHeader after)) === 1
                   .&&. length (filter (== "import Data.Ord (comparing)") (sourceHeader after)) === 1
                   .&&. length (filter (== "{-# LANGUAGE TupleSections #-}") (sourceHeader after)) === 1
-                  .&&. (if exHasExports e then conjoin [counterexample (show (exportedNames text)) (name `elem` exportedNames text) | name <- ["TNew (..)", "fresh"]] else property True)
+                  .&&. ( if exHasExports e
+                           then
+                             counterexample (show (exportItems text)) $
+                               all (`elem` exportItems text) ["TNew (..)", "fresh", changedType <> " (..)", replaced]
+                                 && nub (map (T.takeWhile (/= ' ')) (exportItems text)) == map (T.takeWhile (/= ' ')) (exportItems text)
+                           else property True
+                       )
 
+-- | New names are added once; names already exported are left alone.
 prop_exportsAdded :: Property
 prop_exportsAdded =
   forAll (elements [Inline, Ormolu, LeadingCommas]) $ \style ->
     forAll (chooseInt (1, 3) >>= identifiers) $ \old ->
       forAll (chooseInt (1, 2) >>= identifiers) $ \new ->
-        let source = T.unlines (exportList style old ++ ["", "x :: Int", "x = 1"])
-            text = joinSource (addExports (map ("new" <>) new) (splitSource source))
-         in counterexample (T.unpack text) $
-              exportedNames text === old ++ map ("new" <>) new
-                .&&. sourceDecls (splitSource text) === sourceDecls (splitSource source)
+        forAll (sublistOf old) $ \repeated ->
+          let source = T.unlines (exportList style old ++ ["", "x :: Int", "x = 1"])
+              added = map ("new" <>) new
+              text = joinSource (addExports (repeated ++ added ++ added) (splitSource source))
+           in counterexample (T.unpack text) $
+                exportItems text === old ++ added
+                  .&&. exportedNames (splitSource text) === Just (old ++ added)
+                  .&&. sourceDecls (splitSource text) === sourceDecls (splitSource source)
 
 prop_errorsBlamed :: Existing -> Property
 prop_errorsBlamed e =
@@ -413,3 +436,110 @@ prop_suiteReplaced c =
           .&&. case componentKind (caseComponent c) of
             Exe _ -> property ("Other.Module" `T.isInfixOf` second && not (("other-modules: " <> T.intercalate ", " (caseModules c ++ [caseNew c])) `T.isInfixOf` second))
             Lib -> second === upsertTestSuite (caseComponent c) main [] (caseCabal c)
+
+-- | A suite written and then removed leaves the cabal file's components as they were.
+prop_suiteRemoved :: CabalCase -> Property
+prop_suiteRemoved c =
+  let main = ModuleName (caseNew c)
+      file = takeFileName (propertiesPath (caseComponent c) main)
+      removed = removeTestSuite file (upsertTestSuite (caseComponent c) main [main] (caseCabal c))
+      stanzaNames description = (fmap (const ()) (condLibrary description), map fst (condExecutables description), map fst (condTestSuites description), map fst (condBenchmarks description))
+   in counterexample (T.unpack removed) $
+        not ("test-suite holey-" `T.isInfixOf` removed)
+          .&&. (stanzaNames <$> parseGenericPackageDescriptionMaybe (TE.encodeUtf8 removed)) === (stanzaNames <$> parseGenericPackageDescriptionMaybe (TE.encodeUtf8 (caseCabal c)))
+
+-- Anthropic
+
+-- | An agent conversation as the harness builds one, oldest first: a system
+-- prompt and instruction, then rounds of a reply (sometimes kept as the
+-- API's content blocks), its tool results, and sometimes a nudge.
+newtype History = History [Message]
+  deriving (Show)
+
+instance Arbitrary History where
+  arbitrary = do
+    rounds <- chooseInt (0, 4)
+    History . ([msg System "You are holey.", msg User "Step 1: types."] ++) . concat <$> mapM reply [1 .. rounds]
+    where
+      msg r text = Message r (Just text) [] Nothing Nothing Nothing
+      reply :: Int -> Gen [Message]
+      reply n = do
+        calls <- chooseInt (0, 2)
+        names <- vectorOf calls (elements [minBound .. maxBound])
+        text <- elements ["", "Reading the code.", "Done."]
+        raw <- arbitrary
+        let requests = [ToolRequest ("toolu_" <> T.pack (show n <> "_" <> show i)) FunctionTool (ToolRequestFunctionParams name "{\"path\":\"src\"}") | (i, name) <- zip [0 :: Int ..] names]
+            blocks =
+              [object ["type" .= ("thinking" :: Text), "thinking" .= ("" :: Text), "signature" .= ("sig" <> T.pack (show n))]]
+                ++ [object ["type" .= ("text" :: Text), "text" .= text] | not (T.null text)]
+                ++ [object ["type" .= ("tool_use" :: Text), "id" .= toolRequestId r, "name" .= toolNameText (toolRequestFunctionParamsName (toolRequestFunction r)), "input" .= object ["path" .= ("src" :: Text)]] | r <- requests]
+            assistant = Message Assistant (Just text) requests Nothing Nothing (if raw then Just (toJSON blocks) else Nothing)
+            results = [Message Tool (Just "a.hs") [] (Just (toolRequestId r)) Nothing Nothing | r <- requests]
+        nudge <- elements [[], [msg User "Call the tool."]]
+        pure ([assistant] ++ results ++ if null requests then [msg User "Go on."] else nudge)
+
+chatOf :: Model -> [Message] -> Chat
+chatOf m ms = Chat (reverse ms) m []
+
+turns :: Chat -> [(Text, [Value])]
+turns chat = case requestBody chat of
+  Object o | Just (Array ts) <- KeyMap.lookup "messages" o -> [(r, toList bs) | Object t <- toList ts, Just (String r) <- [KeyMap.lookup "role" t], Just (Array bs) <- [KeyMap.lookup "content" t]]
+  _ -> []
+
+jsonField :: Text -> Value -> Maybe Value
+jsonField key (Object o) = KeyMap.lookup (Key.fromText key) o
+jsonField _ _ = Nothing
+
+prop_requestsAlternate :: History -> Property
+prop_requestsAlternate (History ms) =
+  let ts = turns (chatOf ClaudeOpus ms)
+   in counterexample (show ts) $
+        map fst ts === take (length ts) (cycle ["user", "assistant"])
+          .&&. all (not . null . snd) ts
+          .&&. jsonField "system" (requestBody (chatOf ClaudeOpus ms)) === Just (String "You are holey.")
+
+prop_toolResultsFollowCalls :: History -> Property
+prop_toolResultsFollowCalls (History ms) =
+  let ts = turns (chatOf ClaudeSonnet ms)
+      ids kind key blocks = [i | b <- blocks, jsonField "type" b == Just (String kind), Just (String i) <- [jsonField key b]]
+   in conjoin
+        [ ids "tool_use" "id" assistant === take (length (ids "tool_use" "id" assistant)) (ids "tool_result" "tool_use_id" next)
+        | (("assistant", assistant), (_, next)) <- zip ts (drop 1 ts)
+        ]
+
+prop_repliesReplayed :: History -> Property
+prop_repliesReplayed (History ms) =
+  let raw = [toList blocks | m <- ms, role m == Assistant, Just (Array blocks) <- [providerContent m]]
+      -- Only replies kept as the API sent them have thinking blocks.
+      replayed = [b | ("assistant", b) <- turns (chatOf ClaudeHaiku ms), any ((== Just (String "thinking")) . jsonField "type") b]
+   in replayed === raw
+
+prop_growingChatKeepsPrefix :: History -> History -> Property
+prop_growingChatKeepsPrefix (History ms) (History more) =
+  let extra = drop 2 more
+      before = turns (chatOf ClaudeOpus ms)
+      after = turns (chatOf ClaudeOpus (ms ++ extra))
+      settled = take (length before - 1) before
+   in counterexample (show (before, after)) $
+        take (length settled) after === settled
+          .&&. jsonField "system" (requestBody (chatOf ClaudeOpus ms)) === jsonField "system" (requestBody (chatOf ClaudeOpus (ms ++ extra)))
+
+prop_repliesRead :: Property
+prop_repliesRead =
+  forAll (sublistOf [minBound .. maxBound :: ToolName]) $ \names ->
+    forAll (elements ["end_turn", "tool_use", "refusal"]) $ \stop ->
+      let blocks =
+            [object ["type" .= ("thinking" :: Text), "thinking" .= ("" :: Text), "signature" .= ("s" :: Text)], object ["type" .= ("text" :: Text), "text" .= ("Looking." :: Text)]]
+              ++ [object ["type" .= ("tool_use" :: Text), "id" .= ("toolu_" <> toolNameText n), "name" .= toolNameText n, "input" .= object ["path" .= toolNameText n]] | n <- names]
+          response = object ["content" .= blocks, "stop_reason" .= (stop :: Text), "usage" .= object ["output_tokens" .= (7 :: Int)]]
+       in case parseEither replyMessage response of
+            Left err -> counterexample err False
+            Right (m, tokens) ->
+              tokens === 7
+                .&&. if stop == "refusal"
+                  then toolCalls m === [] .&&. providerContent m === Nothing
+                  else
+                    content m === Just "Looking."
+                      .&&. map (toolRequestFunctionParamsName . toolRequestFunction) (toolCalls m) === names
+                      .&&. [decodeStrict (TE.encodeUtf8 (toolRequestFunctionParamsArguments (toolRequestFunction r))) | r <- toolCalls m] === [Just (object ["path" .= toolNameText n]) | n <- names]
+                      .&&. providerContent m === Just (toJSON blocks)

@@ -1,13 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Runs a requirement through the holey steps.
-module Holey (Config (..), runHoley) where
+module Holey (Config (..), OnFailure (..), runHoley) where
 
 import Agent (Llm, runAgent)
 import Control.Concurrent (newQSem, signalQSem, waitQSem)
 import Control.Concurrent.Async (forConcurrently_)
 import Control.Exception (SomeException, bracket_, displayException, try)
-import Control.Monad (forM, when)
+import Control.Monad (forM, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Core
@@ -33,8 +33,17 @@ import Workspace
 data Config = Config
   { llm :: Llm,
     llmModel :: Model,
-    toolDefinitions :: [(ToolName, ToolDefinition)]
+    toolDefinitions :: [(ToolName, ToolDefinition)],
+    onFailure :: OnFailure
   }
+
+-- | What happens to the changes of a run that does not finish.
+data OnFailure
+  = -- | Leave them, to inspect what the run did.
+    Keep
+  | -- | Put every file back as it was.
+    Revert
+  deriving (Eq, Show)
 
 data Env = Env
   { config :: Config,
@@ -45,26 +54,36 @@ data Env = Env
     originals :: Originals
   }
 
+-- | Runs the requirement. A run that does not finish, because a step failed,
+-- it gave up or something went wrong, keeps or reverts its changes as
+-- 'onFailure' says.
 runHoley :: Config -> FilePath -> Progress -> IO ()
 runHoley cfg root prog = do
+  origs <- newOriginals
   result <- try $ do
     exists <- doesDirectoryExist root
     if not (isAbsolute root && exists)
-      then update prog (setStep DesignTypes (Failed ("The project directory " <> T.pack root <> " is not an absolute path to an existing directory.")))
+      then update prog (setStep DesignTypes (Failed ("The project directory " <> T.pack root <> " is not an absolute path to an existing directory."))) >> pure False
       else do
         dirty <- uncommittedChanges root
         when dirty $
           update prog (\r -> r {warnings = warnings r ++ ["The working tree has uncommitted changes, so this run's edits will be mixed in with them."]})
         info <- findProject root
         if null (components info)
-          then update prog (setStep DesignTypes (Failed ("No cabal library or executable was found in " <> T.pack root <> ".")))
-          else do
-            origs <- newOriginals
-            outcome <- runExceptT (pipeline (Env cfg root prog info origs))
-            either (const (pure ())) pure outcome
-  case result of
-    Left err -> failCurrent prog ("Internal error: " <> T.pack (displayException (err :: SomeException)))
-    Right () -> pure ()
+          then update prog (setStep DesignTypes (Failed ("No cabal library or executable was found in " <> T.pack root <> "."))) >> pure False
+          else either (const False) (const True) <$> runExceptT (pipeline (Env cfg root prog info origs))
+  finished <- case result of
+    Left err -> failCurrent prog ("Internal error: " <> T.pack (displayException (err :: SomeException))) >> pure False
+    Right done -> pure done
+  unless (finished || onFailure cfg == Keep) (undo origs)
+  where
+    undo origs = do
+      run <- readRun prog
+      undone <- try (rollback root origs run)
+      update prog $ \r -> case undone of
+        Right [] -> r
+        Right paths -> r {touchedFiles = [], history = history r ++ ["The run did not finish, so its changes to " <> T.pack (show (length paths)) <> " files were undone."]}
+        Left err -> r {warnings = warnings r ++ ["Could not undo the run's changes: " <> T.pack (displayException (err :: SomeException))]}
 
 -- | Each stage records its result on the run. Failed verifications loop back
 -- as 'decide' says; any other failure stops the run.
@@ -144,11 +163,14 @@ functionRefs :: Env -> IO [FunctionRef]
 functionRefs env = map fnRef . functions . artefact <$> readRun (progress env)
 
 -- | Runs one design step in the shared design conversation. The step passes
--- once the model's call to the step's tool is accepted.
+-- once the model's call to the step's tool is accepted. Every step offers
+-- the same tools, and 'designTool' refuses the other steps' ones, so the
+-- conversation only ever grows: Claude's thinking is bound to what came
+-- before it, and an unchanged prefix stays cached.
 designStep :: Env -> Step -> ToolName -> Text -> Chat -> ExceptT () IO Chat
 designStep env step tool instruction chat = do
   liftIO (update (progress env) (setStep step Running))
-  let prepared = addMessage (userMessage instruction) chat {tools = definitionsFor env [ReadFile, Discover, Search, tool]}
+  let prepared = addMessage (userMessage instruction) chat {tools = definitionsFor env [ReadFile, Discover, Search, SetTypes, SetFunctions, SetProperties]}
   (done, final) <- liftIO (untilAccepted env 30 tool (designTool env tool) prepared)
   if done
     then liftIO (update (progress env) (setStep step Passed)) >> pure final
@@ -420,7 +442,7 @@ failCurrent prog reason = do
   update prog (setStep step (Failed reason))
 
 systemMessage :: Text -> Message
-systemMessage text = Message System (Just text) [] Nothing Nothing
+systemMessage text = Message System (Just text) [] Nothing Nothing Nothing
 
 userMessage :: Text -> Message
-userMessage text = Message User (Just text) [] Nothing Nothing
+userMessage text = Message User (Just text) [] Nothing Nothing Nothing

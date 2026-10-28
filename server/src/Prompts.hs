@@ -68,6 +68,8 @@ propertiesInstruction =
   T.unlines
     [ "Step 3: properties. Call SetProperties with QuickCheck properties for the invariants the types cannot express.",
       "The property module already imports every module from step 1 (except executables' Main modules) and Test.QuickCheck.",
+      "It can only use names those modules export: everything in new modules, and in existing modules what they already export",
+      "plus the types and functions from steps 1 and 2. To use another existing type, repeat its declaration unchanged in step 1.",
       "Put any other imports in imports, and Arbitrary instances or generators for the new types in helpers.",
       "Each property needs a name starting with prop_ and its full source: signature and definition.",
       "Test the requirement's behaviour, not definitions restated: a property that only repeats a constant or a function body checks nothing.",

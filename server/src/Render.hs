@@ -6,7 +6,7 @@ module Render (renderFile, renderNewModule, renderChanged, renderProperties, des
 import Control.Monad (foldM)
 import Core
 import Data.List (dropWhileEnd, nub)
-import Data.Maybe (isNothing)
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Decls
@@ -38,8 +38,9 @@ renderNewModule plan fns = T.unlines (header ++ concatMap (\f -> functionLines f
 
 -- | An existing module with the run's changes. Type declarations and
 -- designed functions replace the declaration of the same name or are added
--- after the others, and are exported if new; repairs keep their comments
--- and signature and get new equations. Every other line is left as it was.
+-- after the others, and are exported, so properties and other modules can
+-- use them; repairs keep their comments and signature and get new
+-- equations. Every other line is left as it was.
 renderChanged :: Text -> Maybe ModulePlan -> [FunctionSpec] -> Either Text Text
 renderChanged original plan fns = do
   repaired <- foldM repair (foldl (flip upsertDecl) source (typeDecls ++ map designedDecl designed)) repairs
@@ -60,9 +61,7 @@ renderChanged original plan fns = do
       (_, []) -> Left ("No declaration of " <> name <> " to repair.")
       where
         name = functionNameText (fnName f)
-    newExports =
-      [e | d <- typeDecls, Just key <- [declKey d], isNothing (findDecl key source), Just e <- [exportName d]]
-        ++ [name | f <- designed, let name = functionNameText (fnName f), isNothing (findDecl name source)]
+    newExports = mapMaybe exportName typeDecls ++ [functionNameText (fnName f) | f <- designed]
 
 functionLines :: FunctionSpec -> [Text]
 functionLines f = functionHead f ++ maybe [name <> " = undefined"] (T.lines . T.stripEnd) (fnBody f)

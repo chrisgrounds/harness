@@ -17,6 +17,7 @@ module Project
     suiteTarget,
     addModule,
     upsertTestSuite,
+    removeTestSuite,
   )
 where
 
@@ -245,6 +246,17 @@ upsertTestSuite c m newModules cabal =
           ++ ["other-modules: " <> T.intercalate ", " modulesListed | not (null modulesListed)]
           ++ ["autogen-modules: " <> T.intercalate ", " (componentAutogen c) | not (null (componentAutogen c))]
           ++ ["default-extensions: " <> T.intercalate ", " (componentExtensions c) | not (null (componentExtensions c))]
+
+-- | The cabal file without the holey test suite whose @main-is@ is the given
+-- file.
+removeTestSuite :: FilePath -> Text -> Text
+removeTestSuite file cabal = case [l | (i, l) <- zip [0 :: Int ..] ls, "test-suite holey-" `T.isPrefixOf` l, runs (drop (i + 1) ls)] of
+  header : _ -> withoutStanza (T.stripEnd header) cabal
+  [] -> cabal
+  where
+    ls = T.lines cabal
+    runs body = ("main-is: " <> T.pack file) `elem` map T.strip (takeWhile (not . topLevel) body)
+    topLevel l = not (T.null l) && not (isSpace (T.head l)) && not ("--" `T.isPrefixOf` l)
 
 -- | The cabal file without the stanza starting at the header line, up to the
 -- next top-level line.

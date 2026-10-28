@@ -5,6 +5,7 @@ module Workspace
   ( Originals,
     newOriginals,
     original,
+    rollback,
     Suite (..),
     suiteOf,
     plannedFiles,
@@ -17,42 +18,70 @@ module Workspace
 where
 
 import Control.Exception (IOException, try)
-import Control.Monad (filterM, forM_, unless)
+import Control.Monad (filterM, forM, forM_, unless, when)
 import Core
 import qualified Data.ByteString as B
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
-import Data.List (find, foldl', nub)
+import Data.List (find, foldl', isPrefixOf, isSuffixOf, nub, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Project
 import Render (renderFile, renderProperties)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeDirectory, removeFile)
 import System.Exit (ExitCode (..))
-import System.FilePath (isAbsolute, isRelative, makeRelative, normalise, takeDirectory, (</>))
+import System.FilePath (isAbsolute, isRelative, makeRelative, normalise, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import Verify (GhcError (..))
 
 -- | Files as they were before the run, read the first time they are needed
--- and before the run writes them, so every rendering starts from them.
-newtype Originals = Originals (IORef (Map.Map FilePath (Maybe Text)))
+-- and before the run writes them, so every rendering starts from them and
+-- a run can be undone. For files that did not exist, the directories above
+-- them that did not exist either.
+data Originals = Originals (IORef (Map.Map FilePath (Maybe Text))) (IORef [FilePath])
 
 newOriginals :: IO Originals
-newOriginals = Originals <$> newIORef Map.empty
+newOriginals = Originals <$> newIORef Map.empty <*> newIORef []
 
 -- | A file's contents before the run, or 'Nothing' if it did not exist.
 original :: FilePath -> Originals -> FilePath -> IO (Maybe Text)
-original root (Originals ref) path = do
+original root (Originals ref dirs) path = do
   cached <- Map.lookup path <$> readIORef ref
   case cached of
     Just known -> pure known
     Nothing -> do
       exists <- doesFileExist (root </> path)
       contents <- if exists then Just <$> readText (root </> path) else pure Nothing
+      missing <- if exists then pure [] else filterM (fmap not . doesDirectoryExist . (root </>)) (ancestors path)
+      atomicModifyIORef' dirs (\ds -> (nub (ds ++ missing), ()))
       atomicModifyIORef' ref (\m -> (Map.insertWith (\_ old -> old) path contents m, ()))
       maybe contents id . Map.lookup path <$> readIORef ref
+  where
+    ancestors = takeWhile (/= ".") . drop 1 . iterate takeDirectory
+
+-- | Puts every file the run changed back as it was: existing files get their
+-- original contents, and files and directories the run created are
+-- removed. Returns the files restored or removed.
+rollback :: FilePath -> Originals -> Run -> IO [FilePath]
+rollback root originals@(Originals _ dirs) run = do
+  undone <- fmap catMaybes . forM (touchedFiles run) $ \path -> do
+    before <- original root originals path
+    case before of
+      Just text -> writeIfChanged (root </> path) text >> pure (Just path)
+      Nothing -> do
+        exists <- doesFileExist (root </> path)
+        when exists (removeFile (root </> path))
+        pure (if exists then Just path else Nothing)
+  created <- readIORef dirs
+  -- Deepest first, and only those left empty.
+  forM_ (sortOn (Down . length . splitDirectories) created) $ \dir -> do
+    exists <- doesDirectoryExist (root </> dir)
+    empty <- if exists then null <$> listDirectory (root </> dir) else pure False
+    when empty (removeDirectory (root </> dir))
+  pure undone
 
 -- | The run's property suite: the component it is built against, its file
 -- and its cabal target.
@@ -91,11 +120,16 @@ writeArtefact root cs originals run = case suiteOf cs art of
           Left err -> pure (Left err)
           Right rendered -> do
             forM_ rendered $ \(path, _, text) -> writeIfChanged (root </> path) text
-            restored <- restore [p | p <- touchedFiles run, p `notElem` plannedFiles art, p `notElem` newFiles]
+            -- Suites written for an earlier main module, which would still be built.
+            let oldSuites = [p | p <- touchedFiles run, isPropertiesFile p, p /= suiteFile suite]
+            mapM_ (removeIfPresent . (root </>)) oldSuites
+            restored <- restore [p | p <- touchedFiles run, p `notElem` plannedFiles art, p `notElem` newFiles, p `notElem` oldSuites]
+            _ <- original root originals (suiteFile suite)
             writeIfChanged (root </> suiteFile suite) (renderProperties art)
-            cabalFiles <- registerModules suite
+            cabalFiles <- registerModules suite oldSuites
             let changed = [path | (path, source, text) <- rendered, source /= Just text]
-            pure (Right (nub ([p | p <- touchedFiles run, p `notElem` restored] ++ changed ++ [suiteFile suite] ++ cabalFiles)))
+                kept = [p | p <- touchedFiles run, p `notElem` restored, p `notElem` oldSuites]
+            pure (Right (nub (kept ++ changed ++ [suiteFile suite] ++ cabalFiles)))
   where
     art = artefact run
     -- Files an earlier design changed, back to how they were.
@@ -105,21 +139,36 @@ writeArtefact root cs originals run = case suiteOf cs art of
       case before of
         Just text | not (".cabal" `T.isSuffixOf` T.pack path) -> writeIfChanged (root </> path) text >> pure (Just path)
         _ -> pure Nothing
-    registerModules suite = do
+    registerModules suite oldSuites = do
       let newModules = [(c, planModule p) | p <- modules art, planIsNew p, Just c <- [find ((== planComponent p) . componentName) cs]]
           main = maybe (ModuleName "") planModule (mainModule art)
+          cabals = nub (cabalFile (suiteComponent suite) : [p | p <- touchedFiles run, takeExtension p == ".cabal"])
           edits =
-            [(cabalFile c, \text -> either (const text) id (addModule c m text)) | (c, m) <- newModules]
+            [(cabal, removeTestSuite (takeFileName old)) | old <- oldSuites, cabal <- cabals]
+              ++ [(cabalFile c, \text -> either (const text) id (addModule c m text)) | (c, m) <- newModules]
               ++ [ ( cabalFile (suiteComponent suite),
                      upsertTestSuite (suiteComponent suite) main [m | (c, m) <- newModules, c == suiteComponent suite]
                    )
                  ]
       fmap catMaybes . mapM (editCabal edits) . nub $ map fst edits
     editCabal edits file = do
+      -- Kept so the run can be undone.
+      _ <- original root originals file
       before <- readText (root </> file)
       let after = foldl' (\text (_, edit) -> edit text) before [e | e@(f, _) <- edits, f == file]
       unless (after == before) $ writeText (root </> file) after
       pure (if after /= before || file `elem` touchedFiles run then Just file else Nothing)
+
+-- | A property suite holey writes, @Holey<Module>Properties.hs@.
+isPropertiesFile :: FilePath -> Bool
+isPropertiesFile path = "Holey" `isPrefixOf` name && "Properties.hs" `isSuffixOf` name
+  where
+    name = takeFileName path
+
+removeIfPresent :: FilePath -> IO ()
+removeIfPresent path = do
+  exists <- doesFileExist path
+  when exists (removeFile path)
 
 -- | The paths that exist but were not created by this run.
 existingFiles :: FilePath -> Run -> [FilePath] -> IO [FilePath]

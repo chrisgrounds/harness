@@ -14,7 +14,11 @@ data Message = Message
     content :: Maybe Text,
     toolCalls :: [ToolRequest],
     toolCallId :: Maybe ToolCallId,
-    tokensPerSecond :: Maybe Double
+    tokensPerSecond :: Maybe Double,
+    -- | A reply exactly as its provider sent it, such as Anthropic's content
+    -- blocks with their thinking, to be sent back unchanged in later
+    -- requests. Not part of the OpenAI-style JSON.
+    providerContent :: Maybe Value
   }
   deriving (Eq, Show, Generic)
 
@@ -26,6 +30,7 @@ instance FromJSON Message where
       <*> value .:? "tool_calls" .!= []
       <*> value .:? "tool_call_id"
       <*> value .:? "tokens_per_second"
+      <*> pure Nothing
 
 instance ToJSON Message where
   toJSON message =

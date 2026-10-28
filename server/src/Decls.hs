@@ -19,6 +19,7 @@ module Decls
     upsertDecl,
     rewriteEquations,
     exportName,
+    exportedNames,
     addPragmas,
     addImports,
     addExports,
@@ -158,13 +159,36 @@ addImports imports sf
       (+ m) <$> findIndex (elem "where" . T.words) (drop m hs)
     spacer = if isJust lastImport || at == 0 || T.null (T.strip (hs !! (at - 1))) then [] else [""]
 
--- | Adds names to the module's export list, if it has one. A module without
--- an export list already exports everything.
+-- | The items of the module's export list, or 'Nothing' if it has none.
+exportedNames :: SourceFile -> Maybe [Text]
+exportedNames sf = do
+  (open, _, close) <- exportListEnd s
+  pure . filter (not . T.null) . map T.strip . splitTop $ withoutComments (take (close - open - 1) (drop (open + 1) s))
+  where
+    s = T.unpack (T.intercalate "\n" (sourceHeader sf))
+    withoutComments = unlines . map (T.unpack . dropComment . T.pack) . lines
+    -- A line without its @--@ comment; @-->@ and other operators stay.
+    dropComment t = case T.breakOn "--" t of
+      (before, rest)
+        | T.null rest -> t
+        | lineComment rest -> before
+        | otherwise -> before <> "--" <> dropComment (T.drop 2 rest)
+    splitTop = go (0 :: Int) ""
+    go _ acc [] = [T.pack (reverse acc)]
+    go depth acc (c : cs)
+      | c == '(' = go (depth + 1) (c : acc) cs
+      | c == ')' = go (depth - 1) (c : acc) cs
+      | c == ',' && depth == 0 = T.pack (reverse acc) : go depth "" cs
+      | otherwise = go depth (c : acc) cs
+
+-- | Adds names to the module's export list, if it has one and does not
+-- already export them. A module without an export list already exports
+-- everything.
 addExports :: [Text] -> SourceFile -> SourceFile
-addExports names sf = case (names, exportListEnd (T.unpack text)) of
+addExports wanted sf = case (names, exportListEnd (T.unpack text)) of
   ([], _) -> sf
   (_, Nothing) -> sf
-  (_, Just lastChar) ->
+  (_, Just (_, lastChar, _)) ->
     let (before, after) = splitAt (lastChar + 1) (T.unpack text)
         line = T.splitOn "\n" text !! length (filter (== '\n') before)
         inserted = case T.unpack text !! lastChar of
@@ -176,17 +200,22 @@ addExports names sf = case (names, exportListEnd (T.unpack text)) of
      in sf {sourceHeader = T.splitOn "\n" (T.pack before <> inserted <> T.pack after)}
   where
     text = T.intercalate "\n" (sourceHeader sf)
+    base = T.takeWhile (/= ' ') . T.strip
+    present = maybe [] (map base) (exportedNames sf)
+    names = dedupe [n | n <- wanted, base n `notElem` present]
 
--- | The position of the last character before the export list's closing
--- parenthesis that is not whitespace or part of a comment.
-exportListEnd :: String -> Maybe Int
+-- | The positions of the export list's opening parenthesis, of the last
+-- character before its closing parenthesis that is not whitespace or part
+-- of a comment, and of the closing parenthesis.
+exportListEnd :: String -> Maybe (Int, Int, Int)
 exportListEnd s = do
   m <- findModule 0 s
   let afterName = skipName (m + length ("module" :: String))
   open <- case skipBlank afterName of
     i | i < length s && s !! i == '(' -> Just i
     _ -> Nothing
-  scan (open + 1) (1 :: Int) open
+  (lastSig, close) <- scan (open + 1) (1 :: Int) open
+  pure (open, lastSig, close)
   where
     findModule i rest
       | "module" `isPrefixOf` rest && (i == 0 || s !! (i - 1) == '\n') = Just i
@@ -210,7 +239,7 @@ exportListEnd s = do
       _ | skipBlank i > i -> scan (skipBlank i) depth lastSig
       '(' : _ -> scan (i + 1) (depth + 1) i
       ')' : _
-        | depth == 1 -> Just lastSig
+        | depth == 1 -> Just (lastSig, i)
         | otherwise -> scan (i + 1) (depth - 1) i
       _ -> scan (i + 1) depth i
 

@@ -11,10 +11,11 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Clock (getMonotonicTimeNSec)
-import Holey (Config (..), runHoley)
+import Holey (Config (..), OnFailure (..), runHoley)
 import Policy (maxIterations)
 import Progress (newProgress, readRun)
 import ScriptedModel
+import Control.Monad (filterM)
 import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath (takeDirectory, (</>))
@@ -29,10 +30,11 @@ endToEndTests =
       [ scenario "first attempt" (sortedMerge libraryProject) (const correctMerge) (inspect firstAttemptPasses),
         scenario "failed property" (sortedMerge libraryProject) (onFeedback wrongMerge correctMerge) (inspect reimplementsAfterProperty),
         scenario "type error" (sortedMerge libraryProject) (onFeedback illTypedMerge correctMerge) (inspect reimplementsAfterTypeError),
-        scenario "always wrong" (sortedMerge libraryProject) (const wrongMerge) (inspect givesUp),
+        scenario "always wrong" (undone (sortedMerge libraryProject)) (const wrongMerge) givesUpAndUndoes,
         scenario "executable" (sortedMerge executableProject) (const correctMerge) executableStillBuilds,
         scenario "existing module" changedGreeting (const correctMerge) repairsCaller,
-        scenario "another package" dependentPackage (const correctMerge) repairsDependent
+        scenario "another package" dependentPackage (const correctMerge) repairsDependent,
+        scenario "new main module" (firstDraft (sortedMerge libraryProject)) (const correctMerge) dropsOldSuite
       ]
 
 -- | A throwaway cabal package, and what the scripted model designs in it.
@@ -49,6 +51,8 @@ data Layout = Layout
     typesArgs :: Value,
     functionsArgs :: Value,
     propertiesArgs :: Value,
+    -- | A design to send before the first redesign, if it differs.
+    draft :: Maybe (Value, Value, Value),
     -- | Each function's definition and imports, given how to define @merge@.
     implementations :: Text -> [(Text, (Text, [Text]))]
   }
@@ -109,6 +113,7 @@ sortedMerge package =
           "instance Arbitrary Sorted where\n  arbitrary = fromList <$> arbitrary"
           "prop_mergeIsSortedUnion"
           "prop_mergeIsSortedUnion :: Sorted -> Sorted -> Bool\nprop_mergeIsSortedUnion a b = toList (merge a b) == sort (toList a ++ toList b)",
+      draft = Nothing,
       implementations = \mergeDefinition ->
         [ ("fromList", ("fromList = Sorted . sort", ["import Data.List (sort)"])),
           ("toList", ("toList (Sorted xs) = xs", [])),
@@ -182,6 +187,7 @@ changedGreeting =
           ""
           "prop_greetingNamesThem"
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = n `isInfixOf` greeting (Name n) && n `isInfixOf` farewell (Name n)",
+      draft = Nothing,
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = \"hi \" ++ n", [])),
@@ -219,6 +225,7 @@ dependentPackage =
           ""
           "prop_greetingNamesThem"
           "prop_greetingNamesThem :: String -> Bool\nprop_greetingNamesThem n = n `isInfixOf` greeting (Name n)",
+      draft = Nothing,
       implementations =
         const
           [ ("greeting", ("greeting (Name n) = \"hi \" ++ n", [])),
@@ -292,23 +299,31 @@ scenario label layout strategy checks = do
       Config
         { llm = scriptedLlm counter (pure . designer layout strategy),
           llmModel = Mercury3,
-          toolDefinitions = definitions
+          toolDefinitions = definitions,
+          onFailure = Revert
         }
       root
       progress
     run <- readRun progress
     cabal <- readFile (root </> cabalPath layout)
-    source <- readFile (root </> moduleFile layout)
+    hasModule <- doesFileExist (root </> moduleFile layout)
+    source <- if hasModule then readFile (root </> moduleFile layout) else pure ""
     published <- readIORef events
     specific <- checks root run source
+    let kept
+          | null (changedFiles layout) = []
+          | otherwise =
+              concat
+                [ expect "module listed in the component once" $
+                    maybe True (\line -> length (filter (== line) (lines cabal)) == 1) (registration layout),
+                  expect "property suite added once" (length (filter (== suiteHeader layout) (lines cabal)) == 1)
+                ]
     pure $
       specific
+        ++ kept
         ++ concat
           [ expect ("touched files: " <> show (touchedFiles run)) $
               touchedFiles run == changedFiles layout,
-            expect "module listed in the component once" $
-              maybe True (\line -> length (filter (== line) (lines cabal)) == 1) (registration layout),
-            expect "property suite added once" (length (filter (== suiteHeader layout) (lines cabal)) == 1),
             expect "every change published" (case published of RunUpdated latest : _ -> latest == run; _ -> False)
           ]
   pure (map ((label <> ": ") <>) failures)
@@ -346,19 +361,33 @@ reimplementsAfterTypeError run _ =
       ("reimplemented only merge: " <> show (history run))
       (history run == ["Iteration 1: type errors in merge, so reimplementing merge."])
 
-givesUp :: Run -> String -> [String]
-givesUp run _ =
-  concat
-    [ expect ("stopped at properties: " <> show (steps run)) $
-        case lookup RunProperties (steps run) of
-          Just (Failed _) -> True
-          _ -> False,
-      expect ("used every iteration: " <> show (iteration run)) (iteration run == maxIterations),
-      expect ("alternately reimplemented and redesigned, then gave up: " <> show (history run)) $
-        length (history run) == maxIterations
-          && and (zipWith T.isInfixOf (cycle ["reimplementing", "redesigning"]) (init (history run)))
-          && ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` last (history run)
-    ]
+-- | A layout whose run does not finish, so it should change nothing.
+undone :: Layout -> Layout
+undone layout = layout {changedFiles = []}
+
+-- | Gives up, then puts the project back as it was: every file as written,
+-- and the module and property suite, with their directories, gone.
+givesUpAndUndoes :: FilePath -> Run -> String -> IO [String]
+givesUpAndUndoes root run _ = do
+  files <- mapM (\(path, contents) -> (,) path . (== contents) <$> readFile (root </> path)) projectFiles'
+  leftovers <- filterM (doesPathExist . (root </>)) ["src/Sorted", "test"]
+  pure $
+    concat
+      [ expect ("stopped at properties: " <> show (steps run)) $
+          case lookup RunProperties (steps run) of
+            Just (Failed _) -> True
+            _ -> False,
+        expect ("used every iteration: " <> show (iteration run)) (iteration run == maxIterations),
+        expect ("alternately reimplemented and redesigned, gave up, then undid its changes: " <> show (history run)) $
+          length (history run) == maxIterations + 1
+            && and (zipWith T.isInfixOf (cycle ["reimplementing", "redesigning"]) (take (maxIterations - 1) (history run)))
+            && ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` (history run !! (maxIterations - 1))
+            && "The run did not finish, so its changes to 3 files were undone." == last (history run),
+        expect ("files restored: " <> show [p | (p, False) <- files]) (all snd files),
+        expect ("created paths removed: " <> show leftovers) (null leftovers)
+      ]
+  where
+    projectFiles' = projectFiles (sortedMerge libraryProject)
 
 -- | Checks of the finished run and its module that need nothing else.
 inspect :: (Run -> String -> [String]) -> FilePath -> Run -> String -> IO [String]
@@ -388,6 +417,40 @@ repairsCaller root run source = do
           expect "existing tests untouched" ("main = if last shout == '!' then exitSuccess else exitFailure" `isInfixOf` tests)
         ]
 
+-- | The sorted-merge design, drafted first with @Demo@ as the main module and
+-- a property that does not compile, so the run redesigns with a new main
+-- module.
+firstDraft :: Layout -> Layout
+firstDraft layout =
+  layout
+    { changedFiles = ["src/Sorted/Merge.hs", "demo.cabal", "test/HoleySortedMergeProperties.hs"],
+      draft =
+        Just
+          ( object
+              [ "modules"
+                  .= [ object ["component" .= ("demo" :: Text), "module" .= ("Demo" :: Text), "extensions" .= ([] :: [Text]), "imports" .= ([] :: [Text]), "types" .= ("" :: Text)],
+                       object ["component" .= ("demo" :: Text), "module" .= ("Sorted.Merge" :: Text), "extensions" .= ([] :: [Text]), "imports" .= ([] :: [Text]), "types" .= ("newtype Sorted = Sorted [Int]\n  deriving (Eq, Show)" :: Text)]
+                     ]
+              ],
+            functionsArgs layout,
+            propertiesArg [] "" "prop_missing" "prop_missing :: Bool\nprop_missing = missingHelper"
+          )
+    }
+
+-- | The suite for the first main module is gone once the main module changes.
+dropsOldSuite :: FilePath -> Run -> String -> IO [String]
+dropsOldSuite root run source = do
+  cabal <- readFile (root </> "demo.cabal")
+  oldSuite <- doesFileExist (root </> "test/HoleyDemoProperties.hs")
+  pure $
+    allPassed run
+      ++ concat
+        [ expect ("redesigned once: " <> show (history run)) (history run == ["Iteration 1: the skeleton did not type check, so redesigning."]),
+          expect "old suite file removed" (not oldSuite),
+          expect "old suite stanza removed" (not ("test-suite holey-demo" `isInfixOf` cabal)),
+          expect "no holes left" (not ("undefined" `isInfixOf` source))
+        ]
+
 -- | Repairs @main@ in the other package's @src/Main.hs@, not the library's.
 repairsDependent :: FilePath -> Run -> String -> IO [String]
 repairsDependent root run source = do
@@ -404,22 +467,34 @@ repairsDependent root run source = do
         expect "the library's executable untouched" ("main = putStrLn \"core\"" `isInfixOf` coreMain)
       ]
 
--- | Replies for the layout's design, and implementations with @merge@
--- defined by the strategy.
+-- | Replies for the layout's design (its draft until the first redesign),
+-- and implementations with @merge@ defined by the strategy.
 designer :: Layout -> MergeStrategy -> Chat -> Reply
 designer layout strategy chat = case latestText chat of
   Just (Tool, _) -> Say "Done."
   _
-    | SetTypes `elem` tools' -> CallTool SetTypes (typesArgs layout)
-    | SetFunctions `elem` tools' -> CallTool SetFunctions (functionsArgs layout)
-    | SetProperties `elem` tools' -> CallTool SetProperties (propertiesArgs layout)
     | ImplementFunction `elem` tools' -> case implementing chat >>= (`lookup` implementations layout (strategy (instructions chat))) of
         Just (definition, extraImports) ->
           CallTool ImplementFunction (object ["definition" .= definition, "imports" .= extraImports])
         Nothing -> Say "I do not know that function."
-    | otherwise -> Say "Nothing to do."
+    | otherwise -> case step of
+        Just SetTypes -> CallTool SetTypes types
+        Just SetFunctions -> CallTool SetFunctions functions'
+        Just SetProperties -> CallTool SetProperties properties'
+        _ -> Say "Nothing to do."
   where
     tools' = availableTools chat
+    -- Every design step offers all the design tools; the latest instruction
+    -- names the one to call.
+    step = case [text | m <- messages chat, role m == User, Just text <- [content m]] of
+      latest : _ -> case [t | t <- [SetTypes, SetFunctions, SetProperties], toolNameText t `T.isInfixOf` latest] of
+        t : _ -> Just t
+        [] -> Nothing
+      [] -> Nothing
+    revised = "the previous design failed verification" `T.isInfixOf` instructions chat
+    (types, functions', properties') = case draft layout of
+      Just first | not revised -> first
+      _ -> (typesArgs layout, functionsArgs layout, propertiesArgs layout)
 
 withProject :: Layout -> (FilePath -> IO [String]) -> IO [String]
 withProject layout test = do
