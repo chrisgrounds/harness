@@ -39,10 +39,8 @@ data Config = Config
 
 -- | What happens to the changes of a run that does not finish.
 data OnFailure
-  = -- | Leave them, to inspect what the run did.
-    Keep
-  | -- | Put every file back as it was.
-    Revert
+  = Keep
+  | Revert
   deriving (Eq, Show)
 
 data Env = Env
