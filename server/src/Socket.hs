@@ -4,16 +4,16 @@ import Control.Concurrent (forkFinally)
 import Control.Concurrent.MVar (newMVar, withMVar)
 import Control.Exception (IOException, bracket, finally, mask, onException, try)
 import Control.Monad (forever, void)
-import Core (Requirement, ServerEvent (..))
+import Core (ServerEvent (..), StartRun)
 import Core.Protocol (receiveJSON, sendJSON)
 import qualified Data.ByteString as B
 import Network.Socket
 import System.Directory (removeFile)
 import System.IO (hPutStrLn, stderr)
 
--- | Each requirement is handed to the handler with a way to publish events
+-- | Each request is handed to the handler with a way to publish events
 -- for it; 'TurnFinished' is sent once the handler returns.
-type Handler = (ServerEvent -> IO ()) -> Requirement -> IO ()
+type Handler = (ServerEvent -> IO ()) -> StartRun -> IO ()
 
 serve :: FilePath -> Handler -> IO ()
 serve path handle = bracket open closeListener $ \listener ->

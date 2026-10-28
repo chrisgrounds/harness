@@ -46,7 +46,7 @@ instance Arbitrary Run where
     base <- newRun <$> arbitrary
     statuses <- vectorOf (length allSteps) arbitrary
     run <-
-      (\i ts art pkg m files ws h -> base {iteration = i, tasks = ts, artefact = art, targetPackage = pkg, targetModule = m, touchedFiles = files, warnings = ws, history = h})
+      (\i ts art pkg m files ws h -> base {iteration = i, tasks = ts, artefact = art, targetComponent = pkg, targetModule = m, touchedFiles = files, warnings = ws, history = h})
         <$> chooseInt (1, 5)
         <*> arbitrary
         <*> arbitrary

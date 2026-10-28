@@ -13,8 +13,8 @@ import qualified Data.Text.IO as TIO
 import Network.Socket (Socket)
 import System.IO (isEOF)
 
-runConsole :: Socket -> IO ()
-runConsole sock = loop B.empty
+runConsole :: FilePath -> Socket -> IO ()
+runConsole dir sock = loop B.empty
   where
     loop pending = do
       done <- isEOF
@@ -25,7 +25,7 @@ runConsole sock = loop B.empty
           "" -> loop pending
           _ -> do
             TIO.putStrLn (renderLine "you" line)
-            sendJSON sock (Requirement line)
+            sendJSON sock (StartRun dir (Requirement line))
             rest <- follow Nothing pending
             putStrLn ""
             loop rest

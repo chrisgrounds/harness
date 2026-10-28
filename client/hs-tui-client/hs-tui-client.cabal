@@ -19,6 +19,7 @@ executable hs-tui-client
     , brick >= 2.0 && < 3
     , bytestring
     , containers
+    , directory
     , mtl
     , network
     , text

@@ -15,7 +15,7 @@ where
 import Core
 import Data.Text (Text)
 import qualified Data.Text as T
-import Project (Package, describePackage)
+import Project (Component, describeComponent)
 
 designSystemPrompt :: Text
 designSystemPrompt =
@@ -31,19 +31,19 @@ designSystemPrompt =
       "Each step tells you which tool records its result. Call it, then finish your turn with a one-line summary."
     ]
 
-typesInstruction :: Requirement -> [Package] -> Text
-typesInstruction req packages =
+typesInstruction :: Requirement -> [Component] -> Text
+typesInstruction req components =
   T.unlines
     [ "Requirement:",
       requirementText req,
       "",
-      "Library packages in this project:",
-      T.unlines (map describePackage packages),
+      "Components in this project that can hold the new module:",
+      T.unlines (map describeComponent components),
       "Step 1: types. Explore the code as needed, then call SetTypes with:",
-      "- the package the new module belongs to;",
+      "- the component the new module belongs to, named exactly as listed: the library or executable whose code the requirement concerns;",
       "- a new module name that does not exist yet;",
       "- any LANGUAGE extensions;",
-      "- import lines, using only packages the library already depends on (the build cannot add dependencies);",
+      "- import lines, using only packages the component already depends on (the build cannot add dependencies);",
       "- the type declarations and instances only, without functions."
     ]
 

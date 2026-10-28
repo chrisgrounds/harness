@@ -14,24 +14,25 @@ import qualified Data.Text.IO as TIO
 import Paths_server (getDataFileName)
 import qualified System.Directory as Dir
 import System.Exit (ExitCode (..))
-import System.Process (readProcessWithExitCode)
+import System.FilePath ((</>))
+import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 
--- | Runs a tool that only reads the workspace, or 'Nothing' for tools that
--- change the run and are handled by the orchestrator.
-readOnlyTool :: ToolName -> Text -> Maybe (IO Text)
-readOnlyTool ReadFile args = Just $ withArgument "path" args $ \path ->
-  reportIOError ("Could not read " <> path) (TIO.readFile (T.unpack path))
-readOnlyTool Discover args = Just $ withArgument "path" args $ \path ->
-  reportIOError ("Could not list " <> path) (T.unlines . map T.pack <$> Dir.listDirectory (T.unpack path))
-readOnlyTool Search args = Just $ withArgument "pattern" args search
-readOnlyTool _ _ = Nothing
+-- | Runs a tool that only reads the project at @root@, against which paths
+-- resolve, or 'Nothing' for tools that change the run and are handled by the
+-- orchestrator.
+readOnlyTool :: FilePath -> ToolName -> Text -> Maybe (IO Text)
+readOnlyTool root ReadFile args = Just $ withArgument "path" args $ \path ->
+  reportIOError ("Could not read " <> path) (TIO.readFile (root </> T.unpack path))
+readOnlyTool root Discover args = Just $ withArgument "path" args $ \path ->
+  reportIOError ("Could not list " <> path) (T.unlines . map T.pack <$> Dir.listDirectory (root </> T.unpack path))
+readOnlyTool root Search args = Just $ withArgument "pattern" args (search root)
+readOnlyTool _ _ _ = Nothing
 
-search :: Text -> IO Text
-search pattern = do
+search :: FilePath -> Text -> IO Text
+search root pattern = do
   (code, out, err) <-
-    readProcessWithExitCode
-      "grep"
-      ["-rnIF", "--include=*.hs", "--include=*.cabal", "--exclude-dir=dist-newstyle", "--exclude-dir=.git", "--", T.unpack pattern, "."]
+    readCreateProcessWithExitCode
+      (proc "grep" ["-rnIF", "--include=*.hs", "--include=*.cabal", "--exclude-dir=dist-newstyle", "--exclude-dir=.git", "--", T.unpack pattern, "."]) {cwd = Just root}
       ""
   pure $ case code of
     ExitSuccess -> truncateLines 200 (T.pack out)

@@ -18,17 +18,46 @@ import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Tools (registerTool, toolToApiDefinition)
+import Verify (buildSuite)
 
 -- | Returns failure messages; an empty list means every check passed.
 endToEndTests :: IO [String]
 endToEndTests =
   concat
     <$> sequence
-      [ scenario "first attempt" (const correctMerge) firstAttemptPasses,
-        scenario "failed property" (onFeedback wrongMerge correctMerge) reimplementsAfterProperty,
-        scenario "type error" (onFeedback illTypedMerge correctMerge) reimplementsAfterTypeError,
-        scenario "always wrong" (const wrongMerge) givesUp
+      [ scenario "first attempt" libraryProject (const correctMerge) (inspect firstAttemptPasses),
+        scenario "failed property" libraryProject (onFeedback wrongMerge correctMerge) (inspect reimplementsAfterProperty),
+        scenario "type error" libraryProject (onFeedback illTypedMerge correctMerge) (inspect reimplementsAfterTypeError),
+        scenario "always wrong" libraryProject (const wrongMerge) (inspect givesUp),
+        scenario "executable" executableProject (const correctMerge) executableStillBuilds
       ]
+
+-- | A throwaway cabal package with one component for the run to target.
+data Layout = Layout
+  { stanza :: [String],
+    seedFile :: (FilePath, String),
+    component :: Text,
+    sourceDir :: FilePath,
+    moduleField :: String
+  }
+
+libraryProject, executableProject :: Layout
+libraryProject =
+  Layout
+    { stanza = ["library", "    hs-source-dirs: src", "    exposed-modules: Demo", "    build-depends: base", "    default-language: Haskell2010"],
+      seedFile = ("src/Demo.hs", "module Demo where\n\ngreeting :: String\ngreeting = \"hi\"\n"),
+      component = "demo",
+      sourceDir = "src",
+      moduleField = "exposed-modules"
+    }
+executableProject =
+  Layout
+    { stanza = ["executable demo", "    main-is: Main.hs", "    hs-source-dirs: app", "    build-depends: base", "    default-extensions: ScopedTypeVariables", "    default-language: Haskell2010"],
+      seedFile = ("app/Main.hs", "module Main (main) where\n\nmain :: IO ()\nmain = putStrLn \"hi\"\n"),
+      component = "demo:exe:demo",
+      sourceDir = "app",
+      moduleField = "other-modules"
+    }
 
 -- | How the scripted implementer defines @merge@, given its instructions.
 type MergeStrategy = Text -> Text
@@ -53,35 +82,38 @@ onFeedback before after given
   | "A previous implementation failed" `T.isInfixOf` given = after
   | otherwise = before
 
-scenario :: String -> MergeStrategy -> (Run -> String -> [String]) -> IO [String]
-scenario label strategy checks = do
-  failures <- withProject $ \root -> do
+scenario :: String -> Layout -> MergeStrategy -> (FilePath -> Run -> String -> IO [String]) -> IO [String]
+scenario label layout strategy checks = do
+  failures <- withProject layout $ \root -> do
     counter <- newIORef 0
     definitions <- mapM (\(name, _) -> (,) name <$> toolToApiDefinition name) registerTool
     events <- newIORef []
     progress <- newProgress (\e -> modifyIORef events (e :)) (newRun (Requirement "Merge sorted lists of integers"))
     runHoley
       Config
-        { llm = scriptedLlm counter (pure . designer strategy),
+        { llm = scriptedLlm counter (pure . designer (component layout) strategy),
           llmModel = Mercury3,
-          toolDefinitions = definitions,
-          projectRoot = root
+          toolDefinitions = definitions
         }
+      root
       progress
     run <- readRun progress
     cabal <- readFile (root </> "demo.cabal")
-    source <- readFile (root </> "src/Sorted/Merge.hs")
+    source <- readFile (root </> modulePath)
     published <- readIORef events
+    specific <- checks root run source
     pure $
-      checks run source
+      specific
         ++ concat
           [ expect ("touched files: " <> show (touchedFiles run)) $
-              touchedFiles run == ["src/Sorted/Merge.hs", "test/HoleySortedMergeProperties.hs", "demo.cabal"],
-            expect "module listed in the library once" (length (filter (== "    exposed-modules: Sorted.Merge") (lines cabal)) == 1),
+              touchedFiles run == [modulePath, "test/HoleySortedMergeProperties.hs", "demo.cabal"],
+            expect "module listed in the component once" (length (filter (== ("    " <> moduleField layout <> ": Sorted.Merge")) (lines cabal)) == 1),
             expect "property suite added once" (length (filter (== "test-suite holey-sorted-merge") (lines cabal)) == 1),
             expect "every change published" (case published of RunUpdated latest : _ -> latest == run; _ -> False)
           ]
   pure (map ((label <> ": ") <>) failures)
+  where
+    modulePath = sourceDir layout </> "Sorted/Merge.hs"
 
 allPassed :: Run -> [String]
 allPassed run =
@@ -134,16 +166,26 @@ givesUp run _ =
           _ -> False
     ]
 
--- | Replies for a sorted-merge module: its design, and implementations with
--- @merge@ defined by the strategy.
-designer :: MergeStrategy -> Chat -> Reply
-designer strategy chat = case latestText chat of
+-- | Checks of the finished run and its module that need nothing else.
+inspect :: (Run -> String -> [String]) -> FilePath -> Run -> String -> IO [String]
+inspect checks _ run source = pure (checks run source)
+
+-- | Passes, and the executable still builds with the module registered.
+executableStillBuilds :: FilePath -> Run -> String -> IO [String]
+executableStillBuilds root run source = do
+  built <- buildSuite root "demo:exe:demo"
+  pure (firstAttemptPasses run source ++ expect ("executable builds: " <> either T.unpack (const "") built) (built == Right ()))
+
+-- | Replies for a sorted-merge module in the given component: its design,
+-- and implementations with @merge@ defined by the strategy.
+designer :: Text -> MergeStrategy -> Chat -> Reply
+designer target strategy chat = case latestText chat of
   Just (Tool, _) -> Say "Done."
   _
     | SetTypes `elem` tools' ->
         CallTool SetTypes $
           object
-            [ "package" .= ("demo" :: Text),
+            [ "component" .= target,
               "module" .= ("Sorted.Merge" :: Text),
               "extensions" .= ([] :: [Text]),
               "imports" .= ([] :: [Text]),
@@ -180,27 +222,16 @@ designer strategy chat = case latestText chat of
     fn :: Text -> Text -> Text -> Value
     fn name sig doc = object ["name" .= name, "signature" .= sig, "doc" .= doc]
 
-withProject :: (FilePath -> IO [String]) -> IO [String]
-withProject test = do
+withProject :: Layout -> (FilePath -> IO [String]) -> IO [String]
+withProject layout test = do
   tmp <- getTemporaryDirectory
   stamp <- getMonotonicTimeNSec
   let root = tmp </> ("holey-e2e-" <> show stamp)
-  createDirectoryIfMissing True (root </> "src")
+  createDirectoryIfMissing True (root </> sourceDir layout)
   writeFile (root </> "cabal.project") "packages: .\n"
   writeFile (root </> "demo.cabal") $
-    unlines
-      [ "cabal-version: 2.2",
-        "name: demo",
-        "version: 0.1.0.0",
-        "build-type: Simple",
-        "",
-        "library",
-        "    hs-source-dirs: src",
-        "    exposed-modules: Demo",
-        "    build-depends: base",
-        "    default-language: Haskell2010"
-      ]
-  writeFile (root </> "src/Demo.hs") "module Demo where\n\ngreeting :: String\ngreeting = \"hi\"\n"
+    unlines (["cabal-version: 2.2", "name: demo", "version: 0.1.0.0", "build-type: Simple", ""] ++ stanza layout)
+  uncurry (writeFile . (root </>)) (seedFile layout)
   failures <- test root
   keep <- lookupEnv "HOLEY_KEEP_PROJECT"
   if null failures && keep == Nothing

@@ -23,13 +23,13 @@ A failed verification loops back and starts a new iteration:
 
 After four iterations the run gives up, leaving its files in place. The client shows the current step, per-function progress during implementation, the iteration count, and why each iteration looped back.
 
-A run writes into the project the server is started in:
+A run writes into the project the client was started in (or `--project DIR`):
 
-- the new module, in the first source directory of the library package chosen in step 1;
+- the new module, in the first source directory of the component chosen in step 1: a package's library (`demo`) or one of its executables (`demo:exe:app`);
 - `test/Holey<Module>Properties.hs`, a QuickCheck suite with one `prop_` per invariant;
-- the package's cabal file: an `exposed-modules` line for the module and a `test-suite holey-<module>` stanza.
+- the package's cabal file: the module under the component's `exposed-modules` (library) or `other-modules` (executable), and a `test-suite holey-<module>` stanza, so `cabal test` runs the properties locally and in CI. A library's suite depends on the package; an executable's suite compiles the module from the executable's source directories with its dependencies, `default-extensions` and `default-language`.
 
-It refuses to overwrite files it did not create, warns when the git tree has uncommitted changes, and lists every file it touched. Verification uses the project's own `cabal`, so start the server inside the project's development shell.
+It refuses to overwrite files it did not create, warns when the git tree has uncommitted changes, and lists every file it touched. Verification uses the project's own `cabal`, so start the server inside a development shell that can build the project.
 
 | Package | Purpose |
 | --- | --- |
@@ -45,22 +45,21 @@ Build from the repository root with GHC and Cabal:
 cabal build all
 ```
 
-Set `INCEPTION_API_KEY` in your environment or a `.env` file, then start the server from the root of the Haskell project you want to work on:
+Set `INCEPTION_API_KEY` in your environment or a `.env` file, then start the server:
 
 ```sh
-cd ~/src/my-project
-cabal run --project-dir ~/src/harness server
+cabal run server
 ```
 
 `server --demo` plays a scripted run without calling the model or touching any files.
 
-In a second terminal:
+In a second terminal, start the client with the Haskell project to work on. It defaults to the current directory:
 
 ```sh
-cabal run hs-tui-client
+cabal run hs-tui-client -- --project ~/src/my-project
 ```
 
-The server uses Mercury 3. During design the model can use `ReadFile`, `Discover` and `Search` (a fixed-string grep over `.hs` and `.cabal` files), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Each function is then implemented by its own agent, up to four at a time, which sees only the module's types, signatures and documentation, the properties that mention the function, and any feedback from a failed attempt; it submits its definition with `ImplementFunction`. Tool paths resolve against the server's working directory. Tool schemas are packaged with the server.
+The server uses Mercury 3. During design the model can use `ReadFile`, `Discover` and `Search` (a fixed-string grep over `.hs` and `.cabal` files), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Each function is then implemented by its own agent, up to four at a time, which sees only the module's types, signatures and documentation, the properties that mention the function, and any feedback from a failed attempt; it submits its definition with `ImplementFunction`. Tool paths resolve against the client's project directory. Tool schemas are packaged with the server.
 
 ## Tests
 
@@ -69,7 +68,7 @@ cabal test all
 ```
 
 - `core-tests`: JSON round-trips for the protocol types and the laws of the `Run` helpers.
-- `server-tests`: properties of the pure parts of the server (function spans in rendered modules, attributing GHC errors to functions, reading QuickCheck output, the loop-back policy, and cabal file edits checked with Cabal-syntax), then end-to-end runs against a throwaway cabal project using the real `cabal` and GHC with a scripted model in place of Mercury 3: a first-time pass, a failed property, a type error, and a run that gives up. Set `HOLEY_KEEP_PROJECT=1` to keep the generated projects.
+- `server-tests`: properties of the pure parts of the server (function spans in rendered modules, attributing GHC errors to functions, reading QuickCheck output, the loop-back policy, and cabal file edits checked with Cabal-syntax), then end-to-end runs against a throwaway cabal project using the real `cabal` and GHC with a scripted model in place of Mercury 3: a first-time pass, a failed property, a type error, a run that gives up, and a pass in an executable-only package that still builds afterwards. Set `HOLEY_KEEP_PROJECT=1` to keep the generated projects.
 
 The root Nix flake includes all three packages and a shared development shell:
 

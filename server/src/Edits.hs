@@ -24,10 +24,10 @@ import Data.List (find, nub)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Project (Package (..), validModuleName)
+import Project (Component, componentName, validModuleName)
 
 data TypesArgs = TypesArgs
-  { typesPackage :: Text,
+  { typesComponent :: Text,
     typesModule :: Text,
     typesExtensions :: [Text],
     typesImports :: [Text],
@@ -36,7 +36,7 @@ data TypesArgs = TypesArgs
 
 instance FromJSON TypesArgs where
   parseJSON = withObject "SetTypes" $ \o ->
-    TypesArgs <$> o .: "package" <*> o .: "module" <*> o .:? "extensions" .!= [] <*> o .:? "imports" .!= [] <*> o .: "types"
+    TypesArgs <$> o .: "component" <*> o .: "module" <*> o .:? "extensions" .!= [] <*> o .:? "imports" .!= [] <*> o .: "types"
 
 data FunctionArg = FunctionArg Text Text Text
 
@@ -68,19 +68,19 @@ decodeArgs args = either (Left . ("Invalid arguments: " <>) . T.pack) Right (eit
 
 -- | Sets the module's location, imports and types. Once a run has written its
 -- module, it cannot move it.
-applyTypes :: [Package] -> TypesArgs -> Run -> Either Text Run
-applyTypes packages args run = do
-  package <-
+applyTypes :: [Component] -> TypesArgs -> Run -> Either Text Run
+applyTypes components args run = do
+  component <-
     maybe
-      (Left ("Unknown package " <> typesPackage args <> ". Choose one of: " <> T.intercalate ", " (map packageName packages)))
+      (Left ("Unknown component " <> typesComponent args <> ". Choose one of: " <> T.intercalate ", " (map componentName components)))
       Right
-      (find ((== typesPackage args) . packageName) packages)
+      (find ((== T.strip (typesComponent args)) . componentName) components)
   let name = T.strip (typesModule args)
   unless (validModuleName name) $ Left ("Invalid module name: " <> name)
-  case (targetModule run, targetPackage run) of
-    (Just (ModuleName existing), Just existingPackage)
-      | not (null (touchedFiles run)) && (existing, existingPackage) /= (name, packageName package) ->
-          Left ("This run has already written " <> existingPackage <> ":" <> existing <> "; keep that package and module.")
+  case (targetModule run, targetComponent run) of
+    (Just (ModuleName existing), Just existingComponent)
+      | not (null (touchedFiles run)) && (existing, existingComponent) /= (name, componentName component) ->
+          Left ("This run has already written " <> existing <> " in " <> existingComponent <> "; keep that component and module.")
     _ -> pure ()
   importLines <- traverse checkImport (typesImports args)
   when (any (("import " `T.isPrefixOf`) . T.strip) (T.lines (typesBody args))) $
@@ -90,7 +90,7 @@ applyTypes packages args run = do
   let art = artefact run
   pure
     run
-      { targetPackage = Just (packageName package),
+      { targetComponent = Just (componentName component),
         targetModule = Just (ModuleName name),
         artefact = art {extensions = map T.strip (typesExtensions args), imports = importLines, typesSource = typesBody args}
       }

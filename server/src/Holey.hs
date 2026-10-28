@@ -18,40 +18,46 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Edits
 import Progress (Progress, readRun, tryUpdate, update)
-import Project (Package, findPackages)
+import Project (Component, findComponents)
 import Prompts
 import Tools (readOnlyTool)
 import Policy
 import Render (Span, renderModule)
+import System.Directory (doesDirectoryExist)
+import System.FilePath (isAbsolute)
 import Verify
 import Workspace
 
 data Config = Config
   { llm :: Llm,
     llmModel :: Model,
-    toolDefinitions :: [(ToolName, ToolDefinition)],
-    -- | The user's project, where files are read and written.
-    projectRoot :: FilePath
+    toolDefinitions :: [(ToolName, ToolDefinition)]
   }
 
 data Env = Env
   { config :: Config,
+    -- | The user's project, where files are read and written.
+    projectRoot :: FilePath,
     progress :: Progress,
-    packages :: [Package]
+    components :: [Component]
   }
 
-runHoley :: Config -> Progress -> IO ()
-runHoley cfg prog = do
+runHoley :: Config -> FilePath -> Progress -> IO ()
+runHoley cfg root prog = do
   result <- try $ do
-    dirty <- uncommittedChanges (projectRoot cfg)
-    when dirty $
-      update prog (\r -> r {warnings = warnings r ++ ["The working tree has uncommitted changes, so this run's edits will be mixed in with them."]})
-    found <- findPackages (projectRoot cfg)
-    if null found
-      then update prog (setStep DesignTypes (Failed "No cabal package with a library was found in the working directory."))
+    exists <- doesDirectoryExist root
+    if not (isAbsolute root && exists)
+      then update prog (setStep DesignTypes (Failed ("The project directory " <> T.pack root <> " is not an absolute path to an existing directory.")))
       else do
-        outcome <- runExceptT (pipeline (Env cfg prog found))
-        either (const (pure ())) pure outcome
+        dirty <- uncommittedChanges root
+        when dirty $
+          update prog (\r -> r {warnings = warnings r ++ ["The working tree has uncommitted changes, so this run's edits will be mixed in with them."]})
+        found <- findComponents root
+        if null found
+          then update prog (setStep DesignTypes (Failed ("No cabal library or executable was found in " <> T.pack root <> ".")))
+          else do
+            outcome <- runExceptT (pipeline (Env cfg root prog found))
+            either (const (pure ())) pure outcome
   case result of
     Left err -> failCurrent prog ("Internal error: " <> T.pack (displayException (err :: SomeException)))
     Right () -> pure ()
@@ -61,7 +67,7 @@ runHoley cfg prog = do
 pipeline :: Env -> ExceptT () IO ()
 pipeline env = do
   req <- liftIO (requirement <$> readRun (progress env))
-  let typesStep = typesInstruction req (packages env)
+  let typesStep = typesInstruction req (components env)
   design typesStep (Chat [systemMessage designSystemPrompt] (llmModel (config env)) [])
   where
     design :: Text -> Chat -> ExceptT () IO ()
@@ -85,7 +91,7 @@ pipeline env = do
           typed <- verifyBuild env TypeCheck
           case typed of
             Left (output, spans) -> do
-              file <- liftIO (maybe "" targetModulePath . resolveTarget (packages env) <$> readRun (progress env))
+              file <- liftIO (maybe "" targetModulePath . resolveTarget (components env) <$> readRun (progress env))
               let (attributed, unattributed) = attributeErrors file spans (ghcErrors output)
                   rest = if null attributed && null unattributed then [summarise output] else unattributed
               loopBack typesStep chat previouslyFailed (TypeErrors attributed rest)
@@ -150,7 +156,7 @@ designStep env step tool instruction chat = do
 
 designTool :: Env -> ToolName -> IO () -> ToolRequest -> IO Text
 designTool env tool onAccepted request =
-  case readOnlyTool name args of
+  case readOnlyTool (projectRoot env) name args of
     Just run -> run
     Nothing
       | name /= tool -> pure (toolNameText name <> " is not available in this step.")
@@ -169,14 +175,14 @@ designTool env tool onAccepted request =
     args = toolRequestFunctionParamsArguments function
     setTypes decoded = do
       run <- readRun (progress env)
-      case applyTypes (packages env) decoded run of
+      case applyTypes (components env) decoded run of
         Left err -> pure (Left err)
-        Right proposed -> case resolveTarget (packages env) proposed of
+        Right proposed -> case resolveTarget (components env) proposed of
           Nothing -> pure (Left "Could not resolve the module's location.")
           Just target -> do
-            clash <- existingFiles (projectRoot (config env)) proposed [targetModulePath target, targetPropertiesPath target]
+            clash <- existingFiles (projectRoot env) proposed [targetModulePath target, targetPropertiesPath target]
             if null clash
-              then tryUpdate (progress env) (applyTypes (packages env) decoded)
+              then tryUpdate (progress env) (applyTypes (components env) decoded)
               else pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". Choose a new module name."))
 
 -- | Writes the artefact and builds the property suite, which also builds the
@@ -185,13 +191,13 @@ verifyBuild :: Env -> Step -> ExceptT () IO (Either (Text, [(FunctionName, Span)
 verifyBuild env step = do
   liftIO (update (progress env) (setStep step Running))
   run <- liftIO (readRun (progress env))
-  target <- maybe (stepFailed env step "No module was chosen.") pure (resolveTarget (packages env) run)
-  written <- liftIO (writeArtefact (projectRoot (config env)) target run)
+  target <- maybe (stepFailed env step "No module was chosen.") pure (resolveTarget (components env) run)
+  written <- liftIO (writeArtefact (projectRoot env) target run)
   case written of
     Left err -> stepFailed env step err
     Right (touched, spans) -> liftIO $ do
       update (progress env) (\r -> r {touchedFiles = touched})
-      built <- buildSuite (projectRoot (config env)) (targetSuite target)
+      built <- buildSuite (projectRoot env) (targetSuite target)
       case built of
         Left output -> do
           update (progress env) (setStep step (Failed (brief (summarise output))))
@@ -226,7 +232,7 @@ definitionsFor env = mapMaybe (`lookup` toolDefinitions (config env))
 implementStep :: Env -> [(FunctionName, Maybe Text)] -> ExceptT () IO [FunctionName]
 implementStep env work = do
   run <- liftIO (readRun (progress env))
-  target <- maybe (stepFailed env Implement "No module was chosen.") pure (resolveTarget (packages env) run)
+  target <- maybe (stepFailed env Implement "No module was chosen.") pure (resolveTarget (components env) run)
   let art = artefact run
       skeleton = fst (renderModule (targetName target) art {functions = [f {fnBody = Nothing, fnImports = []} | f <- functions art]})
       queued = map fst work
@@ -284,8 +290,8 @@ propertiesStep :: Env -> ExceptT () IO (Either Text ())
 propertiesStep env = do
   liftIO (update (progress env) (setStep RunProperties Running))
   run <- liftIO (readRun (progress env))
-  target <- maybe (stepFailed env RunProperties "No module was chosen.") pure (resolveTarget (packages env) run)
-  result <- liftIO (runSuite (projectRoot (config env)) (targetSuite target))
+  target <- maybe (stepFailed env RunProperties "No module was chosen.") pure (resolveTarget (components env) run)
+  result <- liftIO (runSuite (projectRoot env) (targetSuite target))
   liftIO $ case result of
     Right _ -> update (progress env) (setStep RunProperties Passed) >> pure (Right ())
     Left output -> do

@@ -97,7 +97,8 @@ data Run = Run
     -- | One entry per function being implemented, in declaration order.
     tasks :: [(FunctionName, TaskStatus)],
     artefact :: Artefact,
-    targetPackage :: Maybe Text,
+    -- | The cabal target the module belongs to, e.g. @demo@ or @demo:exe:app@.
+    targetComponent :: Maybe Text,
     targetModule :: Maybe ModuleName,
     -- | Files the run created or edited, relative to the working directory.
     touchedFiles :: [FilePath],
@@ -130,7 +131,7 @@ newRun req =
       steps = [(s, Pending) | s <- allSteps],
       tasks = [],
       artefact = emptyArtefact,
-      targetPackage = Nothing,
+      targetComponent = Nothing,
       targetModule = Nothing,
       touchedFiles = [],
       warnings = [],

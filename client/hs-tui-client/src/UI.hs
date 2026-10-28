@@ -40,8 +40,8 @@ data UI = UI
     savedDraft :: Text
   }
 
-runUI :: FilePath -> Socket -> IO ()
-runUI path sock = do
+runUI :: FilePath -> FilePath -> Socket -> IO ()
+runUI path dir sock = do
   events <- newBChan 16
   requests <- newChan
   let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing ""
@@ -66,20 +66,20 @@ runUI path sock = do
   bracket (forkIO (worker sock requests publish)) killThread $ \_ ->
     bracket (forkIO ticker) killThread $ \_ -> do
       vty <- buildVty
-      void $ customMain vty buildVty (Just events) (app path requests attrs) initial
+      void $ customMain vty buildVty (Just events) (app path dir requests attrs) initial
 
-app :: FilePath -> Chan Requirement -> AttrMap -> App UI NetworkEvent Name
-app path requests attrs =
+app :: FilePath -> FilePath -> Chan StartRun -> AttrMap -> App UI NetworkEvent Name
+app path dir requests attrs =
   App
-    { appDraw = drawUI path,
+    { appDraw = drawUI path dir,
       appChooseCursor = showFirstCursor,
-      appHandleEvent = handleEvent requests,
+      appHandleEvent = handleEvent dir requests,
       appStartEvent = pure (),
       appAttrMap = const attrs
     }
 
-handleEvent :: Chan Requirement -> BrickEvent Name NetworkEvent -> EventM Name UI ()
-handleEvent requests event = do
+handleEvent :: FilePath -> Chan StartRun -> BrickEvent Name NetworkEvent -> EventM Name UI ()
+handleEvent dir requests event = do
   state <- get
   case event of
     AppEvent Tick -> when (waiting state) $ modify' (\s -> s {frame = (frame s + 1) `mod` 80})
@@ -101,7 +101,7 @@ handleEvent requests event = do
       scrollEnd
     VtyEvent (V.EvKey V.KUp [V.MMeta]) -> recall True
     VtyEvent (V.EvKey V.KDown [V.MMeta]) -> recall False
-    VtyEvent (V.EvKey V.KEnter []) -> submit requests
+    VtyEvent (V.EvKey V.KEnter []) -> submit dir requests
     VtyEvent (V.EvKey V.KEnter [V.MShift]) -> edit (VtyEvent (V.EvKey V.KEnter []))
     VtyEvent (V.EvResize _ _) -> when (followLatest state) scrollEnd
     _ -> edit event
@@ -122,15 +122,15 @@ edit event = do
   (updated, ()) <- nestEventM current (handleEditorEvent event)
   modify' (\s -> s {composer = updated, historyIndex = Nothing})
 
-submit :: Chan Requirement -> EventM Name UI ()
-submit requests = do
+submit :: FilePath -> Chan StartRun -> EventM Name UI ()
+submit dir requests = do
   state <- get
   let value = draft state
   if T.strip value == "/quit"
     then halt
     else when (not (waiting state) && failure state == Nothing && not (T.null (T.strip value))) $ do
       let req = Requirement value
-      liftIO $ writeChan requests req
+      liftIO $ writeChan requests (StartRun dir req)
       modify'
         ( \s ->
             s
@@ -166,8 +166,8 @@ recall older = do
             }
       )
 
-drawUI :: FilePath -> UI -> [Widget Name]
-drawUI path state = [screen]
+drawUI :: FilePath -> FilePath -> UI -> [Widget Name]
+drawUI path dir state = [screen]
   where
     screen =
       withBorderStyle unicodeRounded $
@@ -180,7 +180,7 @@ drawUI path state = [screen]
                       [ withAttr accent (txt "Harness"),
                         padLeft Max $
                           withAttr metadataAttr $
-                            txt "holey  ·  local session"
+                            txt ("holey  ·  " <> safeText (T.pack dir))
                       ],
                   withAttr borderAttr $
                     borderWithLabel (txt " Conversation ") $
@@ -214,11 +214,68 @@ drawUI path state = [screen]
                     withAttr borderAttr $
                       borderWithLabel (txt " Message ") $
                         padLeftRight 1 $
-                          vLimit (min 5 (length (getEditContents (composer state)))) $
-                            renderEditor (txt . T.intercalate "\n") True (composer state),
+                          drawComposer (composer state),
                   padTop (Pad 1) $ withAttr muted $ txt "Enter send   Shift-Enter newline   Scroll/PgUp/PgDn history   Ctrl-C exit",
                   withAttr muted $ txt ("AF_UNIX  " <> safeText (T.pack path))
                 ]
+
+-- | The editor soft-wrapped to the full available width, growing from
+-- 'minRows' to 'maxRows' and then scrolling to keep the cursor in view. Brick's 'renderEditor'
+-- scrolls sideways instead, so the cursor is placed here.
+drawComposer :: Editor Text Name -> Widget Name
+drawComposer box = Widget Greedy Fixed $ do
+  width <- max 1 . availWidth <$> getContext
+  let (row, col) = getCursorPosition box
+      contents = getEditContents box
+      wrapped = [wrapLine width (i == row) line | (i, line) <- zip [0 ..] contents]
+      before = sum (map length (take row wrapped))
+      (cursorRow, cursorCol) = case drop row contents of
+        line : _ -> cursorIn width (T.take col line)
+        [] -> (0, 0)
+      rows = concat wrapped
+      top = max 0 (before + cursorRow - (maxRows - 1))
+      shown = take maxRows (drop top rows)
+  render $
+    showCursor Composer (Location (cursorCol, before + cursorRow - top)) $
+      padRight Max (vBox (map drawRow (take (max minRows (length shown)) (shown ++ repeat ""))))
+  where
+    -- 'txt' draws nothing for empty text, which would collapse the box.
+    drawRow r = txt (if T.null r then " " else r)
+    minRows = 1
+    maxRows = 5
+
+-- | Splits a line into rows of at most @width@ columns. The cursor's line
+-- gets an empty row after it when full, so a cursor at its end has room.
+wrapLine :: Int -> Bool -> Text -> [Text]
+wrapLine width hasCursor line
+  | T.null line = [""]
+  | otherwise =
+      let rows = go line
+       in if hasCursor && textWidth (last rows) >= width then rows ++ [""] else rows
+  where
+    go t
+      | T.null t = []
+      | otherwise = let (row, rest) = splitAtWidth width t in row : go rest
+
+-- | Where the cursor lands when @prefix@, the text before it, is wrapped.
+cursorIn :: Int -> Text -> (Int, Int)
+cursorIn width = go 0
+  where
+    go r t =
+      let (row, rest) = splitAtWidth width t
+       in if T.null rest && textWidth row < width then (r, textWidth row) else go (r + 1) rest
+
+-- | The longest prefix that fits in @width@ columns, taking at least one
+-- character so wide characters in a narrow box still make progress.
+splitAtWidth :: Int -> Text -> (Text, Text)
+splitAtWidth width t = T.splitAt (max 1 (fits 0 0 (T.unpack t))) t
+  where
+    fits n _ [] = n
+    fits n used (c : cs)
+      | used + w > width = n
+      | otherwise = fits (n + 1) (used + w) cs
+      where
+        w = textWidth (T.singleton c)
 
 
 status :: UI -> Widget Name
@@ -273,7 +330,7 @@ drawRun state run =
 target :: Run -> Maybe Text
 target run = do
   ModuleName name <- targetModule run
-  pure (maybe name (\p -> p <> ":" <> name) (targetPackage run))
+  pure (maybe name (\p -> p <> ":" <> name) (targetComponent run))
 
 drawStep :: UI -> Run -> (Step, StepStatus) -> [Widget Name]
 drawStep state run (step, stepStatus) = row : details

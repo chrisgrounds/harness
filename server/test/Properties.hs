@@ -10,10 +10,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Distribution.ModuleName (fromString)
-import Distribution.PackageDescription (GenericPackageDescription (..), Library (..))
+import Distribution.Package (depPkgName, unPackageName)
+import Distribution.PackageDescription (BuildInfo (..), Executable (..), GenericPackageDescription (..), Library (..), TestSuite (..))
+import Distribution.Pretty (prettyShow)
+import Distribution.Utils.Path (getSymbolicPath)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescriptionMaybe)
 import Distribution.Types.CondTree (condTreeData)
-import Distribution.Types.UnqualComponentName (unUnqualComponentName)
+import Distribution.Types.UnqualComponentName (mkUnqualComponentName)
 import Policy
 import Project
 import Render
@@ -33,7 +36,7 @@ propertyTests =
         check "a broken skeleton is redesigned" prop_skeletonRedesigned,
         check "only known functions are reimplemented" prop_reimplementsKnownFunctions,
         check "repeated property failures are redesigned" prop_repeatedFailureRedesigned,
-        check "cabal edits keep the file valid and expose the module and suite" prop_cabalEditsParse,
+        check "cabal edits keep the file valid and list the module and its suite" prop_cabalEditsParse,
         check "cabal edits are idempotent" prop_cabalEditsIdempotent
       ]
   where
@@ -173,49 +176,75 @@ prop_repeatedFailureRedesigned = forAll functionNames $ \names ->
 
 -- Project
 
-data CabalCase = CabalCase Text [Text] Text
+data CabalCase = CabalCase
+  { caseComponent :: Component,
+    caseCabal :: Text,
+    caseModules :: [Text],
+    caseNew :: Text
+  }
   deriving (Show)
 
--- | A cabal file with a library in one of several layouts, and a new module.
+-- | A cabal file whose library or executable lists its modules in one of
+-- several layouts, sometimes followed by a stanza that already lists the new
+-- module, and a new module for it.
 instance Arbitrary CabalCase where
   arbitrary = do
+    component <- elements [library, executable]
     indent <- elements ["  ", "    "]
     modules <- map T.toTitle . nub <$> resize 4 (listOf1 identifier)
     new <- (\a b -> "Holey" <> T.toTitle a <> "." <> T.toTitle b) <$> identifier <*> identifier
     layout <- elements [inline, leadingCommas, oneModulePerLine]
     before <- elements ["", "common shared\n  ghc-options: -Wall\n\n"]
-    let library =
+    after <- elements ["", "\nbenchmark other\n" <> indent <> "type: exitcode-stdio-1.0\n" <> indent <> "main-is: Bench.hs\n" <> indent <> "other-modules: " <> new <> "\n" <> indent <> "build-depends: base\n" <> indent <> "default-language: Haskell2010\n"]
+    let (header, field, extra) = case componentKind component of
+          Lib -> ("library", "exposed-modules", ["hs-source-dirs: src"])
+          Exe exe -> ("executable " <> exe, "other-modules", ["main-is: Main.hs", "hs-source-dirs: app"])
+        stanza =
           T.unlines $
-            ["library"]
-              ++ map (indent <>) (layout indent modules)
-              ++ map (indent <>) ["hs-source-dirs: src", "build-depends: base", "default-language: Haskell2010"]
-    pure (CabalCase (header <> before <> library) modules new)
+            [header]
+              ++ map (indent <>) (layout indent field modules)
+              ++ map (indent <>) (extra ++ ["build-depends: base, containers", "default-language: Haskell2010"])
+    pure (CabalCase component (preamble <> before <> stanza <> after) modules new)
     where
-      header = "cabal-version: 2.2\nname: demo\nversion: 0.1.0.0\nbuild-type: Simple\n\n"
-      inline _ ms = ["exposed-modules: " <> T.intercalate ", " ms]
-      leadingCommas indent ms = "exposed-modules:" : zipWith (\i m -> indent <> (if i == (0 :: Int) then "  " else ", ") <> m) [0 ..] ms
-      oneModulePerLine indent ms = "exposed-modules:" : map ((indent <> "  ") <>) ms
-
-demoPackage :: Package
-demoPackage = Package "demo" "demo.cabal" "." ["src"] ["base", "containers"]
+      preamble = "cabal-version: 2.2\nname: demo\nversion: 0.1.0.0\nbuild-type: Simple\n\n"
+      inline _ field ms = [field <> ": " <> T.intercalate ", " ms]
+      leadingCommas indent field ms = (field <> ":") : zipWith (\i m -> indent <> (if i == (0 :: Int) then "  " else ", ") <> m) [0 ..] ms
+      oneModulePerLine indent field ms = (field <> ":") : map ((indent <> "  ") <>) ms
+      library = Component "demo" Lib "demo.cabal" "." ["src"] ["base", "containers"] [] Nothing
+      executable = Component "demo" (Exe "app") "demo.cabal" "." ["app"] ["base", "containers"] ["OverloadedStrings"] (Just "Haskell2010")
 
 edited :: CabalCase -> Either Text Text
-edited (CabalCase cabal _ new) =
-  addTestSuite demoPackage (ModuleName new) <$> addExposedModule (ModuleName new) cabal
+edited c =
+  addTestSuite (caseComponent c) (ModuleName (caseNew c)) <$> addModule (caseComponent c) (ModuleName (caseNew c)) (caseCabal c)
 
+-- | The component lists its old modules and the new one; the suite runs the
+-- new module's properties, depending on the library or, for an executable,
+-- compiling the module from its source directories.
 prop_cabalEditsParse :: CabalCase -> Property
-prop_cabalEditsParse c@(CabalCase _ modules new) = case edited c of
+prop_cabalEditsParse c = case edited c of
   Left err -> counterexample (T.unpack err) False
   Right text -> counterexample (T.unpack text) $ case parseGenericPackageDescriptionMaybe (TE.encodeUtf8 text) of
     Nothing -> property False
     Just description ->
-      let exposed = maybe [] (exposedModules . condTreeData) (condLibrary description)
-          suites = map (unUnqualComponentName . fst) (condTestSuites description)
-       in sort exposed === sort (map (fromString . T.unpack) (new : modules))
-            .&&. suites === [T.unpack (suiteName (ModuleName new))]
+      let expected = sort (map (fromString . T.unpack) (caseNew c : caseModules c))
+          listed = case componentKind (caseComponent c) of
+            Lib -> maybe [] (exposedModules . condTreeData) (condLibrary description)
+            Exe exe -> maybe [] (otherModules . buildInfo . condTreeData) (lookup (mkUnqualComponentName (T.unpack exe)) (condExecutables description))
+          suite = lookup (mkUnqualComponentName (T.unpack (suiteName (ModuleName (caseNew c))))) (condTestSuites description)
+          suiteInfo = testBuildInfo . condTreeData <$> suite
+          depends = maybe [] (map (unPackageName . depPkgName) . targetBuildDepends) suiteInfo
+       in sort listed === expected
+            .&&. case (componentKind (caseComponent c), suiteInfo) of
+              (_, Nothing) -> counterexample "no property suite" False
+              (Lib, Just _) -> property ("demo" `elem` depends)
+              (Exe _, Just info) ->
+                otherModules info === [fromString (T.unpack (caseNew c))]
+                  .&&. map getSymbolicPath (hsSourceDirs info) === ["test", "app"]
+                  .&&. "demo" `notElem` depends
+                  .&&. map prettyShow (defaultExtensions info) === ["OverloadedStrings"]
 
 prop_cabalEditsIdempotent :: CabalCase -> Property
-prop_cabalEditsIdempotent c@(CabalCase _ modules new) =
+prop_cabalEditsIdempotent c =
   let once = edited c
-      twice = once >>= \text -> edited (CabalCase text modules new)
+      twice = once >>= \text -> edited c {caseCabal = text}
    in isJust (either (const Nothing) Just once) ==> once === twice

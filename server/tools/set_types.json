@@ -6,9 +6,9 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "package": {
+        "component": {
           "type": "string",
-          "description": "Name of the library package the module belongs to"
+          "description": "The component the module belongs to, exactly as listed: a package name for its library, or package:exe:name for an executable"
         },
         "module": {
           "type": "string",
@@ -30,7 +30,7 @@
         }
       },
       "required": [
-        "package",
+        "component",
         "module",
         "extensions",
         "imports",

@@ -19,7 +19,7 @@ receiveEvent sock pending = do
   reply <- receiveJSON sock pending
   maybe (ioError (userError "Server disconnected before the run finished.")) pure reply
 
-worker :: Socket -> Chan Requirement -> (NetworkEvent -> IO ()) -> IO ()
+worker :: Socket -> Chan StartRun -> (NetworkEvent -> IO ()) -> IO ()
 worker sock requests publish = do
   result <- try (loop B.empty) :: IO (Either IOException ())
   case result of
