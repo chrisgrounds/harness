@@ -1,21 +1,30 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Core.Model (Model (..), allModels, modelId, modelName, implementers, defaultImplementer, largerImplementer) where
+module Core.Model (Model (..), Provider (..), allModels, provider, modelId, modelName, implementers, defaultImplementer, largerImplementer) where
 
 import Data.Aeson
 import Data.Text (Text)
 import GHC.Generics (Generic)
 
+-- | Ordered by capability, and so by cost, within each provider: Haiku <
+-- Sonnet < Opus. Comparing models of different providers means nothing.
 data Model
   = Mercury3
-  | -- | Claude Opus 5.5.
-    ClaudeOpus
-  | -- | Claude Sonnet 5.5.
-    ClaudeSonnet
   | -- | Claude Haiku 5.5.
     ClaudeHaiku
-  deriving (Eq, Show, Enum, Bounded, Generic)
+  | -- | Claude Sonnet 5.5.
+    ClaudeSonnet
+  | -- | Claude Opus 5.5.
+    ClaudeOpus
+  deriving (Eq, Ord, Show, Enum, Bounded, Generic)
+
+data Provider = Inception | Anthropic
+  deriving (Eq, Show)
+
+provider :: Model -> Provider
+provider Mercury3 = Inception
+provider _ = Anthropic
 
 allModels :: [Model]
 allModels = [minBound .. maxBound]
@@ -35,13 +44,9 @@ modelName ClaudeSonnet = "sonnet"
 modelName ClaudeHaiku = "haiku"
 
 -- | The models a run on the given model implements functions with,
--- cheapest first: the Claude models up to its own, or Mercury alone, the
--- only Inception model.
+-- cheapest first: its provider's models up to its own.
 implementers :: Model -> [Model]
-implementers Mercury3 = [Mercury3]
-implementers ClaudeOpus = [ClaudeHaiku, ClaudeSonnet, ClaudeOpus]
-implementers ClaudeSonnet = [ClaudeHaiku, ClaudeSonnet]
-implementers ClaudeHaiku = [ClaudeHaiku]
+implementers m = [i | i <- allModels, provider i == provider m, i <= m]
 
 -- | The implementer when the design does not choose one: the next cheaper
 -- model than the run's, if there is one.
