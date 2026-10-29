@@ -1,1 +1,6 @@
-packages: core server client/hs-tui-client
+packages: core server client/hs-tui-client client/hs-gui-client
+
+-- The GUI client draws through SDL2's renderer (Metal on macOS), so it needs
+-- SDL2 but not OpenGL or GLEW.
+package dear-imgui
+  flags: +sdl +sdl-renderer -opengl3

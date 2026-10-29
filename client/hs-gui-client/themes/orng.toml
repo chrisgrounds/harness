@@ -1,0 +1,14 @@
+# Default theme for the Harness desktop client, the same palette as the
+# terminal client's.
+# Matches ../dev/claude/themes/orng-dark.json (orng Dark).
+# Colors are [r, g, b] triples with components 0-255.
+
+background = [22, 26, 34]
+text = [238, 238, 238]
+orange = [236, 91, 43]
+secondaryOrange = [238, 121, 72]
+cyan = [86, 182, 194]
+muted = [128, 128, 128]
+border = [72, 72, 72]
+error = [224, 108, 117]
+success = [127, 216, 143]

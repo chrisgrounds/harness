@@ -1,6 +1,6 @@
 # Harness
 
-A Haskell LLM harness for type-driven development, with a Brick terminal interface, an AF_UNIX server, and a shared `core` package.
+A Haskell LLM harness for type-driven development, with a Brick terminal interface, a Dear ImGui desktop interface, an AF_UNIX server, and a shared `core` package.
 
 Each message is a requirement and starts a *holey run*, which moves through these steps:
 
@@ -40,6 +40,7 @@ Every write starts from the files as they were when the run first read them, fil
 | `core/` | `Run` and its steps, `Chat`, messages, models, tool definitions and requests, JSON instances, and stream protocol |
 | `server/` | Run orchestration, model requests, tool execution, and the Unix socket listener |
 | `client/hs-tui-client/` | Brick UI built directly around the shared `Run` type |
+| `client/hs-gui-client/` | Dear ImGui desktop UI over SDL2, around the same `Run` type; see its [README](client/hs-gui-client/README.md) |
 
 ## Run
 
@@ -64,6 +65,12 @@ In a second terminal, start the client with the Haskell project to work on. It d
 cabal run hs-tui-client -- --project ~/src/my-project
 ```
 
+Or start the desktop client, which takes the same arguments and needs SDL2 installed:
+
+```sh
+cabal run hs-gui-client -- --project ~/src/my-project
+```
+
 The server uses one model for every step. Claude is called through the Messages API with adaptive thinking at `high` effort, prompt caching, and, on Opus and Sonnet, the server-side fallback when a safety classifier declines a request; a refusal that is not rescued ends the agent's turn with a note. Claude's thinking is bound to the conversation that produced it, so each reply is sent back exactly as received and the design conversation offers the same tools at every step, refusing the other steps' ones; a thinking block the API can no longer use is dropped rather than failing the request. During design the model can use `ReadFile`, `ListFiles` and `RipGrep` (a fixed-string [ripgrep](https://github.com/BurntSushi/ripgrep) search over `.hs` and `.cabal` files, so `rg` must be installed), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Each function is then implemented by its own agent, up to four at a time, which sees the design (every module's new and changed types and every designed signature and documentation), its own module with the run's functions as holes, the function's previous definition if it existed, the properties that mention it, and any feedback from a failed attempt; it submits its definition with `ImplementFunction`, which must define only that function (helpers go in a `where` clause). A record built without all its fields fails the build, not just a warning. Tool paths resolve against the client's project directory. Tool schemas are packaged with the server.
 
 ## Tests
@@ -73,9 +80,10 @@ cabal test all
 ```
 
 - `core-tests`: JSON round-trips for the protocol types and the laws of the `Run` helpers.
+- `hs-gui-client-tests`: the desktop client's state updates (sending, commands, recall, run updates, scrolling) and its palette.
 - `server-tests`: properties of the pure parts of the server (Claude requests that alternate turns, answer every tool call, send replies back unchanged and keep their earlier turns as a chat grows, reading Claude's replies, splitting modules into declarations losslessly, changing a module while keeping its other declarations, adding exports in each style of export list, blaming GHC errors on declarations and recording the package being built, reading QuickCheck output, the loop-back policy, and cabal file edits checked with Cabal-syntax), then end-to-end runs against throwaway cabal projects using the real `cabal` and GHC with a scripted model in place of the real one: a first-time pass, a failed property, a type error, a run that gives up and undoes its changes, a pass in an executable-only package that still builds afterwards, a change to an existing module that repairs a broken caller, a change to a library that repairs an executable in another package, and a redesign that changes the main module and removes the earlier suite. Set `HOLEY_KEEP_PROJECT=1` to keep the generated projects.
 
-The root Nix flake includes all three packages and a shared development shell:
+The root Nix flake includes every package and a shared development shell:
 
 ```sh
 nix develop path:. -c cabal build all
@@ -85,7 +93,7 @@ nix build 'path:.#hs-tui-client:exe:hs-tui-client'
 
 ## Interface
 
-The client shows each run in order: the requirement, every step with its status, the functions being implemented while that step runs, and the reason for any failed step. The status line shows the current step and iteration. Runs happen in the background, so scrolling and drafting stay responsive while the server works.
+The terminal client shows each run in order: the requirement, every step with its status, the functions being implemented while that step runs, and the reason for any failed step. The status line shows the current step and iteration. Runs happen in the background, so scrolling and drafting stay responsive while the server works.
 
 | Key | Action |
 | --- | --- |
@@ -104,6 +112,8 @@ cabal run hs-tui-client -- /path/to/harness.sock
 ```
 
 Piped input or output uses a plain transcript through the same client and shared types, printing one line per step change. `/quit` exits in either mode.
+
+The desktop client shows the same runs in a window, with a progress bar while functions are implemented, a `/tools` window, and the keys in [its README](client/hs-gui-client/README.md).
 
 ## Shared types and protocol
 
