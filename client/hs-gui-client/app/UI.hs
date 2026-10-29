@@ -710,40 +710,60 @@ settingsModal e ui (ImVec2 width height)
       opened <- isCurrentPopupOpen "User settings"
       unless opened (openPopup "User settings")
       with (ImVec2 (width / 2) (height / 2)) $ \centre ->
-        with (ImVec2 0.5 0.5) $ \pivot -> Raw.setNextWindowPos centre ImGuiCond_Appearing (Just pivot)
-      with (ImVec2 (min 620 (width - 40)) (min 360 (height - 40))) $ \size' -> Raw.setNextWindowSize size' ImGuiCond_Appearing
-      withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 24 22) $ do
-        (visible, stillOpen) <- withText "User settings" closableModal
-        contents <- if not visible then pure [] else flip finally Raw.endPopup $ do
-          withFont (heading (fonts e)) $ label (foreground p) "OpenAI"
-          paragraph 520 (muted p) "Connect your ChatGPT account to use its available models in any chat."
-          gap 14
-          let accounts = configuredAccounts (openAISettings ui)
-              active = [a | a <- accounts, accountActive a]
-          accountActions <- bracket_ (beginDisabled (settingsBusy ui)) Raw.endDisabled $ do
-            picked <- if null accounts then pure [] else do
-              setNextItemWidth 480
-              withCombo "Account" (maybe "Choose an account" accountLabel (listToMaybe active)) $ \expanded ->
-                if not expanded then pure [] else concat <$> forM accounts (\a -> do
-                  selected' <- selectable (accountLabel a <> " · " <> accountId a)
-                  pure [ChangeAccount (accountId a) | selected'])
-            connect <- button (if null active then "Continue with ChatGPT" else "Reconnect ChatGPT")
-            add <- if null accounts then pure False else sameLine >> button "Add account"
-            disconnect <- if null active then pure False else sameLine >> button "Sign out"
-            gap 8
-            refresh <- if null active then pure False else button "Refresh models"
-            pure (picked ++ [ConnectOpenAI False | connect] ++ [ConnectOpenAI True | add] ++ [DisconnectOpenAI | disconnect] ++ [RefreshModels | refresh])
-          progress <- if settingsBusy ui then do
-            gap 8
-            paragraph 520 (accent p) "Connecting or loading models… Complete sign-in in your browser."
-            cancel <- button "Cancel"
-            pure [CancelLogin | cancel]
-            else pure []
-          forM_ (settingsError ui) (paragraph 520 (danger p) . safeText)
-          gap 16
-          paragraph 520 (muted p) "All available models appear in the selector below your message. Your ChatGPT plan and app usage limits apply."
-          escaped <- keyPressed [] ImGuiKey_Escape
-          when escaped closeCurrentPopup
-          pure (accountActions ++ progress ++ [CloseSettings | escaped])
-        pure (contents ++ [CloseSettings | not stillOpen])
+        with (ImVec2 0.5 0.5) $ \pivot -> Raw.setNextWindowPos centre ImGuiCond_Always (Just pivot)
+      -- Fixed, compact width; the height follows the content, including errors.
+      with (ImVec2 (min 460 (width - 40)) 0) $ \size' -> Raw.setNextWindowSize size' ImGuiCond_Always
+      withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 20 16) $
+        withStyleVec ImGuiStyleVar_FramePadding (ImVec2 10 6) $
+          withStyleVec ImGuiStyleVar_ItemSpacing (ImVec2 8 6) $ do
+            (visible, stillOpen) <- withText "User settings" closableModal
+            contents <- if not visible then pure [] else flip finally Raw.endPopup $ do
+              ImVec2 available _ <- Raw.getContentRegionAvail
+              left <- getCursorPosX
+              let edge = left + available
+                  accounts = configuredAccounts (openAISettings ui)
+                  active = listToMaybe [a | a <- accounts, accountActive a]
+                  connected = maybe False accountConfigured active
+              withFont (lead (fonts e)) $ label (foreground p) "ChatGPT"
+              withFont (small (fonts e)) $ rightAligned (muted p) (if connected then "Connected" else "Not connected")
+              gap 8
+              accountActions <- bracket_ (beginDisabled (settingsBusy ui)) Raw.endDisabled $ do
+                picked <- if null accounts then do
+                  withFont (small (fonts e)) $ paragraph edge (muted p) "Connect your account to use your ChatGPT plan."
+                  pure []
+                  else do
+                    withFont (small (fonts e)) $ label (muted p) "Account"
+                    setNextItemWidth available
+                    withCombo "##openai-account" (maybe "Choose an account" accountLabel active) $ \expanded ->
+                      if not expanded then pure [] else concat <$> forM accounts (\a -> do
+                        selected' <- selectableWith defSelectableOptions {selected = accountActive a}
+                          (accountLabel a <> "##" <> accountId a)
+                        when selected' closeCurrentPopup
+                        pure [ChangeAccount (accountId a) | selected'])
+                gap 8
+                primary <- if connected then button "Refresh models" else button "Continue with ChatGPT"
+                manage <- if null accounts then pure False else do
+                  sameLine
+                  captionWidth <- textWidth "Manage account"
+                  setCursorPosX (edge - captionWidth - 20)
+                  button "Manage account"
+                when manage (openPopup "##account-actions")
+                menu <- withPopup "##account-actions" $ \expanded -> if not expanded then pure [] else do
+                  reconnect <- selectable "Reconnect ChatGPT"
+                  disconnect <- withColourOf (danger p) (selectable "Sign out")
+                  pure ([ConnectOpenAI False | reconnect] ++ [DisconnectOpenAI | disconnect])
+                pure (picked ++ [if connected then RefreshModels else ConnectOpenAI False | primary] ++ menu)
+              progress <- if settingsBusy ui then do
+                gap 6
+                withFont (small (fonts e)) $ paragraph edge (muted p) "Connecting… Finish sign-in in your browser if prompted."
+                cancel <- smallButton "Cancel"
+                pure [CancelLogin | cancel]
+                else pure []
+              forM_ (settingsError ui) $ \err -> do
+                gap 6
+                withFont (small (fonts e)) $ paragraph edge (danger p) (safeText err)
+              escaped <- keyPressed [] ImGuiKey_Escape
+              when escaped closeCurrentPopup
+              pure (accountActions ++ progress ++ [CloseSettings | escaped])
+            pure (contents ++ [CloseSettings | not stillOpen])
   where p = palette e

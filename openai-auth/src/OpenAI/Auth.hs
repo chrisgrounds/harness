@@ -363,12 +363,13 @@ retryRevocation retries action = do
   where
     again = threadDelay 200000 >> retryRevocation (retries - 1) action
 
--- | Public account metadata only; token records never reach the UI state.
+-- | Public metadata for signed-in accounts only. Retained registrations let
+-- OAuth reconnect after sign-out, but should not appear as connected accounts.
 accountViews :: IO [(Text, Text, Bool, Bool)]
 accountViews = withStore $ \_ store -> pure
   [(name, fromMaybe (accountSubject account) (accountEmail account),
     maybe False planEnabled (accountSession account), storeActive store == Just name)
-   | (name, account) <- Map.toList (storeAccounts store)]
+   | (name, account) <- Map.toList (storeAccounts store), isJust (accountSession account)]
 
 modelCatalog :: IO [(Text, Text)]
 modelCatalog = do

@@ -208,7 +208,9 @@ extern "C" int harness_splitter(float* width, float minimum, float maximum, floa
 extern "C" int harness_modal(const char* title, int* open)
 {
     bool shown = *open != 0;
-    bool visible = ImGui::BeginPopupModal(title, &shown, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse);
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowSizeConstraints(ImVec2(280, 0), ImVec2(screen.x - 32, screen.y - 40));
+    bool visible = ImGui::BeginPopupModal(title, &shown, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
     *open = shown ? 1 : 0;
     return visible ? 1 : 0;
 }

@@ -43,7 +43,8 @@ openaiTests = concat <$> sequence
     check "OpenAI streams tolerate every byte boundary and reject failures" streamTest,
     check "ChatGPT callback validates state and client binding" callbackTest,
     check "ChatGPT identity requires signature, issuer, audience, expiry and nonce" identityTest,
-    check "ChatGPT refresh rotates once across concurrent workers and protects credentials" refreshTest
+    check "ChatGPT refresh rotates once across concurrent workers and protects credentials" refreshTest,
+    check "signed-out ChatGPT accounts are hidden while retaining reconnect registration" signedOutAccountTest
   ]
   where
     check name action = do
@@ -175,10 +176,32 @@ refreshTest = isolatedConfig $ do
     terminal <- try (Auth.accessToken manager) :: IO (Either Http.OAuthFailure Text)
     assert "terminal failure propagated" (isLeft terminal)
     Auth.withStore $ \_ store -> assert "terminal failure cleared tokens" (maybe False (isNothing . Auth.accountSession) (Map.lookup "saved-client" (Auth.storeAccounts store)))
-  where
-    isolatedConfig action = do
-      tmp <- getTemporaryDirectory
-      bracket (do (tempPath, h) <- openTempFile tmp "harness-openai-tests"; hClose h; removeFile tempPath; createDirectory tempPath; pure tempPath) removePathForcibly $ \dir ->
-        bracket (lookupEnv "XDG_CONFIG_HOME") (\previous -> maybe (unsetEnv "XDG_CONFIG_HOME") (setEnv "XDG_CONFIG_HOME") previous) $ \_ -> do
-          setEnv "XDG_CONFIG_HOME" dir
-          action
+
+signedOutAccountTest :: IO ()
+signedOutAccountTest = isolatedConfig $ do
+  now <- getCurrentTime
+  let session = Auth.Session "access" "refresh" "id" (addUTCTime 3600 now) ["resource.invoke", "chatgpt.tokens.use.direct"]
+      account = Auth.Account "saved-client" "subject" (Just "person@example.com") (Just session)
+      save value = Auth.withStore $ \file store -> Auth.saveStore file store
+        {Auth.storeAccounts = Map.singleton "saved-client" value, Auth.storeActive = Just "saved-client"}
+  save account
+  visible <- Auth.accountViews
+  assert "signed-in account is visible" (visible == [("saved-client", "person@example.com", True, True)])
+  save account {Auth.accountSession = Nothing}
+  signedOut <- Auth.accountViews
+  assert "previously signed-out account is hidden" (null signedOut)
+  Auth.logout
+  afterLogout <- Auth.accountViews
+  assert "sign-out keeps the account hidden" (null afterLogout)
+  Auth.withStore $ \_ store -> do
+    let retained = Map.lookup "saved-client" (Auth.storeAccounts store)
+    assert "registration remains available for reconnect" (maybe False ((== "saved-client") . Auth.accountClient) retained)
+    assert "retained registration has no credentials" (maybe False (isNothing . Auth.accountSession) retained)
+
+isolatedConfig :: IO a -> IO a
+isolatedConfig action = do
+  tmp <- getTemporaryDirectory
+  bracket (do (tempPath, h) <- openTempFile tmp "harness-openai-tests"; hClose h; removeFile tempPath; createDirectory tempPath; pure tempPath) removePathForcibly $ \dir ->
+    bracket (lookupEnv "XDG_CONFIG_HOME") (\previous -> maybe (unsetEnv "XDG_CONFIG_HOME") (setEnv "XDG_CONFIG_HOME") previous) $ \_ -> do
+      setEnv "XDG_CONFIG_HOME" dir
+      action
