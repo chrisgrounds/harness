@@ -20,6 +20,11 @@ module ImGui.Extras
     keyPressed,
     takeKey,
     composerBox,
+    navigationButton,
+    resizeSidebar,
+    closableModal,
+    sizedButton,
+    modelCombo,
   )
 where
 
@@ -33,7 +38,7 @@ import Foreign.C.String (CString)
 import Foreign.C.Types (CChar, CFloat (..), CInt (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, poke)
 
 foreign import ccall unsafe "harness_layout_matches" c_layoutMatches :: IO CInt
 
@@ -154,3 +159,36 @@ composerBox label hint buf size width height focus replacement =
     submitted <- c_composer label hint buf (fromIntegral size) (realToFrac width) (realToFrac height) (if focus then 1 else 0) replacement replaced
     made <- peek replaced
     pure (submitted /= 0, made /= 0)
+
+foreign import ccall unsafe "harness_icon_button"
+  c_iconButton :: CString -> CString -> CInt -> IO CInt
+foreign import ccall unsafe "harness_splitter"
+  c_splitter :: Ptr CFloat -> CFloat -> CFloat -> CFloat -> IO CInt
+foreign import ccall unsafe "harness_modal"
+  c_modal :: CString -> Ptr CInt -> IO CInt
+foreign import ccall unsafe "harness_sized_button"
+  c_sizedButton :: CString -> CFloat -> CFloat -> IO CInt
+foreign import ccall unsafe "harness_model_combo"
+  c_modelCombo :: CString -> CString -> CFloat -> IO CInt
+
+navigationButton :: CString -> CString -> Bool -> IO Bool
+navigationButton name tooltip settings = (/= 0) <$> c_iconButton name tooltip (if settings then 0 else 1)
+
+resizeSidebar :: Float -> Float -> Float -> Float -> IO Float
+resizeSidebar width minimum' maximum' height = alloca $ \ptr -> do
+  poke ptr (realToFrac width)
+  _ <- c_splitter ptr (realToFrac minimum') (realToFrac maximum') (realToFrac height)
+  realToFrac <$> peek ptr
+
+closableModal :: CString -> IO (Bool, Bool)
+closableModal title = alloca $ \ptr -> do
+  poke ptr 1
+  visible <- c_modal title ptr
+  open <- peek ptr
+  pure (visible /= 0, open /= 0)
+
+sizedButton :: CString -> Float -> Float -> IO Bool
+sizedButton label width height = (/= 0) <$> c_sizedButton label (realToFrac width) (realToFrac height)
+
+modelCombo :: CString -> CString -> Float -> IO Bool
+modelCombo label preview width = (/= 0) <$> c_modelCombo label preview (realToFrac width)

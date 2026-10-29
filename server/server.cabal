@@ -18,12 +18,25 @@ common shared
   build-depends:
       base >= 4.2 && < 5
     , async
+    , stm
     , containers
     , core
+    , openai-auth
     , req
     , http-client
     , http-types
     , retry
+    , http-client-tls
+    , jose >= 0.13
+    , lens
+    , ram
+    , crypton
+    , base64-bytestring
+    , time
+    , unix
+    , filelock
+    , wai
+    , warp
     , text
     , network
     , aeson
@@ -40,7 +53,7 @@ executable server
   import: shared
   hs-source-dirs: src
   main-is: server.hs
-  other-modules: Agent, Anthropic, Decls, Edits, Holey, OpenAI, Policy, Progress, Project, Prompts, Render, Socket, Tools, Verify, Workspace, Paths_server
+  other-modules: Agent, Anthropic, Decls, Edits, Holey, Inception, OpenAI, Policy, Progress, Project, Prompts, Render, Socket, Tools, Verify, Workspace, Paths_server
   autogen-modules: Paths_server
 
 test-suite server-tests
@@ -48,6 +61,6 @@ test-suite server-tests
   type: exitcode-stdio-1.0
   hs-source-dirs: src, test
   main-is: Main.hs
-  other-modules: Agent, Anthropic, Decls, Edits, Holey, OpenAI, Policy, Progress, Project, Prompts, Render, Tools, Verify, Workspace, Paths_server, EndToEnd, Properties, ScriptedModel
+  other-modules: Agent, Anthropic, Decls, Edits, Holey, Inception, OpenAI, Policy, Progress, Project, Prompts, Render, Tools, Verify, Workspace, Paths_server, OpenAITests, SocketTests, Socket, EndToEnd, Properties, ScriptedModel
   autogen-modules: Paths_server
   build-depends: QuickCheck

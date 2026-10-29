@@ -5,6 +5,7 @@
 // checks that at start-up.
 
 #include "imgui.h"
+#include <cmath>
 
 namespace
 {
@@ -59,6 +60,7 @@ void harness_configure_io(float font_scale)
 {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.FontGlobalScale = font_scale;
 }
 
@@ -140,4 +142,98 @@ int harness_composer(const char* label, const char* hint, char* buf, int buf_siz
     return frame.submitted ? 1 : 0;
 }
 
+}
+
+// Small navigation controls drawn as strokes, independent of installed fonts.
+extern "C" int harness_icon_button(const char* id, const char* tooltip, int kind)
+{
+    const float size = 34.0f;
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    bool pressed = ImGui::Button(id, ImVec2(size, size));
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 c(a.x + size / 2, a.y + size / 2);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text);
+    const float scale = 0.70f;
+    const float weight = 1.3f;
+    auto point = [&](float x, float y) { return ImVec2(c.x + x * scale, c.y + y * scale); };
+    if (kind == 0) {
+        // Keep a generous hit target around the smaller settings cog.
+        for (int i = 0; i < 48; ++i) {
+            const float angle = float(i) * 6.2831853f / 48;
+            const float r = (i % 6 == 1 || i % 6 == 2 || i % 6 == 3) ? 9.0f : 6.8f;
+            draw->PathLineTo(point(cosf(angle) * r, sinf(angle) * r));
+        }
+        draw->PathStroke(ink, ImDrawFlags_Closed, weight);
+        draw->AddCircle(c, 3.0f * scale, ink, 0, weight);
+    } else {
+        draw->PathLineTo(point(1, -7));
+        draw->PathLineTo(point(-7, -7));
+        draw->PathLineTo(point(-7, 7));
+        draw->PathLineTo(point(7, 7));
+        draw->PathLineTo(point(7, 1));
+        draw->PathStroke(ink, ImDrawFlags_None, weight);
+        draw->PathLineTo(point(-2, 1));
+        draw->PathLineTo(point(6, -7));
+        draw->PathLineTo(point(9, -4));
+        draw->PathLineTo(point(1, 4));
+        draw->PathLineTo(point(-3, 5));
+        draw->PathStroke(ink, ImDrawFlags_Closed, weight);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ImGui::SetTooltip("%s", tooltip);
+    }
+    return pressed ? 1 : 0;
+}
+
+extern "C" int harness_splitter(float* width, float minimum, float maximum, float height)
+{
+    ImGui::InvisibleButton("##sidebar-resize", ImVec2(8, height));
+    bool active = ImGui::IsItemActive();
+    bool hovered = ImGui::IsItemHovered();
+    if (active || hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (!active) return 0;
+    float next = *width + ImGui::GetIO().MouseDelta.x;
+    if (next < minimum) next = minimum;
+    if (next > maximum) next = maximum;
+    bool changed = next != *width;
+    *width = next;
+    return changed ? 1 : 0;
+}
+
+extern "C" int harness_modal(const char* title, int* open)
+{
+    bool shown = *open != 0;
+    bool visible = ImGui::BeginPopupModal(title, &shown, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse);
+    *open = shown ? 1 : 0;
+    return visible ? 1 : 0;
+}
+
+extern "C" int harness_sized_button(const char* label, float width, float height)
+{
+    return ImGui::Button(label, ImVec2(width, height)) ? 1 : 0;
+}
+
+extern "C" int harness_model_combo(const char* id, const char* preview, float width)
+{
+    ImGui::SetNextItemWidth(width);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    bool opened = ImGui::BeginCombo(id, preview, ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    // Draw the affordance in the preview, without a separate arrow button.
+    if (!opened) {
+        ImVec2 a = ImGui::GetItemRectMax();
+        float cy = (ImGui::GetItemRectMin().y + a.y) / 2;
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        ImU32 ink = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        draw->AddLine(ImVec2(a.x - 13, cy - 2), ImVec2(a.x - 9, cy + 2), ink, 1.3f);
+        draw->AddLine(ImVec2(a.x - 9, cy + 2), ImVec2(a.x - 5, cy - 2), ink, 1.3f);
+    }
+    return opened ? 1 : 0;
 }

@@ -11,6 +11,10 @@ cabal run server
 cabal run hs-gui-client -- --project ~/src/my-project
 ```
 
+Use the cog icon at the bottom of the sidebar to open **User settings**, connect ChatGPT, switch or sign out of an account, and refresh its model catalog. Close settings with its X or Escape. Complete the OAuth sign-in in your browser; account setup runs in the background.
+
+Use the right-aligned model dropdown directly below the message box to select this chat's model. The pencil-and-page **New chat** icon creates an independent draft and transcript. Switching chats restores each chat's model, draft and progress, including updates received in the background. Models come from your connected ChatGPT accounts and the server's configured API providers. All available models appear automatically. Chats live for the current window session; account settings and model catalogs are saved on disk.
+
 Pass a socket path after the options to use something other than `/tmp/harness.sock`.
 
 | Key | Action |
@@ -19,6 +23,7 @@ Pass a socket path after the options to use something other than `/tmp/harness.s
 | Alt-↑ / Alt-↓ (Option on macOS) | Recall sent messages and restore the draft |
 | Mouse wheel / Page Up / Page Down | Scroll the conversation |
 | Ctrl-Home / Ctrl-End (Cmd on macOS) | First message / latest |
+| Ctrl-N / Ctrl-, (Cmd on macOS) | New chat / User settings |
 | Esc | Close the tools window |
 | Ctrl-Q (Cmd-Q on macOS) | Quit |
 
@@ -26,7 +31,7 @@ Pass a socket path after the options to use something other than `/tmp/harness.s
 
 ## Design
 
-The sidebar names the project and lists every run, newest first, with what it is doing; click one to scroll to it. It hides in windows narrower than 860 points. At its foot are the server's model and the average token rate of its replies.
+The sidebar names the project and lists chats, newest first, with each chat's model and running state; click one to switch conversations. Drag the divider to resize the sidebar; User settings sits at its foot. It hides in windows narrower than 860 points. It also shows the average token rate.
 
 Each run opens with the requirement, set a weight up beside a bar in the user's colour, then hangs its eight steps on a rail. The rail fills in the passed colour down from each step that passes and drains when an iteration sends the run back, so how far a run got, and how often it looped, shows at a glance. The running step has a spinner on the rail; while functions are implemented, a progress bar and a line per function hang beneath it. Orange marks only what is running: the live step, the progress bar and the send button.
 
@@ -39,6 +44,7 @@ Movement eases rather than jumps: the progress bar, the rail, scrolling, the com
 | Module | Purpose |
 | --- | --- |
 | `Client` | The connection to the server, published as `NetworkEvent`s |
+| `Client.Settings` | Account metadata and model catalogs; credentials stay in `openai-auth` |
 | `Client.Commands`, `Client.Tokens` | `/` commands and the average token rate, as in the terminal client |
 | `UI.State` | The interface's state and a pure `update` for each `Action`: what the user did, or news from the server |
 | `Theme.Palette` | The palette, read from `themes/orng.toml`, the terminal client's colours |

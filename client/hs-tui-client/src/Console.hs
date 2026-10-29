@@ -47,6 +47,7 @@ runConsole dir sock = do
           mapM_ (TIO.putStrLn . renderStep) (stepChanges previous run)
           mapM_ (TIO.putStrLn . renderLine "holey" . changeTag) (newItems touchedFiles previous run)
           follow (Just run) rest
+        _ -> follow previous rest
     newItems field previous run = filter (`notElem` maybe [] field previous) (field run)
 
 renderStep :: (Step, StepStatus) -> Text

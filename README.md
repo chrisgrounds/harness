@@ -37,6 +37,7 @@ Every write starts from the files as they were when the run first read them, fil
 
 | Package | Purpose |
 | --- | --- |
+| `openai-auth/` | Shared local ChatGPT authentication and HTTPS support |
 | `core/` | `Run` and its steps, `Chat`, messages, models, tool definitions and requests, JSON instances, and stream protocol |
 | `server/` | Run orchestration, model requests, tool execution, and the Unix socket listener |
 | `client/hs-tui-client/` | Brick UI built directly around the shared `Run` type |
@@ -50,12 +51,22 @@ Build from the repository root with GHC and Cabal:
 cabal build all
 ```
 
-Choose a model with `--model`: `mercury` (Inception's Mercury 3, the default) or Claude's `opus` (Opus 5.5), `sonnet` (Sonnet 5.5) or `haiku` (Haiku 5.5). Set `INCEPTION_API_KEY` for Mercury or `ANTHROPIC_API_KEY` for Claude in your environment or a `.env` file, then start the server:
+The desktop client selects a model per chat. For terminal clients, choose the server default with `--model`: `mercury` (Inception's Mercury 3, the default) or Claude's `opus` (Opus 5.5), `sonnet` (Sonnet 5.5) or `haiku` (Haiku 5.5). Set `INCEPTION_API_KEY` for Mercury or `ANTHROPIC_API_KEY` for Claude in your environment or a `.env` file, then start the server:
 
 ```sh
 cabal run server                      # Mercury 3
 cabal run server -- --model opus      # Claude Opus 5.5
 ```
+
+For ChatGPT subscription access, start the server and desktop client, then open **User settings** at the bottom of the sidebar. Choose **Continue with ChatGPT**, complete sign-in in your browser, All available models appear in each chat's right-aligned selector below the message box. **New chat** creates a separate transcript and draft; selecting a different chat restores its model and progress. You can switch accounts and refresh catalogs in settings without restarting the server.
+
+The client owns sign-in, credentials and model catalogs. Credentials are saved under its XDG config directory (`~/.config/harness/openai/accounts.json` by default), protected by owner-only permissions, atomic writes and a refresh lock. Public model catalogs live alongside it in `catalogs.json`. Each chat retains its account registration; the server requests a short-lived access token from that client before each model call, including parallel implementers. Refresh and ID tokens remain on the client. Runs are queued to prevent simultaneous edits to the working tree.
+
+No OpenAI API key or Codex installation is needed. Model access and usage remain subject to your account, workspace and app limits; manage them in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage). This uses OpenAI's preview [ChatGPT plan usage flow](https://developers.openai.com/siwc/token-sharing-open-source) for local/open-source applications. Subscription failures stop the request; billing never switches automatically to an API key.
+
+The terminal client continues to use the server's `--model` default. The existing `server login openai`, `models openai`, `accounts openai`, `use openai CLIENT_ID` and `logout openai` commands remain available for terminal workflows. The GUI selects its own model and account independently.
+
+OpenAI uses the Responses API with streaming and no server-side conversation storage. The harness retains conversation and encrypted reasoning items in memory and executes its own namespaced tools through the existing agent loop. Every step and function implementation uses the chat's selected OpenAI model; model slugs are not ranked by capability. Chat transcripts currently live in the open client session. Mercury continues using Inception's chat completions API.
 
 The model designs, and on Claude it also chooses which model implements each function: Haiku, Sonnet or, for the hardest, its own model. Without a choice, the next cheaper model than the design's implements it (Sonnet under Opus, Haiku under Sonnet), and a function that fails is reimplemented by the next more capable one. Mercury is the only Inception model, so a Mercury run implements with Mercury and is offered no choice.
 
@@ -71,7 +82,7 @@ Or start the desktop client, which takes the same arguments and needs SDL2 insta
 cabal run hs-gui-client -- --project ~/src/my-project
 ```
 
-The server uses one model for every step. Claude is called through the Messages API with adaptive thinking at `high` effort, prompt caching, and, on Opus and Sonnet, the server-side fallback when a safety classifier declines a request; a refusal that is not rescued ends the agent's turn with a note. Claude's thinking is bound to the conversation that produced it, so each reply is sent back exactly as received and the design conversation offers the same tools at every step, refusing the other steps' ones; a thinking block the API can no longer use is dropped rather than failing the request. During design the model can use `ReadFile`, `ListFiles` and `RipGrep` (a fixed-string [ripgrep](https://github.com/BurntSushi/ripgrep) search over `.hs` and `.cabal` files, so `rg` must be installed), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Each function is then implemented by its own agent, up to four at a time, which sees the design (every module's new and changed types and every designed signature and documentation), its own module with the run's functions as holes, the function's previous definition if it existed, the properties that mention it, and any feedback from a failed attempt; it submits its definition with `ImplementFunction`, which must define only that function (helpers go in a `where` clause). A record built without all its fields fails the build, not just a warning. Tool paths resolve against the client's project directory. Tool schemas are packaged with the server.
+Claude is called through the Messages API with adaptive thinking at `high` effort, prompt caching, and, on Opus and Sonnet, the server-side fallback when a safety classifier declines a request; a refusal that is not rescued ends the agent's turn with a note. Claude's thinking is bound to the conversation that produced it, so each reply is sent back exactly as received and the design conversation offers the same tools at every step, refusing the other steps' ones; a thinking block the API can no longer use is dropped rather than failing the request. During design the model can use `ReadFile`, `ListFiles` and `RipGrep` (a fixed-string [ripgrep](https://github.com/BurntSushi/ripgrep) search over `.hs` and `.cabal` files, so `rg` must be installed), and records each step with `SetTypes`, `SetFunctions` or `SetProperties`. Each function is then implemented by its own agent, up to four at a time, which sees the design (every module's new and changed types and every designed signature and documentation), its own module with the run's functions as holes, the function's previous definition if it existed, the properties that mention it, and any feedback from a failed attempt; it submits its definition with `ImplementFunction`, which must define only that function (helpers go in a `where` clause). A record built without all its fields fails the build, not just a warning. Tool paths resolve against the client's project directory. Tool schemas are packaged with the server.
 
 ## Tests
 
@@ -81,7 +92,7 @@ cabal test all
 
 - `core-tests`: JSON round-trips for the protocol types and the laws of the `Run` helpers.
 - `hs-gui-client-tests`: the desktop client's state updates (sending, commands, recall, run updates, scrolling) and its palette.
-- `server-tests`: properties of the pure parts of the server (Claude requests that alternate turns, answer every tool call, send replies back unchanged and keep their earlier turns as a chat grows, reading Claude's replies, splitting modules into declarations losslessly, changing a module while keeping its other declarations, adding exports in each style of export list, blaming GHC errors on declarations and recording the package being built, reading QuickCheck output, the loop-back policy, and cabal file edits checked with Cabal-syntax), then end-to-end runs against throwaway cabal projects using the real `cabal` and GHC with a scripted model in place of the real one: a first-time pass, a failed property, a type error, a run that gives up and undoes its changes, a pass in an executable-only package that still builds afterwards, a change to an existing module that repairs a broken caller, a change to a library that repairs an executable in another package, and a redesign that changes the main module and removes the earlier suite. Set `HOLEY_KEEP_PROJECT=1` to keep the generated projects.
+- `server-tests`: OpenAI request/history and stream handling, signed identity validation, OAuth callback checks, concurrent token rotation and credential permissions; properties of the pure parts of the server (Claude requests that alternate turns, answer every tool call, send replies back unchanged and keep their earlier turns as a chat grows, reading Claude's replies, splitting modules into declarations losslessly, changing a module while keeping its other declarations, adding exports in each style of export list, blaming GHC errors on declarations and recording the package being built, reading QuickCheck output, the loop-back policy, and cabal file edits checked with Cabal-syntax), then end-to-end runs against throwaway cabal projects using the real `cabal` and GHC with a scripted model in place of the real one: a first-time pass, a failed property, a type error, a run that gives up and undoes its changes, a pass in an executable-only package that still builds afterwards, a change to an existing module that repairs a broken caller, a change to a library that repairs an executable in another package, and a redesign that changes the main module and removes the earlier suite. Set `HOLEY_KEEP_PROJECT=1` to keep the generated projects.
 
 The root Nix flake includes every package and a shared development shell:
 
@@ -113,7 +124,7 @@ cabal run hs-tui-client -- /path/to/harness.sock
 
 Piped input or output uses a plain transcript through the same client and shared types, printing one line per step change. `/quit` exits in either mode.
 
-The desktop client shows the same runs in a window, with a progress bar while functions are implemented, a `/tools` window, and the keys in [its README](client/hs-gui-client/README.md).
+The desktop client groups runs into chats with separate models and drafts, with a progress bar while functions are implemented, a `/tools` window, and the keys in [its README](client/hs-gui-client/README.md).
 
 ## Shared types and protocol
 

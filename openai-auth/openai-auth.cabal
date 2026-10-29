@@ -1,0 +1,16 @@
+cabal-version: 2.2
+name: openai-auth
+version: 0.1.0.0
+synopsis: Local ChatGPT authentication shared by Harness clients
+license: BSD-3-Clause
+build-type: Simple
+
+library
+  hs-source-dirs: src
+  exposed-modules: OpenAI.Auth, OpenAI.Http
+  build-depends: base >= 4.18 && < 5, aeson, async, base64-bytestring,
+    bytestring, containers, crypton, directory, filelock, filepath,
+    http-client, http-client-tls, http-types, jose >= 0.13, lens,
+    network, process, ram, text, time, unix, wai, warp
+  ghc-options: -Wall -Werror=missing-fields
+  default-language: Haskell2010

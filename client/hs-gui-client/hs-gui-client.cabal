@@ -17,6 +17,7 @@ library
   hs-source-dirs: src
   exposed-modules:
       Client
+    , Client.Settings
     , Client.Commands
     , Client.Tokens
     , Theme.Palette
@@ -24,6 +25,11 @@ library
   build-depends:
       base >= 4.14 && < 5
     , bytestring
+    , aeson
+    , async
+    , directory
+    , filepath
+    , openai-auth
     , containers
     , core
     , network

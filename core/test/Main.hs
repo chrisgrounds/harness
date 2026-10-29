@@ -46,7 +46,7 @@ instance Arbitrary FunctionSpec where
   arbitrary = FunctionSpec <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary Model where
-  arbitrary = arbitraryBoundedEnum
+  arbitrary = elements (allModels ++ map (OpenAIModel . T.pack) ["gpt-example", "future-model"])
 
 instance Arbitrary ModulePlan where
   arbitrary = ModulePlan <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

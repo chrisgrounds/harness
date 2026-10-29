@@ -3,7 +3,8 @@
 
 module Main (main) where
 
-import Client (NetworkEvent (..))
+import Client (NetworkEvent (..), ClientTask (..))
+import Client.Settings
 import Client.Commands (Command (..), parseCommand)
 import Core
 import Data.Either (isLeft)
@@ -13,11 +14,15 @@ import qualified Data.Text.IO as TIO
 import System.Exit (exitFailure)
 import Test.QuickCheck
 import Theme.Palette (parsePalette)
-import UI.State
+import UI.State hiding (initialUI)
+import qualified UI.State as State
 
 instance Arbitrary T.Text where
   arbitrary = T.pack <$> arbitrary
   shrink = map T.pack . shrink . T.unpack
+
+initialUI :: UI
+initialUI = fst (update project (Network (ServerModels [Mercury3])) State.initialUI)
 
 project :: FilePath
 project = "/project"
@@ -39,7 +44,7 @@ instance Arbitrary Requirement' where
 prop_sendStartsRunAndClears :: Requirement' -> Bool
 prop_sendStartsRunAndClears (Requirement' value) =
   let (ui, started) = update project Send (typed value initialUI)
-   in started == Just (StartRun project (Requirement value))
+   in started == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement value))))
         && waiting ui
         && draft ui == ""
         && replacement ui == Just ""
@@ -132,7 +137,10 @@ main :: IO ()
 main = do
   results <-
     sequence
-      [ check "sending starts a run and clears the draft" prop_sendStartsRunAndClears,
+      [ check "chats retain independent models, drafts and background updates" prop_chatIsolation,
+        check "a model must be available before sending" prop_modelRequired,
+        check "run errors allow retry without losing the connection" prop_runFailureRecoverable,
+        check "sending starts a run and clears the draft" prop_sendStartsRunAndClears,
         check "sending while a run is in progress keeps the draft" prop_sendWhileWaitingKeepsDraft,
         check "a blank draft sends nothing" prop_blankDraftSendsNothing,
         check "nothing is sent once disconnected" prop_disconnectedSendsNothing,
@@ -151,3 +159,30 @@ main = do
     check name p = do
       putStr (name <> ": ")
       isSuccess <$> quickCheckResult p
+
+prop_chatIsolation :: Bool
+prop_chatIsolation =
+  let choices = [ModelChoice (OpenAIModel "first") "First" (Just "account"), ModelChoice (OpenAIModel "second") "Second" (Just "account")]
+      base = act (Network (SettingsLoaded (SettingsSnapshot [] choices Nothing))) initialUI
+      first = act (ChooseModel (head choices)) base
+      sent = act Send (typed "first requirement" first)
+      second = act Replaced (act NewChat sent)
+      picked = typed "unsent in second" (act (ChooseModel (choices !! 1)) second)
+      progressed = setStep DesignTypes Running (newRun (Requirement "first requirement"))
+      updated = act (Network (ForChat 0 (RunChanged progressed))) picked
+      finished = act (Network (ForChat 0 TurnDone)) updated
+      restored = act Replaced (act (SelectChat 0) finished)
+      returned = act Replaced (act (SelectChat 1) restored)
+   in null (runs finished) && draft finished == "unsent in second" && not (waiting finished)
+        && selectedChoice restored == Just (head choices) && runs restored == [progressed] && not (waiting restored)
+        && selectedChoice returned == Just (choices !! 1) && draft returned == "unsent in second"
+
+prop_modelRequired :: Bool
+prop_modelRequired =
+  let ui = typed "requirement" State.initialUI
+   in not (canSend ui) && isNothing (snd (update project Send ui))
+
+prop_runFailureRecoverable :: Bool
+prop_runFailureRecoverable =
+  let failed = act Replaced (act (Network (ForChat 0 (RunFailed "limit reached"))) (act Send (typed "first" initialUI)))
+   in isNothing (failure failed) && runError failed == Just "limit reached" && canSend (typed "retry" failed)

@@ -24,7 +24,7 @@ metrics :: Metrics
 metrics =
   Metrics
     { windowPadding = 14,
-      framePadding = (14, 11),
+      framePadding = (12, 7),
       itemSpacing = (8, 7),
       rounding = 10,
       scrollbarSize = 8

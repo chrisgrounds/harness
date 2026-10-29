@@ -58,6 +58,7 @@ worker sock requests publish = do
         RunUpdated run -> publish (RunChanged run) >> events rest
         TokenRate r -> publish (ReplyRate r) >> events rest
         TurnFinished -> pure rest
+        _ -> events rest
 
 -- | Steps whose status differs between two snapshots, ignoring steps reset to
 -- 'Pending' by a new iteration.

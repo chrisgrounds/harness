@@ -3,7 +3,8 @@
 
 module UI (runUI) where
 
-import Client (NetworkEvent, safeText, worker)
+import Client (ClientTask, NetworkEvent, safeText, worker)
+import Client.Settings
 import Client.Tokens (averageTokens)
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.STM (TQueue, atomically, flushTQueue, newTQueueIO, readTQueue, writeTQueue)
@@ -14,12 +15,11 @@ import Data.Bits ((.|.))
 import Data.IORef
 import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import DearImGui hiding (end, flags, indent, size, w, x, y, z)
 import qualified DearImGui.Raw as Raw
-import qualified DearImGui.Raw.DrawList as DrawList
 import DearImGui.SDL(pollEventsWithImGui, sdl2NewFrame, sdl2Shutdown)
 import DearImGui.SDL.Renderer (sdl2InitForSDLRenderer, sdlRendererInit, sdlRendererNewFrame, sdlRendererRenderDrawData, sdlRendererShutdown)
 import Foreign (alloca, freeHaskellFunPtr, nullPtr, peek, with)
@@ -33,7 +33,6 @@ import qualified SDL.Raw.Event as SDL.Raw
 import qualified SDL.Raw.Types as SDL.Raw
 import qualified SDL.Raw.Video as SDL.Raw
 import System.Directory (getHomeDirectory)
-import System.FilePath (dropTrailingPathSeparator, takeFileName)
 import Theme
 import Theme.Palette
 import UI.Fonts
@@ -55,7 +54,8 @@ data Env = Env
     -- last frame.
     runTops :: IORef (Map.Map Int Float),
     -- | Whether the composer had the keyboard last frame.
-    composing :: IORef Bool
+    composing :: IORef Bool,
+    sidebarSize :: IORef Float
   }
 
 -- | How the transcript is scrolling.
@@ -74,7 +74,7 @@ data Loop = Loop
     renderer :: SDL.Renderer,
     window :: SDL.Window,
     inbox :: TQueue NetworkEvent,
-    requests :: TQueue StartRun,
+    requests :: TQueue ClientTask,
     state :: IORef UI,
     -- | Set while a frame is drawn, so a resize cannot start another.
     drawing :: IORef Bool
@@ -87,7 +87,7 @@ runUI path dir sock = do
   newsQueue <- newTQueueIO
   requestQueue <- newTQueueIO
   bracket_ (SDL.initialize [SDL.InitVideo]) SDL.quit $
-    bracket (SDL.createWindow (T.pack (projectName dir)) windowConfig) SDL.destroyWindow $ \win -> do
+    bracket (SDL.createWindow appName windowConfig) SDL.destroyWindow $ \win -> do
       SDL.windowMinimumSize win SDL.$= SDL.V2 560 460
       bracket (SDL.createRenderer win (-1) rendererConfig) SDL.destroyRenderer $ \ren ->
         bracket createContext destroyContext $ \_ ->
@@ -102,10 +102,11 @@ runUI path dir sock = do
               scroller <- newIORef (Scrolling True Nothing Nothing)
               tops <- newIORef Map.empty
               active <- newIORef False
+              sideSize <- newIORef 276
               ui <- newIORef initialUI
               busy <- newIORef False
               let shown = if home `isPrefixOf` dir then "~" <> drop (length home) dir else dir
-                  env' = Env colours faces box path dir (T.pack shown) moves scroller tops active
+                  env' = Env colours faces box path dir (T.pack shown) moves scroller tops active sideSize
                   loop = Loop env' ren win newsQueue requestQueue ui busy
                   publish event = atomically (writeTQueue newsQueue event) >> wake
               bracket (forkIO (worker sock (atomically (readTQueue requestQueue)) publish)) killThread $ \_ ->
@@ -120,8 +121,8 @@ runUI path dir sock = do
         }
     rendererConfig = SDL.defaultRenderer {SDL.rendererType = SDL.AcceleratedVSyncRenderer}
 
-projectName :: FilePath -> FilePath
-projectName = takeFileName . dropTrailingPathSeparator
+appName :: Text
+appName = "Holey, Algebraic Agents"
 
 -- | Pixels per point: 2 on a Retina display.
 pixelDensity :: SDL.Window -> SDL.Renderer -> IO Float
@@ -194,6 +195,9 @@ frame loop = do
       sdlRendererRenderDrawData (renderer loop) =<< getDrawData
       SDL.present (renderer loop)
       let (next, started) = updateAll dir actions current
+      when (currentChatId next /= currentChatId current) $ do
+        writeIORef (scrolling e) (Scrolling True Nothing Nothing)
+        writeIORef (runTops e) Map.empty
       writeIORef (state loop) next
       mapM_ (atomically . writeTQueue (requests loop)) started
       pure (not (null news && null actions))
@@ -201,35 +205,40 @@ frame loop = do
 draw :: Env -> UI -> IO [Action]
 draw e ui = do
   (shown, size') <- fullscreen $ do
-    keys <- shortcuts
+    keys <- if settingsOpen ui then pure [] else shortcuts
     ImVec2 width height <- Raw.getContentRegionAvail
+    rememberedWidth <- readIORef (sidebarSize e)
     let withSidebar = width >= 860
-        side = if withSidebar then sidebarWidth else 0
+        side = if withSidebar then max 180 (min (min 460 (width - 380)) rememberedWidth) else 0
+        gutter = if withSidebar then 8 else 0
     picked <-
       if withSidebar
         then do
           picked <- sidebar e ui (ImVec2 side height)
+          setCursorPos' (ImVec2 side 0)
+          nextWidth <- withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 0 0) $
+            pane "sidebar-divider" (ImVec2 gutter height) Nothing False $
+              resizeSidebar side 180 (min 460 (width - 380)) height
+          writeIORef (sidebarSize e) nextWidth
           divider <- colour 1 (seam (palette e))
-          line divider 1 (ImVec2 side 0) (ImVec2 side height)
+          line divider 1 (ImVec2 (side + gutter / 2) 0) (ImVec2 (side + gutter / 2) height)
           pure picked
         else pure []
-    setCursorPos' (ImVec2 side 0)
-    typed <- mainPane e ui (not withSidebar) (ImVec2 (width - side) height)
-    pure (keys ++ picked ++ typed)
+    setCursorPos' (ImVec2 (side + gutter) 0)
+    typed <- mainPane e ui (not withSidebar) (ImVec2 (width - side - gutter) height)
+    settings <- settingsModal e ui (ImVec2 width height)
+    pure (keys ++ picked ++ typed ++ settings)
   closed <- if showingTools ui then toolsWindow e size' else pure []
   pure (shown ++ closed)
 
 setCursorPos' :: ImVec2 -> IO ()
 setCursorPos' (ImVec2 px py) = setCursorPosX px >> setCursorPosY py
 
-sidebarWidth :: Float
-sidebarWidth = 276
-
 -- | The window filling the display, behind any other, and its size.
 fullscreen :: IO [Action] -> IO ([Action], ImVec2)
 fullscreen contents = do
   Raw.setNextWindowFullscreen
-  visible <- withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 0 0) $ withText "Harness" $ \name -> Raw.begin name Nothing (Just windowFlags)
+  visible <- withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 0 0) $ withText appName $ \name -> Raw.begin name Nothing (Just windowFlags)
   flip finally Raw.end $ do
     display <- Raw.getWindowSize
     actions <- if visible then contents else pure []
@@ -256,6 +265,8 @@ shortcuts = do
         (ScrollTo PageDown, keyPressed [] ImGuiKey_PageDown),
         (ScrollTo ToFirst, keyPressed [ImGuiMod_Ctrl] ImGuiKey_Home),
         (ScrollTo ToLatest, keyPressed [ImGuiMod_Ctrl] ImGuiKey_End),
+        (OpenSettings, takeKey [ImGuiMod_Ctrl] ImGuiKey_Comma),
+        (NewChat, takeKey [ImGuiMod_Ctrl] ImGuiKey_N),
         (Exit, keyPressed [ImGuiMod_Ctrl] ImGuiKey_Q)
       ]
 
@@ -269,82 +280,55 @@ pane name size' fill scrolls contents = do
       painted = maybe id (\c -> bracket_ (with (vec4 c) (Raw.pushStyleColor ImGuiCol_ChildBg)) (Raw.popStyleColor 1)) fill
   painted $ withStyleFloat ImGuiStyleVar_ChildRounding 0 $ withChild name size' False flags' (const contents)
 
--- | The project, every run with how it is doing, newest first, and the
--- model. Clicking a run scrolls the transcript to it.
+-- | The project, chat navigation and settings, in a resizable sidebar.
 sidebar :: Env -> UI -> ImVec2 -> IO [Action]
 sidebar e ui size'@(ImVec2 width height) =
-  pane "sidebar" size' (Just (raised p)) False $ do
+  pane "sidebar" size' (Just (background p)) False $ do
     let inner = width - 2 * margin
     gap 26
     setCursorPosX margin
-    withFont (heading (fonts e)) $ label (foreground p) =<< ellipsize inner (T.pack (projectName (projectDir e)))
+    withFont (heading (fonts e)) $ paragraph (margin + inner) (foreground p) appName
     setCursorPosX margin
     withFont (small (fonts e)) $ label (muted p) =<< ellipsize inner (safeText (projectShown e))
-    gap 22
-    footerHeight <- (* 3) <$> withFont (small (fonts e)) getTextLineHeightWithSpacing
+    gap 16
+    setCursorPosX margin
+    new <- navButton False
+    gap 12
+    footerHeight <- (* 2) <$> withFont (small (fonts e)) getTextLineHeightWithSpacing
     ImVec2 _ listTop <- Raw.getCursorPos
     picked <-
-      pane "runs" (ImVec2 width (height - listTop - footerHeight - 24)) Nothing True $
-        concat <$> forM (reverse (zip [0 ..] (reverse (runs ui)))) (runRow e width)
-    setCursorPosY (height - footerHeight - 16)
+      pane "runs" (ImVec2 width (height - listTop - footerHeight - 72)) Nothing True $
+        concat <$> forM (chatSummaries ui) (chatRow e ui width)
+    setCursorPosY (height - footerHeight - 64)
+    setCursorPosX margin
+    settings <- navButton True
+    gap 10
     withFont (small (fonts e)) $ do
-      setCursorPosX margin
-      let (signal, connection) = case failure ui of
-            Just _ -> (danger p, "Disconnected")
-            Nothing -> (success p, maybe "Connecting" modelId (serverModel ui))
-      _ <- icon Dot signal
-      label (foreground p) connection
       setCursorPosX margin
       label (muted p) (maybe "No replies yet" rateText (averageTokens (tokenStats ui)))
       setCursorPosX margin
       label (muted p) =<< ellipsize inner (safeText (T.pack (socketPath e)))
-    pure picked
+    pure (picked ++ [NewChat | new] ++ [OpenSettings | settings])
   where
     p = palette e
     margin = 22
 
--- | One run in the sidebar: what was asked and how it is doing.
-runRow :: Env -> Float -> (Int, Run) -> IO [Action]
-runRow e width (index, run) = do
-  bodyHeight <- getTextLineHeight
-  smallHeight <- withFont (small (fonts e)) getTextLineHeight
-  let rowHeight = bodyHeight + smallHeight + 2 * padY + 2
-      rowWidth = width - 2 * inset
-  ImVec2 _ top <- Raw.getCursorPos
-  setCursorPosX inset
-  clicked <- with (ImVec2 rowWidth rowHeight) $ \s -> withText ("##run" <> T.pack (show index)) $ \n -> Raw.invisibleButton n s ImGuiButtonFlags_None
-  hovered <- Raw.isItemHovered
-  when hovered $ do
-    handCursor
-    list <- Raw.getWindowDrawList
-    fill <- colour 1 (lifted p)
-    corner <- Raw.getItemRectMin
-    far <- Raw.getItemRectMax
-    with corner $ \a -> with far $ \b -> DrawList.addRectFilled list a b fill 8 ImDrawFlags_None
-  let (kind, tone) = runIcon p run
-  setCursorPos' (ImVec2 (inset + padX) (top + padY))
-  _ <- icon kind tone
-  textLeft <- getCursorPosX
-  label (foreground p) =<< ellipsize (width - inset - padX - textLeft) (safeText (requirementText (requirement run)))
-  setCursorPos' (ImVec2 textLeft (top + padY + bodyHeight + 2))
-  withFont (small (fonts e)) $ label (if waitingOn run then accent p else muted p) (runSummary run)
-  setCursorPos' (ImVec2 0 (top + rowHeight + 2))
-  pure [ScrollTo (ToRun index) | clicked]
-  where
-    p = palette e
-    inset = 10
-    padX = 12
-    padY = 9
-    waitingOn r = maybe False ((== Running) . snd) (currentStep r)
-
--- | How a run as a whole is doing.
-runIcon :: Palette -> Run -> (Icon, Colour)
-runIcon p run = case currentStep run of
-  Just (_, Failed _) -> (Cross, danger p)
-  Just _ -> (Spinner, accent p)
-  Nothing
-    | all ((== Passed) . snd) (steps run) -> (Tick, success p)
-    | otherwise -> (Hollow, muted p)
+-- | Chat navigation shows titles and running state.
+chatRow :: Env -> UI -> Float -> (Int, Text, Maybe ModelChoice, Bool) -> IO [Action]
+chatRow e ui width (chat, title, _, busy) = do
+  setCursorPosX 12
+  shown <- ellipsize (width - 36) (safeText title)
+  let clear = ImVec4 0 0 0 0
+      colours = [ImGuiCol_Header, ImGuiCol_HeaderHovered, ImGuiCol_HeaderActive]
+      push = forM_ colours (\key -> with clear (Raw.pushStyleColor key))
+  clicked <- bracket_ push (Raw.popStyleColor 3) $
+    selectableWith defSelectableOptions {selected = chat == currentChatId ui} (shown <> "##chat" <> T.pack (show chat))
+  when busy $ do
+    setCursorPosX 22
+    withFont (small (fonts e)) $ label (accent p) "Running"
+  gap 10
+  pure [SelectChat chat | clicked]
+  where p = palette e
 
 -- | The conversation, the status line and the composer, in a column.
 mainPane :: Env -> UI -> Bool -> ImVec2 -> IO [Action]
@@ -360,7 +344,18 @@ mainPane e ui titled size'@(ImVec2 width _) =
     when titled $ do
       gap 18
       setCursorPosX left
-      withFont (heading (fonts e)) $ label (foreground p) (T.pack (projectName (projectDir e)))
+      withFont (heading (fonts e)) $ label (foreground p) appName
+    forM_ (runError ui) $ \err -> do
+      gap 12
+      setCursorPosX left
+      paragraph (measure left column) (danger p) (safeText err)
+    navigation <- if titled then do
+      setCursorPosX left
+      new <- navButton False
+      sameLine
+      settings <- navButton True
+      pure ([NewChat | new] ++ [OpenSettings | settings])
+      else pure []
     below <- belowTranscript e ui
     scrolled <- pane "transcript" (ImVec2 width (negate below)) Nothing True $ do
       if null (runs ui)
@@ -368,12 +363,17 @@ mainPane e ui titled size'@(ImVec2 width _) =
         else void (zipWithM (drawRun e left column) [0 ..] (reverse (runs ui)))
       gap 28
       follow e ui
-    gap statusGap
-    setCursorPosX left
-    statusLine e ui left column
-    gap composerGap
+    case status ui of
+      Ready -> pure ()
+      _ -> do
+        gap statusGap
+        setCursorPosX left
+        statusLine e ui left column
+        gap composerGap
     composed <- composerRow e ui left column
-    pure (scrolled ++ composed)
+    gap composerGap
+    modelActions <- chatHeader e ui left column
+    pure (navigation ++ scrolled ++ modelActions ++ composed)
   where
     p = palette e
 
@@ -601,7 +601,7 @@ statusLine e ui left column = do
           setCursorPosY . (+ max 0 ((bodyHeight - smallHeight) * 0.8)) =<< getCursorPosY
           label (muted p) shown
     Stopped step -> icon Cross (danger p) >> label (danger p) ("Stopped at " <> T.toLower (stepLabel step))
-    Ready -> icon Dot (success p) >> label (muted p) "Ready"
+    Ready -> pure ()
   where
     p = palette e
 
@@ -613,34 +613,38 @@ composerRow e ui left column = do
   focusGlow <- ease (motion e) "focus" 0.1 (if wasActive then 1 else 0)
   -- The edge lightens while typing; orange is kept for what is running.
   let edge = mix (realToFrac (0.22 * focusGlow)) (foreground p) (seam p)
-      fieldWidth = column - sendDiameter - 12
+      fieldWidth = column - sendWidth - 12
   setCursorPosX left
   ImVec2 _ top <- Raw.getCursorPos
   -- Keep the keyboard in the composer unless something else is in use.
-  focus <- not <$> Raw.isAnyItemActive
+  popup <- isAnyLevelPopupOpen ""
+  activeItem <- Raw.isAnyItemActive
+  focusedItem <- Raw.isAnyItemFocused
+  let focus = not (settingsOpen ui || popup || activeItem || focusedItem)
   (submitted, replaced, value) <-
     withStyleVec ImGuiStyleVar_FramePadding (ImVec2 16 (snd (framePadding metrics))) $
       withStyleFloat ImGuiStyleVar_FrameRounding 14 $
         bracket_ (with (vec4 edge) (Raw.pushStyleColor ImGuiCol_Border)) (Raw.popStyleColor 1) $
           composer (composerText e) hint (ImVec2 fieldWidth height) focus (replacement ui)
   writeIORef (composing e) =<< Raw.isItemActive
-  setCursorPos' (ImVec2 (left + fieldWidth + 12) (top + (height - sendDiameter) / 2))
-  clicked <- sendButton sendDiameter (canSend ui) (accent p) (secondaryAccent p) (seam p) (foreground p)
+  setCursorPos' (ImVec2 (left + fieldWidth + 12) top)
+  clicked <- bracket_ (beginDisabled (not (canSend ui))) Raw.endDisabled $
+    withText "Send" $ \title -> sizedButton title sendWidth height
   pure ([Replaced | replaced] ++ [Edited value | value /= draft ui] ++ [Send | submitted || clicked])
   where
     p = palette e
     hint = case failure ui of
       Just _ -> "Disconnected from the server"
-      Nothing -> "Enter sends, Shift-Enter adds a line, /tools lists the tools"
+      Nothing -> "Message…"
 
-sendDiameter :: Float
-sendDiameter = 42
+sendWidth :: Float
+sendWidth = 72
 
--- | Two to six lines, as many as the draft has, growing smoothly.
+-- | One to six lines, as many as the draft has, growing smoothly.
 composerHeight :: Env -> UI -> IO Float
 composerHeight e ui = do
   lineHeight <- getTextLineHeight
-  let rows = max 2 (min 6 (length (T.splitOn "\n" (draft ui))))
+  let rows = max 1 (min 6 (length (T.splitOn "\n" (draft ui))))
   ease (motion e) "composer" 0.07 (fromIntegral rows * lineHeight + 2 * snd (framePadding metrics))
 
 statusGap, composerGap, bottomGap :: Float
@@ -654,8 +658,10 @@ belowTranscript :: Env -> UI -> IO Float
 belowTranscript e ui = do
   lineHeight <- getTextLineHeight
   composer' <- composerHeight e ui
-  let items = [statusGap, lineHeight, composerGap, composer']
-  pure (sum items + snd (itemSpacing metrics) * fromIntegral (length items) + bottomGap)
+  pickerLine <- withFont (small (fonts e)) getTextLineHeight
+  let statusHeight = case status ui of Ready -> 0; _ -> statusGap + lineHeight + composerGap + snd (itemSpacing metrics)
+      pickerHeight = pickerLine + 2 * snd (framePadding metrics)
+  pure (statusHeight + composer' + composerGap + pickerHeight + 2 * snd (itemSpacing metrics) + bottomGap)
 
 -- | The window '/tools' opens, centred on the display: every tool the
 -- model can call.
@@ -674,3 +680,70 @@ toolsWindow e (ImVec2 width height) = do
   where
     p = palette e
     windowFlags = ImGuiWindowFlags_AlwaysAutoResize .|. ImGuiWindowFlags_NoCollapse .|. ImGuiWindowFlags_NoSavedSettings
+
+-- | The selected model is scoped to this chat, including before its first run.
+chatHeader :: Env -> UI -> Float -> Float -> IO [Action]
+chatHeader e ui left column = withFont (small (fonts e)) $ do
+  let preview = maybe "Choose a model" (fst . T.breakOn " · " . choiceLabel) (selectedChoice ui)
+  measured <- textWidth preview
+  let width = min column (measured + 40)
+  setCursorPosX (left + column - width)
+  bracket_ (beginDisabled (waiting ui)) Raw.endDisabled $
+    withText "##chat-model" $ \name -> withText preview $ \caption -> do
+      opened <- modelCombo name caption width
+      if not opened then pure [] else flip finally Raw.endCombo $
+        concat <$> forM (modelChoices ui) (\choice -> do
+          picked <- selectableWith defSelectableOptions {selected = Just choice == selectedChoice ui}
+            (choiceLabel choice <> "##" <> modelName (choiceModel choice) <> fromMaybe "" (choiceAccount choice))
+          pure [ChooseModel choice | picked])
+
+navButton :: Bool -> IO Bool
+navButton settings = withText (if settings then "##user-settings" else "##new-chat") $ \name ->
+  withText (if settings then "User settings" else "New chat") $ \hint -> navigationButton name hint settings
+
+-- | A modal: account actions run in the background so the window keeps drawing
+-- while the user completes OAuth in their browser.
+settingsModal :: Env -> UI -> ImVec2 -> IO [Action]
+settingsModal e ui (ImVec2 width height)
+  | not (settingsOpen ui) = pure []
+  | otherwise = do
+      opened <- isCurrentPopupOpen "User settings"
+      unless opened (openPopup "User settings")
+      with (ImVec2 (width / 2) (height / 2)) $ \centre ->
+        with (ImVec2 0.5 0.5) $ \pivot -> Raw.setNextWindowPos centre ImGuiCond_Appearing (Just pivot)
+      with (ImVec2 (min 620 (width - 40)) (min 360 (height - 40))) $ \size' -> Raw.setNextWindowSize size' ImGuiCond_Appearing
+      withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 24 22) $ do
+        (visible, stillOpen) <- withText "User settings" closableModal
+        contents <- if not visible then pure [] else flip finally Raw.endPopup $ do
+          withFont (heading (fonts e)) $ label (foreground p) "OpenAI"
+          paragraph 520 (muted p) "Connect your ChatGPT account to use its available models in any chat."
+          gap 14
+          let accounts = configuredAccounts (openAISettings ui)
+              active = [a | a <- accounts, accountActive a]
+          accountActions <- bracket_ (beginDisabled (settingsBusy ui)) Raw.endDisabled $ do
+            picked <- if null accounts then pure [] else do
+              setNextItemWidth 480
+              withCombo "Account" (maybe "Choose an account" accountLabel (listToMaybe active)) $ \expanded ->
+                if not expanded then pure [] else concat <$> forM accounts (\a -> do
+                  selected' <- selectable (accountLabel a <> " · " <> accountId a)
+                  pure [ChangeAccount (accountId a) | selected'])
+            connect <- button (if null active then "Continue with ChatGPT" else "Reconnect ChatGPT")
+            add <- if null accounts then pure False else sameLine >> button "Add account"
+            disconnect <- if null active then pure False else sameLine >> button "Sign out"
+            gap 8
+            refresh <- if null active then pure False else button "Refresh models"
+            pure (picked ++ [ConnectOpenAI False | connect] ++ [ConnectOpenAI True | add] ++ [DisconnectOpenAI | disconnect] ++ [RefreshModels | refresh])
+          progress <- if settingsBusy ui then do
+            gap 8
+            paragraph 520 (accent p) "Connecting or loading models… Complete sign-in in your browser."
+            cancel <- button "Cancel"
+            pure [CancelLogin | cancel]
+            else pure []
+          forM_ (settingsError ui) (paragraph 520 (danger p) . safeText)
+          gap 16
+          paragraph 520 (muted p) "All available models appear in the selector below your message. Your ChatGPT plan and app usage limits apply."
+          escaped <- keyPressed [] ImGuiKey_Escape
+          when escaped closeCurrentPopup
+          pure (accountActions ++ progress ++ [CloseSettings | escaped])
+        pure (contents ++ [CloseSettings | not stillOpen])
+  where p = palette e

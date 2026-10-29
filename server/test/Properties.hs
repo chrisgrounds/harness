@@ -4,7 +4,7 @@
 module Properties (propertyTests) where
 
 import Anthropic (replyMessage, requestBody)
-import OpenAI (completionReply)
+import Inception (completionReply)
 import Core
 import Data.Aeson (Value (..), decodeStrict, object, parseJSON, toJSON, (.=))
 import qualified Data.Aeson.Key as Key

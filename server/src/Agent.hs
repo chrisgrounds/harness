@@ -13,7 +13,8 @@ import Core
 import Data.Text (Text)
 import qualified Data.Text as T
 import LoadEnv
-import OpenAI (inceptionLlm)
+import Inception (inceptionLlm)
+import OpenAI (openaiLlm)
 import System.Environment (lookupEnv)
 import System.Exit (die)
 
@@ -22,11 +23,12 @@ type Llm = Chat -> IO Chat
 
 -- | The model's provider, with its API key read from the environment or a
 -- @.env@ file: @INCEPTION_API_KEY@ for Mercury, @ANTHROPIC_API_KEY@ for
--- Claude.
+-- Claude. OpenAI uses the selected saved ChatGPT registration.
 loadLlm :: Model -> IO Llm
 loadLlm m = do
   loadEnv
   case m of
+    OpenAIModel _ -> openaiLlm
     Mercury3 -> inceptionLlm . T.pack <$> key "INCEPTION_API_KEY"
     _ -> anthropicLlm . T.pack <$> key "ANTHROPIC_API_KEY"
   where
