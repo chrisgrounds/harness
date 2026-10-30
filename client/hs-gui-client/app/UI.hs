@@ -32,15 +32,19 @@ import Theme
 import Theme.Palette
 import UI.Appearance
 import qualified UI.Composer as Composer
+import UI.Draw (colour, line)
 import UI.Fonts
+import UI.Icons (Icon (..), icon)
 import UI.Layout
 import UI.Motion
 import qualified UI.Settings as Settings
 import UI.Sidebar
 import UI.State
+import UI.Style (withStyleVec)
+import UI.Text (label, paragraph, withText)
 import UI.Tools
 import qualified UI.Transcript as Transcript
-import UI.Widgets
+import UI.Widgets (Navigation (..), navigationButton, resizeSidebar)
 
 -- | Application resources. Feature components own their rendering state;
 -- only the window layout and shared visual resources live at this level.

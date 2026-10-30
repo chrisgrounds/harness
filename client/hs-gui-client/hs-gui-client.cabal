@@ -48,10 +48,15 @@ executable hs-gui-client
     , UI
     , UI.Appearance
     , UI.Composer
+    , UI.Composer.Input
+    , UI.Draw
     , UI.Fonts
+    , UI.Icons
     , UI.Layout
     , UI.Settings
     , UI.Sidebar
+    , UI.Style
+    , UI.Text
     , UI.Tools
     , UI.Transcript
     , UI.Widgets

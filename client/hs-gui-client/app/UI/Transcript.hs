@@ -18,10 +18,13 @@ import Theme.Palette
 import UI.Appearance (Appearance)
 import qualified UI.Appearance as Appearance
 import UI.Fonts
-import UI.Layout (measure)
+import UI.Draw (colour, line)
+import UI.Icons (Icon (..), icon, iconWidth)
+import UI.Layout (gap, measure)
 import UI.Motion
 import UI.State (ChatAction (..), Scroll (..), implementCounts, target)
-import UI.Widgets
+import UI.Text (label, paragraph, rightAt)
+import UI.Widgets (meter)
 
 data Transcript = Transcript
   { appearance :: Appearance,
@@ -181,14 +184,6 @@ requirementBlock e left column words' = do
   line bar 3 (ImVec2 (x0 - 16) (y0 + 3)) (ImVec2 (x0 - 16) (below - snd (itemSpacing metrics) - 3))
   where
     p = palette e
-
--- | Text in a colour ending at the given position on the current line.
-rightAt :: Float -> Colour -> Text -> IO ()
-rightAt edge c t = do
-  width <- textWidth t
-  Raw.sameLine
-  setCursorPosX (edge - width)
-  label c t
 
 -- | A step on the rail, with its failure or, while functions are being
 -- implemented, their progress. Returns its icon's centre and radius, and

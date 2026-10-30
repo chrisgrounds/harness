@@ -51,10 +51,11 @@ Movement eases rather than jumps: the progress bar, the rail, scrolling, the com
 | `app/UI` | Window lifecycle, frame scheduling, top-level layout and action routing |
 | `app/UI/Sidebar`, `app/UI/Settings`, `app/UI/Tools` | Navigation and auxiliary windows, each receiving only its own view data |
 | `app/UI/Transcript` | Run rendering, scroll tracking and chat/run-scoped animations |
-| `app/UI/Composer` | Text-buffer and focus state, model selection, and one measured layout shared by sizing and drawing |
+| `app/UI/Composer`, `app/UI/Composer/Input` | Focus state, model selection, and one measured layout shared by sizing and drawing; the text buffer Dear ImGui edits |
 | `UI.Motion` | Backend-independent animation values, sampled at most once per frame, with typed keys |
 | `app/UI/Appearance`, `app/UI/Layout` | Shared read-only fonts/palette and small layout primitives |
-| `app/UI/Widgets`, `app/UI/Fonts`, `app/Theme` | Haskell drawing and interaction for controls, text, icons, fonts and styling |
+| `app/UI/Text`, `app/UI/Style`, `app/UI/Draw`, `app/UI/Icons` | Text measuring and setting, scoped style changes, draw-list shapes, and drawn status icons |
+| `app/UI/Widgets`, `app/UI/Fonts`, `app/Theme` | Custom controls, fonts and the Dear ImGui style |
 | `app/ImGui/Extras`, `cbits/imgui_extras.cpp` | Minimal missing bindings, ABI/struct access and the native text-input callback |
 
 The library holds everything that does not touch the window, and `cabal test hs-gui-client` checks its properties and animation regressions. Connection failure and quitting are application-wide; drafts, model choices and runs belong to conversations. Components emit chat actions that the window tags with the chat shown in that frame, so navigation cannot redirect an edit or acknowledgement to a different chat.

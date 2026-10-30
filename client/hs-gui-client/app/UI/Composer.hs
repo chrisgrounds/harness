@@ -16,22 +16,28 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import DearImGui hiding (end, flags, indent, size, w, x, y, z)
 import qualified DearImGui.Raw as Raw
+import qualified DearImGui.Raw.DrawList as DrawList
 import Foreign (nullPtr, with)
 import ImGui.Extras (Metrics (..), withStyleFloat)
 import Theme (metrics, mix, raised, seam)
 import Theme.Palette
 import UI.Appearance (Appearance)
 import qualified UI.Appearance as Appearance
+import UI.Composer.Input (Input, input, newInput)
+import UI.Draw (colour)
 import UI.Fonts
-import UI.Layout (setCursorPos')
+import UI.Icons (Icon (..), icon)
+import UI.Layout (gap, setCursorPos')
 import UI.Motion
 import UI.State (ChatAction (..), Status (..))
-import UI.Widgets
+import UI.Style (transparent, withStyleColours, withStyleVec)
+import UI.Text (ellipsize, label, textWidth, withText)
+import UI.Widgets (modelCombo, sendButton)
 
 data ComposerState = ComposerState
   { appearance :: Appearance,
     motion :: Motion,
-    composerText :: Composer,
+    composerText :: Input,
     composing :: IORef Bool
   }
 
@@ -53,7 +59,7 @@ data ComposerLayout = ComposerLayout
   }
 
 newComposerState :: Appearance -> Motion -> IO ComposerState
-newComposerState look moves = ComposerState look moves <$> newComposer <*> newIORef False
+newComposerState look moves = ComposerState look moves <$> newInput <*> newIORef False
 
 palette :: ComposerState -> Palette
 palette = Appearance.palette . appearance
@@ -106,7 +112,7 @@ composerRow e view layout left column = do
       textHeight = height - 2 * composerInset - composerControlsHeight - 8
   setCursorPosX left
   ImVec2 _ top <- Raw.getCursorPos
-  composerPanel (ImVec2 column height) (raised p) edge
+  panel (ImVec2 column height) (raised p) edge
   setCursorPos' (ImVec2 (left + 4) (top + 4))
   -- Keep the keyboard in the composer unless something else is in use.
   popup <- isAnyLevelPopupOpen ""
@@ -116,11 +122,8 @@ composerRow e view layout left column = do
   (submitted, replaced, value) <-
     withStyleVec ImGuiStyleVar_FramePadding (ImVec2 12 (snd (framePadding metrics))) $
       withStyleFloat ImGuiStyleVar_FrameBorderSize 0 $
-        bracket_
-          (forM_ [ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive] $ \col ->
-            with (ImVec4 0 0 0 0) (Raw.pushStyleColor col))
-          (Raw.popStyleColor 3) $
-          composer (composerText e) hint (ImVec2 (column - 8) textHeight) focus (composerReplacement view)
+        withStyleColours [(col, transparent) | col <- [ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive]] $
+          input (composerText e) hint (ImVec2 (column - 8) textHeight) focus (composerReplacement view)
   writeIORef (composing e) =<< Raw.isItemActive
   let controlsTop = top + height - composerInset - composerControlsHeight
   pickerHeight <- withFont (small (fonts e)) $ (+ 2 * snd (framePadding metrics)) <$> getTextLineHeight
@@ -136,6 +139,19 @@ composerRow e view layout left column = do
     hint = case composerFailure view of
       Just _ -> "Disconnected from the server"
       Nothing -> "Message…"
+
+-- | The rounded surface behind the text and the controls. Leaves the cursor
+-- in place so both can be laid out inside it.
+panel :: ImVec2 -> Colour -> Colour -> IO ()
+panel (ImVec2 width height) fill edge = do
+  ImVec2 x0 y0 <- Raw.getCursorScreenPos
+  list <- Raw.getWindowDrawList
+  surface <- colour 1 fill
+  outline <- colour 1 edge
+  with (ImVec2 x0 y0) $ \from ->
+    with (ImVec2 (x0 + width) (y0 + height)) $ \to -> do
+      DrawList.addRectFilled list from to surface 16 ImDrawFlags_None
+      DrawList.addRect list from to outline 16 1 ImDrawFlags_None
 
 composerInset, composerControlsHeight :: Float
 composerInset = 12

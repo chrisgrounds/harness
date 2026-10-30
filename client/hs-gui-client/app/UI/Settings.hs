@@ -15,8 +15,11 @@ import ImGui.Extras (keyPressed)
 import Theme.Palette
 import UI.Appearance
 import UI.Fonts
+import UI.Layout (centreNextWindow, gap)
 import UI.State (Action (..))
-import UI.Widgets
+import UI.Style (withColourOf, withStyleVec)
+import UI.Text (label, paragraph, rightAligned, textWidth)
+import UI.Widgets (closableModal)
 
 data SettingsView = SettingsView
   { settingsVisible :: Bool,
@@ -33,8 +36,7 @@ settingsModal e view (ImVec2 width height)
   | otherwise = do
       opened <- isCurrentPopupOpen "User settings"
       unless opened (openPopup "User settings")
-      with (ImVec2 (width / 2) (height / 2)) $ \centre ->
-        with (ImVec2 0.5 0.5) $ \pivot -> Raw.setNextWindowPos centre ImGuiCond_Always (Just pivot)
+      centreNextWindow (ImVec2 width height) ImGuiCond_Always
       -- Fixed, compact width; the height follows the content, including errors.
       with (ImVec2 (min 460 (width - 40)) 0) $ \size' -> Raw.setNextWindowSize size' ImGuiCond_Always
       withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 20 16) $

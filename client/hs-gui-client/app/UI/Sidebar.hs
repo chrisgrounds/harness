@@ -4,19 +4,19 @@ module UI.Sidebar (SidebarView (..), sidebar) where
 
 import Client (safeText)
 import Client.Settings (ModelChoice)
-import Control.Exception (bracket_)
 import Control.Monad (forM, forM_, when)
 import Data.Text (Text)
 import qualified Data.Text as T
 import DearImGui
 import qualified DearImGui.Raw as Raw
-import Foreign (with)
 import Theme.Palette
 import UI.Appearance
 import UI.Fonts
-import UI.Layout (pane)
+import UI.Layout (gap, pane)
 import UI.State (Action (..), rateText)
-import UI.Widgets
+import UI.Style (transparent, withStyleColours, withStyleVec)
+import UI.Text (ellipsize, label, paragraph)
+import UI.Widgets (Navigation (..), navigationButton)
 
 data SidebarView = SidebarView
   { sidebarTitle :: Text,
@@ -70,10 +70,7 @@ chatRow e current width (chat, title, _, busy) = do
   setCursorPosX horizontalPadding
   shown <- ellipsize rowWidth (safeText title)
   lineHeight <- getTextLineHeight
-  let clear = ImVec4 0 0 0 0
-      colours = [ImGuiCol_Header, ImGuiCol_HeaderHovered, ImGuiCol_HeaderActive]
-      push = forM_ colours (\key -> with clear (Raw.pushStyleColor key))
-  clicked <- bracket_ push (Raw.popStyleColor 3) $
+  clicked <- withStyleColours [(col, transparent) | col <- [ImGuiCol_Header, ImGuiCol_HeaderHovered, ImGuiCol_HeaderActive]] $
     withStyleVec ImGuiStyleVar_SelectableTextAlign (ImVec2 0 0.5) $
       selectableWith defSelectableOptions
         { selected = chat == current,

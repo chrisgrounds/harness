@@ -12,15 +12,16 @@ import Foreign.C.Types (CBool)
 import Theme.Palette
 import UI.Appearance
 import UI.Fonts
+import UI.Layout (centreNextWindow)
 import UI.State (ChatAction (..), allToolNames)
-import UI.Widgets
+import UI.Style (withStyleVec)
+import UI.Text (label, withText)
 
 -- | The window '/tools' opens, centred on the display: every tool the
 -- model can call.
 toolsWindow :: Appearance -> ImVec2 -> IO [ChatAction]
-toolsWindow e (ImVec2 width height) = do
-  with (ImVec2 (width / 2) (height / 2)) $ \centre ->
-    with (ImVec2 0.5 0.5) $ \pivot -> Raw.setNextWindowPos centre ImGuiCond_Appearing (Just pivot)
+toolsWindow e display = do
+  centreNextWindow display ImGuiCond_Appearing
   with (1 :: CBool) $ \open -> do
     visible <-
       withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 22 18) $
