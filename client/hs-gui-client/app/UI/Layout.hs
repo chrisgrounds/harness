@@ -38,6 +38,6 @@ pane name size' fill scrolls contents = do
       painted = maybe id (\c -> withStyleColours [(ImGuiCol_ChildBg, vec4 c)]) fill
   painted $ withStyleFloat ImGuiStyleVar_ChildRounding 0 $ withChild name size' False flags' (const contents)
 
--- | Where prose in the column wraps: under 80 characters a line.
+-- | Where prose in the column wraps: under 100 characters a line.
 measure :: Float -> Float -> Float
-measure left column = left + min column 600
+measure left column = left + min column 880

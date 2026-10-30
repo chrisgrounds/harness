@@ -176,7 +176,7 @@ measureComposer e view currentStatus column = do
 statusGap, composerGap, bottomGap :: Float
 statusGap = 4
 composerGap = 6
-bottomGap = 20
+bottomGap = 36
 
 -- | The selected model is scoped to this chat, including before its first run.
 modelPicker :: ComposerState -> ComposerView -> Float -> Float -> IO [ChatAction]

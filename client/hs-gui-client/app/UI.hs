@@ -272,7 +272,7 @@ shortcuts chat = do
 mainPane :: Env -> UI -> Bool -> ImVec2 -> IO [Action]
 mainPane e ui titled size'@(ImVec2 width _) =
   pane "main" size' Nothing False $ do
-    let column = min 720 (width - 2 * 44)
+    let column = min 1000 (width - 2 * 44)
         left = (width - column) / 2
     forM_ (failure ui) $ \err -> do
       gap 18
