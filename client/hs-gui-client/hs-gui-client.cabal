@@ -22,6 +22,7 @@ library
     , Client.Tokens
     , Theme.Palette
     , UI.State
+    , UI.Motion
   build-depends:
       base >= 4.14 && < 5
     , bytestring
@@ -41,7 +42,20 @@ library
 executable hs-gui-client
   hs-source-dirs: app
   main-is: Main.hs
-  other-modules: ImGui.Extras, Theme, UI, UI.Fonts, UI.Motion, UI.Widgets, Paths_hs_gui_client
+  other-modules:
+      ImGui.Extras
+    , Theme
+    , UI
+    , UI.Appearance
+    , UI.Composer
+    , UI.Fonts
+    , UI.Layout
+    , UI.Settings
+    , UI.Sidebar
+    , UI.Tools
+    , UI.Transcript
+    , UI.Widgets
+    , Paths_hs_gui_client
   autogen-modules: Paths_hs_gui_client
   build-depends:
       base >= 4.14 && < 5
@@ -69,6 +83,7 @@ test-suite hs-gui-client-tests
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs
+  other-modules: MotionTests
   build-depends:
       base
     , hs-gui-client

@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | What a run does after a verification fails.
 module Policy (Outcome (..), Decision (..), maxIterations, decide, failedChecks, describeOutcome, describeWork, redesignReason) where
 
 import Core (FunctionName (..), FunctionRef (..))
@@ -9,34 +8,23 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Verify (firstProblem)
 
--- | How a verification step failed.
 data Outcome
-  = -- | The skeleton (types, signatures, properties) did not build.
-    SkeletonFailed Text
-  | -- | These functions' agents did not submit an implementation.
-    ImplementationMissing [FunctionRef]
-  | -- | Errors in each function's lines, and errors that could not be attributed.
-    TypeErrors [(FunctionRef, Text)] [Text]
-  | -- | The failed properties, the functions they mention, and their output.
-    PropertiesFailed [Text] [FunctionRef] Text
-  | -- | The review found the code does not do what the requirement asks.
-    RequirementUnmet Text
+  = SkeletonFailed Text
+  | ImplementationMissing [FunctionRef]
+  | TypeErrors [(FunctionRef, Text)] [Text]
+  | PropertiesFailed [Text] [FunctionRef] Text
+  | RequirementUnmet Text
   deriving (Eq, Show)
 
 data Decision
-  = -- | Back to step 1, with feedback for the design conversation.
-    Redesign Text
-  | -- | Back to step 4 for these functions, each with optional feedback.
-    Reimplement [(FunctionRef, Maybe Text)]
+  = Redesign Text
+  | Reimplement [(FunctionRef, Maybe Text)]
   | GiveUp Text
   deriving (Eq, Show)
 
--- | Iterations a run may use, including the first.
 maxIterations :: Int
 maxIterations = 10
 
--- | Decides how to continue on the given iteration, knowing every function the
--- run writes and the properties that failed on the previous iteration.
 decide :: Int -> [FunctionRef] -> [Text] -> Outcome -> Decision
 decide iterationNumber allFunctions previouslyFailed outcome
   | iterationNumber >= maxIterations =
@@ -69,16 +57,12 @@ decide iterationNumber allFunctions previouslyFailed outcome
         | null suspects -> Reimplement [(name, Just report) | name <- allFunctions]
         | otherwise -> Reimplement [(name, Just report) | name <- suspects]
 
--- | What an outcome failed, to tell whether the next iteration fails the same
--- way: the failed properties, or the first build error outside every
--- function, without where it is.
 failedChecks :: Outcome -> [Text]
 failedChecks (PropertiesFailed failed _ _) = failed
 failedChecks (TypeErrors [] unattributed) = ["build: " <> problem (T.unlines unattributed)]
 failedChecks (TypeErrors attributed _) = [functionNameText (refName ref) <> ": " <> problem errors | (ref, errors) <- attributed]
 failedChecks _ = []
 
--- | The first problem in errors, without where it is.
 problem :: Text -> Text
 problem = maybe "" withoutLocation . firstProblem
   where
@@ -86,7 +70,6 @@ problem = maybe "" withoutLocation . firstProblem
       (before, location) | not (T.null before), ")" `T.isSuffixOf` location -> T.dropEnd 2 before
       _ -> text
 
--- | A one-line description for the run's history.
 describeOutcome :: Outcome -> Text
 describeOutcome (SkeletonFailed _) = "the skeleton did not type check"
 describeOutcome (ImplementationMissing names) = "no implementation was submitted for " <> list names
@@ -96,7 +79,6 @@ describeOutcome (TypeErrors attributed unattributed)
 describeOutcome (PropertiesFailed failed _ _) = "properties failed: " <> T.intercalate ", " failed
 describeOutcome (RequirementUnmet _) = "the review found the requirement not met"
 
--- | Why an outcome sends the run back to design, in one sentence.
 redesignReason :: Outcome -> Text
 redesignReason (SkeletonFailed errors) =
   case filter (not . T.null) (map T.strip (T.lines errors)) of
@@ -108,8 +90,6 @@ redesignReason (TypeErrors [] _) = "it came back after every function was reimpl
 redesignReason (TypeErrors {}) = "they came back in the same functions after those were reimplemented, so the cause is probably elsewhere."
 redesignReason _ = "it could not be fixed by reimplementing functions."
 
--- | The functions an iteration reimplements, out of all the run's: all of
--- them, a short list, or the first few and how many more.
 describeWork :: [FunctionRef] -> [FunctionRef] -> Text
 describeWork everything work
   | length work > 3 && all (`elem` work) everything = "all " <> T.pack (show (length work)) <> " functions"

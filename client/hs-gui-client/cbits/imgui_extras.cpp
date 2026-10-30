@@ -5,7 +5,6 @@
 // checks that at start-up.
 
 #include "imgui.h"
-#include <cmath>
 
 namespace
 {
@@ -70,23 +69,26 @@ void harness_set_colour(int colour, float r, float g, float b, float a)
 }
 
 void harness_set_metrics(float window_padding, float frame_padding_x, float frame_padding_y,
-                         float item_spacing_x, float item_spacing_y, float rounding, float scrollbar_size)
+                         float item_spacing_x, float item_spacing_y,
+                         float window_rounding, float child_rounding, float popup_rounding,
+                         float frame_rounding, float grab_rounding, float scrollbar_rounding, float scrollbar_size,
+                         float window_border, float child_border, float frame_border, float popup_border)
 {
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowPadding = ImVec2(window_padding, window_padding);
     style.FramePadding = ImVec2(frame_padding_x, frame_padding_y);
     style.ItemSpacing = ImVec2(item_spacing_x, item_spacing_y);
-    style.WindowRounding = rounding;
-    style.ChildRounding = rounding;
-    style.PopupRounding = rounding;
-    style.FrameRounding = rounding * 0.75f;
-    style.GrabRounding = rounding * 0.75f;
-    style.ScrollbarRounding = rounding;
+    style.WindowRounding = window_rounding;
+    style.ChildRounding = child_rounding;
+    style.PopupRounding = popup_rounding;
+    style.FrameRounding = frame_rounding;
+    style.GrabRounding = grab_rounding;
+    style.ScrollbarRounding = scrollbar_rounding;
     style.ScrollbarSize = scrollbar_size;
-    style.WindowBorderSize = 0.0f;
-    style.ChildBorderSize = 1.0f;
-    style.FrameBorderSize = 1.0f;
-    style.PopupBorderSize = 1.0f;
+    style.WindowBorderSize = window_border;
+    style.ChildBorderSize = child_border;
+    style.FrameBorderSize = frame_border;
+    style.PopupBorderSize = popup_border;
 }
 
 // Sets a style value of one float, such as the opacity or a rounding,
@@ -95,8 +97,6 @@ void harness_push_style_float(int var, float value) { ImGui::PushStyleVar(var, v
 
 // A colour for draw lists, faded with the items around it.
 unsigned int harness_colour(float r, float g, float b, float a) { return ImGui::GetColorU32(ImVec4(r, g, b, a)); }
-
-void harness_hand_cursor(void) { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); }
 
 float harness_scroll_y(void) { return ImGui::GetScrollY(); }
 float harness_scroll_max_y(void) { return ImGui::GetScrollMaxY(); }
@@ -119,11 +119,11 @@ int harness_take_chord(int chord)
 }
 
 // A multiline text box over buf in which Enter submits and Shift-Enter
-// inserts a newline, showing hint while it is empty. With focus it takes
+// inserts a newline. With focus it takes
 // the keyboard. A replacement, when not null, becomes the text, with the
 // cursor at the end, once the box is active; *replaced says whether that
 // happened this frame. Returns whether Enter submitted.
-int harness_composer(const char* label, const char* hint, char* buf, int buf_size, float width, float height,
+int harness_composer(const char* label, char* buf, int buf_size, float width, float height,
                      int focus, const char* replacement, int* replaced)
 {
     const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_CallbackCharFilter;
@@ -131,111 +131,39 @@ int harness_composer(const char* label, const char* hint, char* buf, int buf_siz
         ImGui::SetKeyboardFocusHere();
     ComposerFrame frame = {replacement, false, false};
     ImGui::InputTextMultiline(label, buf, static_cast<size_t>(buf_size), ImVec2(width, height), flags, composer_callback, &frame);
-    if (buf[0] == '\0' && hint != nullptr)
-    {
-        const ImGuiStyle& style = ImGui::GetStyle();
-        const ImVec2 corner = ImGui::GetItemRectMin();
-        ImGui::GetWindowDrawList()->AddText(ImVec2(corner.x + style.FramePadding.x, corner.y + style.FramePadding.y),
-                                            ImGui::GetColorU32(ImGuiCol_TextDisabled), hint);
-    }
     *replaced = frame.replaced ? 1 : 0;
     return frame.submitted ? 1 : 0;
 }
 
 }
 
-// Small navigation controls drawn as strokes, independent of installed fonts.
-extern "C" int harness_icon_button(const char* id, const char* tooltip, int kind)
+// Binding extensions missing from dear-imgui. They contain no component styling.
+extern "C" unsigned int harness_style_colour(int colour)
 {
-    const float size = 34.0f;
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    bool pressed = ImGui::Button(id, ImVec2(size, size));
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
-    const ImVec2 a = ImGui::GetItemRectMin();
-    const ImVec2 c(a.x + size / 2, a.y + size / 2);
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    const ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text);
-    const float scale = 0.70f;
-    const float weight = 1.3f;
-    auto point = [&](float x, float y) { return ImVec2(c.x + x * scale, c.y + y * scale); };
-    if (kind == 0) {
-        // Keep a generous hit target around the smaller settings cog.
-        for (int i = 0; i < 48; ++i) {
-            const float angle = float(i) * 6.2831853f / 48;
-            const float r = (i % 6 == 1 || i % 6 == 2 || i % 6 == 3) ? 9.0f : 6.8f;
-            draw->PathLineTo(point(cosf(angle) * r, sinf(angle) * r));
-        }
-        draw->PathStroke(ink, ImDrawFlags_Closed, weight);
-        draw->AddCircle(c, 3.0f * scale, ink, 0, weight);
-    } else {
-        draw->PathLineTo(point(1, -7));
-        draw->PathLineTo(point(-7, -7));
-        draw->PathLineTo(point(-7, 7));
-        draw->PathLineTo(point(7, 7));
-        draw->PathLineTo(point(7, 1));
-        draw->PathStroke(ink, ImDrawFlags_None, weight);
-        draw->PathLineTo(point(-2, 1));
-        draw->PathLineTo(point(6, -7));
-        draw->PathLineTo(point(9, -4));
-        draw->PathLineTo(point(1, 4));
-        draw->PathLineTo(point(-3, 5));
-        draw->PathStroke(ink, ImDrawFlags_Closed, weight);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        ImGui::SetTooltip("%s", tooltip);
-    }
-    return pressed ? 1 : 0;
+    return ImGui::GetColorU32(static_cast<ImGuiCol>(colour));
 }
 
-extern "C" int harness_splitter(float* width, float minimum, float maximum, float height)
+extern "C" void harness_mouse_cursor(int cursor)
 {
-    ImGui::InvisibleButton("##sidebar-resize", ImVec2(8, height));
-    bool active = ImGui::IsItemActive();
-    bool hovered = ImGui::IsItemHovered();
-    if (active || hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    if (!active) return 0;
-    float next = *width + ImGui::GetIO().MouseDelta.x;
-    if (next < minimum) next = minimum;
-    if (next > maximum) next = maximum;
-    bool changed = next != *width;
-    *width = next;
-    return changed ? 1 : 0;
+    ImGui::SetMouseCursor(static_cast<ImGuiMouseCursor>(cursor));
 }
 
-extern "C" int harness_modal(const char* title, int* open)
+extern "C" void harness_frame_padding(float* x, float* y)
+{
+    const ImVec2 padding = ImGui::GetStyle().FramePadding;
+    *x = padding.x;
+    *y = padding.y;
+}
+
+extern "C" int harness_begin_closable_modal(const char* title, int* open, int flags)
 {
     bool shown = *open != 0;
-    const ImVec2 screen = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowSizeConstraints(ImVec2(280, 0), ImVec2(screen.x - 32, screen.y - 40));
-    bool visible = ImGui::BeginPopupModal(title, &shown, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
+    const bool visible = ImGui::BeginPopupModal(title, &shown, static_cast<ImGuiWindowFlags>(flags));
     *open = shown ? 1 : 0;
     return visible ? 1 : 0;
 }
 
-extern "C" int harness_sized_button(const char* label, float width, float height)
+extern "C" int harness_begin_combo(const char* id, const char* preview, int flags)
 {
-    return ImGui::Button(label, ImVec2(width, height)) ? 1 : 0;
-}
-
-extern "C" int harness_model_combo(const char* id, const char* preview, float width)
-{
-    ImGui::SetNextItemWidth(width);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    bool opened = ImGui::BeginCombo(id, preview, ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
-    // Draw the affordance in the preview, without a separate arrow button.
-    if (!opened) {
-        ImVec2 a = ImGui::GetItemRectMax();
-        float cy = (ImGui::GetItemRectMin().y + a.y) / 2;
-        ImDrawList* draw = ImGui::GetWindowDrawList();
-        ImU32 ink = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-        draw->AddLine(ImVec2(a.x - 13, cy - 2), ImVec2(a.x - 9, cy + 2), ink, 1.3f);
-        draw->AddLine(ImVec2(a.x - 9, cy + 2), ImVec2(a.x - 5, cy - 2), ink, 1.3f);
-    }
-    return opened ? 1 : 0;
+    return ImGui::BeginCombo(id, preview, static_cast<ImGuiComboFlags>(flags)) ? 1 : 0;
 }

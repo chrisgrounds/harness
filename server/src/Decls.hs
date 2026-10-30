@@ -1,11 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Haskell source split by layout into a header (pragmas, module header and
--- imports) and top-level declarations. A declaration starts at a column-0
--- line of code, takes the comments and pragmas directly above it, and runs
--- to the next one; a signature and its equations are one declaration.
--- Joining the parts gives back the source exactly, so an edit leaves every
--- other line as it was.
 module Decls
   ( SourceFile (..),
     Decl (..),
@@ -48,23 +42,16 @@ data SourceFile = SourceFile
 
 data Decl = Decl
   { declKind :: DeclKind,
-    -- | The name the declaration defines: a function, type or class name, an
-    -- operator in parentheses, or @instance <head>@. 'Nothing' for splices
-    -- and other declarations that define no single name.
     declKey :: Maybe Text,
     declLines :: [Text],
-    -- | For a function, the lines before its first equation: comments,
-    -- signature and pragmas.
     declHeadLength :: Int
   }
   deriving (Eq, Show)
 
 data DeclKind
   = ValueDecl
-  | -- | @data@, @newtype@ and @class@, exported with their constructors or methods.
-    DataDecl
-  | -- | Type synonyms and families.
-    TypeDecl
+  | DataDecl
+  | TypeDecl
   | InstanceDecl
   | OtherDecl
   deriving (Eq, Show)
@@ -77,8 +64,6 @@ splitSource source = SourceFile (take start ls) (mergeChunks (map describe (slic
   where
     ls = T.lines source
     kinds = classify ls
-    -- A chunk starts at a column-0 line of code, or at the comments and
-    -- pragmas directly above it.
     bounds = [attached i | (i, Code) <- zip [0 ..] kinds]
     attached i = i - length (takeWhile (`elem` [Comment, Pragma]) (reverse (take i kinds)))
     start = case bounds of
@@ -89,7 +74,6 @@ splitSource source = SourceFile (take start ls) (mergeChunks (map describe (slic
 joinSource :: SourceFile -> Text
 joinSource sf = T.unlines (sourceHeader sf ++ concatMap declLines (sourceDecls sf))
 
--- | Each declaration with its first and last line, 1-based and inclusive.
 declSpans :: SourceFile -> [(Decl, (Int, Int))]
 declSpans sf = zip (sourceDecls sf) (zip starts (map (subtract 1) (drop 1 starts)))
   where
@@ -101,14 +85,11 @@ declAt line sf = listToMaybe [d | (d, (from, to)) <- declSpans sf, line >= from,
 findDecl :: Text -> SourceFile -> Maybe Decl
 findDecl key sf = listToMaybe [d | d <- sourceDecls sf, declKey d == Just key]
 
--- | The import line starting at a header line, with its whitespace collapsed.
 importAt :: Int -> SourceFile -> Maybe Text
 importAt line sf = case drop (line - 1) (sourceHeader sf) of
   l : _ | "import " `T.isPrefixOf` l -> Just (collapse l)
   _ -> Nothing
 
--- | Replaces the declaration with the same key, keeping the blank lines and
--- comments after it, or adds the declaration after the others.
 upsertDecl :: Decl -> SourceFile -> SourceFile
 upsertDecl new sf = case break sameKey (sourceDecls sf) of
   (before, old : after) ->
@@ -121,8 +102,6 @@ upsertDecl new sf = case break sameKey (sourceDecls sf) of
     separated ls = if null ls || T.null (T.strip (last ls)) then ls else ls ++ [""]
     separatedDecl d = d {declLines = separated (declLines d)}
 
--- | Replaces a function's equations, keeping its comments, signature and
--- pragmas and anything after it. 'Nothing' leaves a hole: @name = undefined@.
 rewriteEquations :: Text -> Maybe Text -> Decl -> Decl
 rewriteEquations name body d =
   d {declLines = take (min (declHeadLength d) code) (declLines d) ++ equations ++ after}
@@ -131,12 +110,9 @@ rewriteEquations name body d =
     code = length (declLines d) - length after
     equations = maybe [name <> " = undefined"] (T.lines . T.stripEnd) body
 
--- | The comments and pragmas directly above a declaration.
 leadingComments :: Decl -> [Text]
 leadingComments = takeWhile ((`elem` [Comment, Pragma]) . lineKind) . declLines
 
--- | An instance's comments and head, up to its @where@, without its methods.
--- 'Nothing' for an instance without methods.
 instanceHeadLines :: Decl -> Maybe [Text]
 instanceHeadLines d
   | declKind d /= InstanceDecl = Nothing
@@ -148,20 +124,11 @@ instanceHeadLines d
       "where" : _ -> True
       _ -> False
 
--- | Replaces an instance with a new declaration, or with just its head as a
--- hole while it is repaired, keeping the lines after it.
 rewriteInstance :: Maybe Text -> Decl -> Maybe Decl
 rewriteInstance body d = do
   replacement <- maybe (instanceHeadLines d) (Just . T.lines . T.stripEnd) body
   pure d {declLines = replacement ++ trailing d}
 
--- | A function's equations adapted to a new signature, to stand in for it
--- until it is reimplemented: as they are when the signature has as many
--- parameters as before, or with a wildcard pattern for each new parameter
--- when the old parameters appear in the new signature in order. 'Nothing'
--- when that cannot be done: the function has no signature or is defined
--- infix, a parameter was dropped, or an equation binds fewer patterns than
--- the function has parameters.
 adaptEquations :: Text -> Text -> Decl -> Maybe [Text]
 adaptEquations name newSignature d = do
   old <- signatureOf name d
@@ -192,8 +159,6 @@ adaptEquations name newSignature d = do
               t : rest -> t : go (i + 1) rest
               [] -> []
 
--- | The positions in the new parameters of those that are not old ones,
--- matching the old ones in order.
 newPositions :: [Text] -> [(Int, Text)] -> Maybe [Int]
 newPositions [] news = Just (map fst news)
 newPositions _ [] = Nothing
@@ -201,7 +166,6 @@ newPositions (o : os) ((i, n) : ns)
   | o == n = newPositions os ns
   | otherwise = (i :) <$> newPositions (o : os) ns
 
--- | The type of a function's signature in its declaration, without comments.
 signatureOf :: Text -> Decl -> Maybe Text
 signatureOf name d = case break isSignature headLines of
   (_, first : rest) ->
@@ -215,7 +179,6 @@ signatureOf name d = case break isSignature headLines of
       (before, rest) | not (T.null rest), lineComment rest -> before
       _ -> l
 
--- | The parameter types of a signature, after any @forall@ and context.
 parameters :: Text -> [Text]
 parameters signature = map collapse (dropLast (splitArrows (afterContext (afterForall (T.strip signature)))))
   where
@@ -224,32 +187,24 @@ parameters signature = map collapse (dropLast (splitArrows (afterContext (afterF
       | otherwise = t
     dropLast xs = take (length xs - 1) xs
 
--- | A type split at its top-level arrows.
 splitArrows :: Text -> [Text]
 splitArrows = map (T.strip . render) . splitTop (isToken Symbol "->") . tokens
 
--- | An equation's patterns and the rest from its @=@ or first guard.
 splitEquation :: Text -> (Text, Text)
 splitEquation t = case [tokenStart tok | tok <- topLevel (tokens t), isToken Symbol "=" tok || isToken Symbol "|" tok] of
   i : _ -> T.splitAt i t
   [] -> (t, "")
 
--- | An equation's patterns, split at top-level spaces.
 patternTokens :: Text -> [Text]
 patternTokens = filter (not . T.null) . map (render . filter ((/= CommentToken) . tokenKind)) . splitTop ((== Space) . tokenKind) . tokens
 
--- Lexing
 
--- | Enough of Haskell's lexical structure to find a source's top-level
--- arrows, equals signs, spaces and commas: brackets nest, and literals and
--- comments hide what is in them.
 data TokenKind = Open | Close | Space | CommentToken | Literal | Symbol | Word | Punctuation
   deriving (Eq, Show)
 
 data Token = Token
   { tokenKind :: TokenKind,
     tokenText :: Text,
-    -- | Where it starts in the source, in characters.
     tokenStart :: Int
   }
 
@@ -272,7 +227,6 @@ tokens = go 0 . T.unpack
         line = takeWhile (/= '\n') s
         emit kind n = Token kind (T.pack (take n s)) i : go (i + n) (drop n s)
 
--- | The length of a nested block comment, from its opening @{-@.
 blockLength :: String -> Int
 blockLength = go (0 :: Int) 0
   where
@@ -284,7 +238,6 @@ blockLength = go (0 :: Int) 0
       _ : rest -> go depth (n + 1) rest
       [] -> n
 
--- | The length of a string literal's rest, up to and including its closing quote.
 stringLength :: String -> Int
 stringLength = go 0
   where
@@ -293,8 +246,6 @@ stringLength = go 0
     go n (_ : rest) = go (n + 1) rest
     go n [] = n
 
--- | The length of a character literal's rest, up to and including its
--- closing quote, if it is one: @'x'@ or @'\\n'@, not a quote in @''Foo@.
 charLength :: String -> Maybe Int
 charLength s = case s of
   '\\' : rest | (escape, '\'' : _) <- break (== '\'') rest -> Just (length escape + 2)
@@ -307,7 +258,6 @@ isToken kind text tok = tokenKind tok == kind && tokenText tok == text
 render :: [Token] -> Text
 render = T.concat . map tokenText
 
--- | The tokens outside every bracket.
 topLevel :: [Token] -> [Token]
 topLevel = go (0 :: Int)
   where
@@ -318,7 +268,6 @@ topLevel = go (0 :: Int)
       _ | depth == 0 -> t : go depth ts
       _ -> go depth ts
 
--- | The tokens split at, and without, the top-level ones the test picks.
 splitTop :: (Token -> Bool) -> [Token] -> [[Token]]
 splitTop at = go (0 :: Int) []
   where
@@ -329,7 +278,6 @@ splitTop at = go (0 :: Int) []
       | tokenKind t == Close = go (depth - 1) (t : acc) ts
       | otherwise = go depth (t : acc) ts
 
--- | How a declaration is exported, if it defines a name.
 exportName :: Decl -> Maybe Text
 exportName d = case (declKind d, declKey d) of
   (DataDecl, Just key) -> Just (key <> " (..)")
@@ -337,7 +285,6 @@ exportName d = case (declKind d, declKey d) of
   (ValueDecl, Just key) -> Just key
   _ -> Nothing
 
--- | Adds LANGUAGE pragmas the file does not already enable, at the top.
 addPragmas :: [Text] -> SourceFile -> SourceFile
 addPragmas extensions sf = sf {sourceHeader = ["{-# LANGUAGE " <> e <> " #-}" | e <- missing] ++ sourceHeader sf}
   where
@@ -345,7 +292,6 @@ addPragmas extensions sf = sf {sourceHeader = ["{-# LANGUAGE " <> e <> " #-}" | 
     pragmaBody = T.replace "#-}" "" . snd . T.breakOnEnd "LANGUAGE"
     missing = nub [T.strip e | e <- extensions, T.strip e `notElem` enabled]
 
--- | Adds import lines the file does not already have, after its last import.
 addImports :: [Text] -> SourceFile -> SourceFile
 addImports imports sf
   | null missing = sf
@@ -359,13 +305,11 @@ addImports imports sf
       Just i -> i + 1 + length (takeWhile continues (drop (i + 1) hs))
       Nothing -> maybe 0 (+ 1) moduleEnd
     continues l = not (T.null l) && isSpace (T.head l)
-    -- The line with the @where@ that ends the module header.
     moduleEnd = do
       m <- findIndex ("module" `T.isPrefixOf`) hs
       (+ m) <$> findIndex (elem "where" . T.words) (drop m hs)
     spacer = if isJust lastImport || at == 0 || T.null (T.strip (hs !! (at - 1))) then [] else [""]
 
--- | The items of the module's export list, or 'Nothing' if it has none.
 exportedNames :: SourceFile -> Maybe [Text]
 exportedNames sf = do
   (open, _, close) <- exportList text
@@ -374,9 +318,6 @@ exportedNames sf = do
   where
     text = T.intercalate "\n" (sourceHeader sf)
 
--- | Adds names to the module's export list, if it has one and does not
--- already export them. A module without an export list already exports
--- everything.
 addExports :: [Text] -> SourceFile -> SourceFile
 addExports wanted sf = case (names, exportList text) of
   ([], _) -> sf
@@ -397,9 +338,6 @@ addExports wanted sf = case (names, exportList text) of
     present = maybe [] (map base) (exportedNames sf)
     names = nub [n | n <- wanted, base n `notElem` present]
 
--- | The positions of the export list's opening parenthesis, of the last
--- character before its closing parenthesis that is not whitespace or part
--- of a comment, and of the closing parenthesis.
 exportList :: Text -> Maybe (Int, Int, Int)
 exportList text = case break startsModule (zip (Nothing : map Just toks) toks) of
   (_, (_, _) : rest) -> case dropWhile name (map snd rest) of
@@ -409,7 +347,6 @@ exportList text = case break startsModule (zip (Nothing : map Just toks) toks) o
   where
     toks = tokens text
     startsModule (before, t) = isToken Word "module" t && maybe True (\b -> tokenKind b == Space && "\n" `T.isSuffixOf` tokenText b) before
-    -- The module's name, and the space and comments around it.
     name t = tokenKind t `elem` [Space, CommentToken] || (tokenKind t == Word && tokenText t /= "where") || isToken Symbol "." t
     end t = tokenStart t + T.length (tokenText t) - 1
     close _ _ _ [] = Nothing
@@ -421,12 +358,10 @@ exportList text = case break startsModule (zip (Nothing : map Just toks) toks) o
       kind | kind `elem` [Space, CommentToken] -> close open lastSig depth ts
       _ -> close open (end t) depth ts
 
--- Classifying lines
 
 classify :: [Text] -> [LineKind]
 classify = go Nothing
   where
-    -- Inside a multi-line block comment or pragma: its kind and nesting depth.
     go _ [] = []
     go (Just (kind, depth)) (l : rest) =
       let depth' = depth + opens l - closes l
@@ -461,10 +396,7 @@ lineComment l = case T.stripPrefix "--" l of
 isSymbol :: Char -> Bool
 isSymbol c = c `elem` ("!#$%&*+./<=>?@\\^|-~:" :: String)
 
--- Describing chunks
 
--- | A chunk: the comments above a column-0 line of code, the line, and
--- everything up to the next chunk.
 describe :: [(Text, LineKind)] -> Decl
 describe chunkLines = Decl kind key (map fst chunkLines) headLength
   where
@@ -479,8 +411,6 @@ describe chunkLines = Decl kind key (map fst chunkLines) headLength
       Just i | isEquation -> i
       _ -> length chunkLines
 
--- | Joins a signature with the equations after it, and the equations of one
--- function, into one declaration.
 mergeChunks :: [Decl] -> [Decl]
 mergeChunks (a : b : rest)
   | isJust (declKey a) && declKey a == declKey b && declKind a == declKind b =
@@ -492,8 +422,6 @@ mergeChunks (a : b : rest)
 mergeChunks (a : rest) = a : mergeChunks rest
 mergeChunks [] = []
 
--- | The kind and key of a declaration from its first line of code and the
--- indented lines after it, and whether that line starts an equation.
 codeInfo :: Text -> (DeclKind, Maybe Text, Bool)
 codeInfo code = case T.words code of
   "data" : "family" : rest -> (TypeDecl, typeName rest, False)
@@ -514,7 +442,6 @@ codeInfo code = case T.words code of
       Just name -> (ValueDecl, Just name, True)
       Nothing -> (OtherDecl, Nothing, False)
 
--- | The declared type or class name, after any context.
 typeName :: [Text] -> Maybe Text
 typeName ws = case T.words (afterContext (T.unwords (takeWhile (`notElem` ["=", "where", "::"]) ws))) of
   w : _ -> case T.filter (`notElem` ("()" :: String)) w of
@@ -522,7 +449,6 @@ typeName ws = case T.words (afterContext (T.unwords (takeWhile (`notElem` ["=", 
     _ -> Nothing
   [] -> Nothing
 
--- | The instance head after @instance@ and any context, without @where@.
 instanceHead :: Text -> Text
 instanceHead code = collapse (afterContext (T.strip (stripWhere (snd (T.breakOnEnd "instance " code)))))
   where
@@ -535,7 +461,6 @@ afterContext t = case T.breakOn "=>" t of
   (_, rest) | not (T.null rest) -> T.strip (T.drop 2 rest)
   _ -> t
 
--- | The names in a type signature: @f, g :: ...@ or @(<+>) :: ...@.
 signatureNames :: Text -> Maybe [Text]
 signatureNames code = case T.breakOn "::" code of
   (before, rest)
@@ -546,8 +471,6 @@ signatureNames code = case T.breakOn "::" code of
         Just names
   _ -> Nothing
 
--- | The function an equation defines: @f x = ...@, @x <+> y = ...@,
--- @x \`f\` y = ...@ or @(<+>) x y = ...@.
 equationName :: Text -> Maybe Text
 equationName code
   | not (any (`elem` ["=", "|"]) ws) = Nothing
@@ -569,10 +492,6 @@ isVariable name = case T.uncons name of
   where
     keywords = ["case", "do", "if", "let", "of", "then", "else", "in", "where"]
 
--- | The identifiers code uses without binding them, line by line: not the
--- names an equation's left side, a lambda or a @<-@ binds, nor those a
--- column-0 signature declares. A heuristic, so that a local variable is not
--- taken for a use of a function of the same name.
 freeNames :: Text -> [Text]
 freeNames code = nub [w | w <- concatMap (words' . snd) lines', w `notElem` concatMap bound lines']
   where
@@ -592,12 +511,9 @@ freeNames code = nub [w | w <- concatMap (words' . snd) lines', w `notElem` conc
       _ -> []
     separates t = isToken Symbol "|" t || isToken Punctuation "," t || tokenKind t == Open
 
--- | The capitalised names in code: its types, classes and constructors,
--- unqualified.
 typeNames :: Text -> [Text]
 typeNames code = nub [w | t <- tokens code, tokenKind t == Word, let w = tokenText t, maybe False (isUpper . fst) (T.uncons w)]
 
--- | A character that can follow the first one in an identifier.
 isIdentChar :: Char -> Bool
 isIdentChar c = isAlphaNum c || c == '_' || c == '\''
 
@@ -606,9 +522,7 @@ isOperatorName name = case T.stripPrefix "(" name >>= T.stripSuffix ")" of
   Just op -> not (T.null op) && T.all isSymbol op
   Nothing -> False
 
--- Helpers
 
--- | The blank lines and column-0 comments after a declaration's last line of code.
 trailing :: Decl -> [Text]
 trailing d = reverse (takeWhile loose (reverse (declLines d)))
   where

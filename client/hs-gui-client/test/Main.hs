@@ -6,7 +6,8 @@ module Main (main) where
 import Client (NetworkEvent (..), ClientTask (..))
 import Client.Settings
 import Client.Commands (Command (..), parseCommand)
-import Core
+import Core hiding (Chat)
+import MotionTests (motionTests)
 import Data.Either (isLeft)
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
@@ -29,10 +30,19 @@ project = "/project"
 
 -- | The state after typing a draft.
 typed :: T.Text -> UI -> UI
-typed value = fst . update project (Edited value)
+typed value = chat (Edited value)
 
 act :: Action -> UI -> UI
 act action = fst . update project action
+
+chat :: ChatAction -> UI -> UI
+chat action = fst . applyChat action
+
+applyChat :: ChatAction -> UI -> (UI, Maybe ClientTask)
+applyChat action ui = update project (Chat (currentChatId ui) action) ui
+
+ack :: UI -> UI
+ack ui = maybe ui (\expected -> chat (Replaced expected) ui) (replacement ui)
 
 -- | A draft that is neither blank nor a command.
 newtype Requirement' = Requirement' T.Text
@@ -43,7 +53,7 @@ instance Arbitrary Requirement' where
 
 prop_sendStartsRunAndClears :: Requirement' -> Bool
 prop_sendStartsRunAndClears (Requirement' value) =
-  let (ui, started) = update project Send (typed value initialUI)
+  let (ui, started) = applyChat Send (typed value initialUI)
    in started == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement value))))
         && waiting ui
         && draft ui == ""
@@ -54,37 +64,113 @@ prop_sendStartsRunAndClears (Requirement' value) =
 
 prop_sendWhileWaitingKeepsDraft :: Requirement' -> Requirement' -> Bool
 prop_sendWhileWaitingKeepsDraft (Requirement' first) (Requirement' second) =
-  let busy = typed second (act Replaced (act Send (typed first initialUI)))
-      (ui, started) = update project Send busy
+  let busy = typed second (ack (chat Send (typed first initialUI)))
+      (ui, started) = applyChat Send busy
    in isNothing started && ui == busy
 
 prop_blankDraftSendsNothing :: Property
 prop_blankDraftSendsNothing =
   forAll (T.pack <$> listOf (elements " \n\t")) $ \blank ->
-    let ui = typed blank initialUI in update project Send ui == (ui, Nothing)
+    let ui = typed blank initialUI in applyChat Send ui == (ui, Nothing)
 
 prop_disconnectedSendsNothing :: Requirement' -> Bool
 prop_disconnectedSendsNothing (Requirement' value) =
-  isNothing (snd (update project Send (typed value (act (Network (Disconnected "gone")) initialUI))))
+  isNothing (snd (applyChat Send (typed value (act (Network (Disconnected "gone")) initialUI))))
+
+-- | The socket belongs to the window, so neither a fresh chat nor returning
+-- to an existing chat can restore a lost connection.
+prop_disconnectionSurvivesNavigation :: Requirement' -> [Bool] -> Bool
+prop_disconnectionSurvivesNavigation (Requirement' value) navigation =
+  let first = chat Send (typed "first" initialUI)
+      second = chat Send (typed "second" (ack (act NewChat first)))
+      disconnected = act (Network (Disconnected "gone")) second
+      actions = [NewChat, SelectChat 0, SelectChat 1]
+        ++ map (\new -> if new then NewChat else SelectChat 0) navigation
+      visited = scanl (flip act) disconnected actions
+      blocked state =
+        let drafting = typed value (ack state)
+        in failure drafting == Just "gone"
+             && status drafting == Offline "gone"
+             && not (waiting drafting)
+             && not (canSend drafting)
+             && applyChat Send drafting == (drafting, Nothing)
+  in all blocked visited
+
+-- | Quit is an application request even when another action in the same
+-- frame changes the selected conversation.
+prop_exitSurvivesNavigation :: [Bool] -> Bool
+prop_exitSurvivesNavigation navigation =
+  let base = ack (act NewChat initialUI)
+      actions = [NewChat, SelectChat 0, SelectChat 1]
+        ++ map (\new -> if new then NewChat else SelectChat 0) navigation
+      exiting = [act Exit base, chat Send (typed "/quit" base)]
+      stopped state =
+        let drafting = typed "after quit" (ack state)
+        in quitting drafting && not (canSend drafting)
+             && applyChat Send drafting == (drafting, Nothing)
+  in all (all stopped . (\state -> scanl (flip act) state actions)) exiting
+
+-- | Navigation and the old composer's acknowledgement can arrive in the
+-- same frame. Edits, scroll acknowledgements and submission retain their
+-- originating chat rather than affecting the newly selected draft.
+prop_chatActionsStayWithOrigin :: Requirement' -> Bool
+prop_chatActionsStayWithOrigin (Requirement' value) =
+  let firstChoice = ModelChoice (OpenAIModel "first") "First" (Just "first-account")
+      secondChoice = ModelChoice (OpenAIModel "second") "Second" (Just "second-account")
+      base = act (Network (SettingsLoaded (SettingsSnapshot [] [firstChoice, secondChoice] Nothing))) State.initialUI
+      sent = chat Send (typed "previous message" base)
+      recalled = chat (Recall Older) (act (Network (ForChat 0 TurnDone)) (ack sent))
+      actions = [NewChat, Chat 1 (ChooseModel secondChoice), Chat 0 (Replaced "previous message"),
+                 Chat 0 (Edited value), Chat 0 (ScrollTo PageUp), Chat 0 Scrolled]
+      (edited, editingTasks) = updateAll project actions recalled
+      restored = act (SelectChat 0) edited
+      (submitted, submissionTasks) = updateAll project (actions ++ [Chat 0 Send]) recalled
+      submittedOrigin = act (SelectChat 0) submitted
+  in null editingTasks && currentChatId edited == 1
+       && draft edited == "" && replacement edited == Just ""
+       && selectedChoice edited == Just secondChoice && null (runs edited)
+       && draft restored == value && selectedChoice restored == Just firstChoice
+       && isNothing (scrollRequest edited)
+       && submissionTasks == [SendToServer (StartChat 0 (choiceModel firstChoice) (choiceAccount firstChoice) (StartRun project (Requirement value)))]
+       && currentChatId submitted == 1 && replacement submitted == Just ""
+       && not (waiting submitted) && null (runs submitted)
+       && waiting submittedOrigin && draft submittedOrigin == ""
+       && map requirement (runs submittedOrigin) == [Requirement value, Requirement "previous message"]
+
+prop_backgroundSendChecksApplicationState :: Requirement' -> Bool
+prop_backgroundSendChecksApplicationState (Requirement' value) =
+  let ready = typed value initialUI
+      unavailable = act (Network (ServerModels [])) ready
+      cases = [act (Network (Disconnected "gone")) ready, act Exit ready,
+               chat Send ready, unavailable]
+      submit state = snd (updateAll project
+        [NewChat, Chat 0 (Replaced ""), Chat 0 (Edited value), Chat 0 Send] state)
+  in all (null . submit) cases
+
+prop_reopeningSettingsPreservesLogin :: Bool
+prop_reopeningSettingsPreservesLogin =
+  let (reopened, started) = updateAll project [ConnectOpenAI False, CloseSettings, OpenSettings] initialUI
+  in settingsOpen reopened && settingsBusy reopened && started == [SignIn False]
+       && snd (update project OpenSettings initialUI) == Just RefreshSettings
 
 prop_commands :: Bool
 prop_commands =
-  let listed = act Send (typed " /tools " initialUI)
+  let listed = chat Send (typed " /tools " initialUI)
    in showingTools listed
         && null (runs listed)
         && draft listed == ""
-        && not (showingTools (act CloseTools listed))
-        && quitting (act Send (typed "/quit" initialUI))
+        && not (showingTools (chat CloseTools listed))
+        && quitting (chat Send (typed "/quit" initialUI))
         && parseCommand "/Tools" == RunRequirement (Requirement "/Tools")
 
 -- | Recalling every sent message and coming back restores the draft.
 prop_recallRestoresDraft :: [Requirement'] -> T.Text -> Bool
 prop_recallRestoresDraft sent unsent =
-  let afterSending = foldl (\ui (Requirement' value) -> act (Network TurnDone) (act Send (typed value (act Replaced ui)))) initialUI sent
-      drafting = act Replaced (typed unsent (act Replaced afterSending))
-      olders = iterate (act Replaced . act (Recall Older)) drafting
+  let afterSending = foldl (\ui (Requirement' value) -> act (Network TurnDone) (chat Send (typed value (ack ui)))) initialUI sent
+      drafting = ack (typed unsent (ack afterSending))
+      olders = iterate (ack . chat (Recall Older)) drafting
       oldest = olders !! length sent
-      back = iterate (act Replaced . act (Recall Newer)) oldest !! length sent
+      back = iterate (ack . chat (Recall Newer)) oldest !! length sent
    in draft back == unsent
         && case sent of
           [] -> draft oldest == unsent
@@ -92,12 +178,27 @@ prop_recallRestoresDraft sent unsent =
 
 prop_editsIgnoredUntilReplaced :: T.Text -> Bool
 prop_editsIgnoredUntilReplaced stale =
-  let cleared = act Send (typed "x" initialUI)
-   in draft (typed stale cleared) == "" && draft (typed stale (act Replaced cleared)) == stale
+  let cleared = chat Send (typed "x" initialUI)
+   in draft (typed stale cleared) == "" && draft (typed stale (ack cleared)) == stale
+
+-- | The composer can acknowledge last frame's replacement after a shortcut
+-- requests an older message. That acknowledgement must not clear the new
+-- replacement or let the composer's stale text overwrite it.
+prop_staleReplacementAcknowledgement :: Bool
+prop_staleReplacementAcknowledgement =
+  let older = act (Network (ForChat 0 TurnDone)) (chat Send (typed "older" initialUI))
+      newer = act (Network (ForChat 0 TurnDone)) (chat Send (typed "newer" (ack older)))
+      recalled = chat (Recall Older) (ack newer)
+      (next, started) = updateAll project
+        [Chat 0 (Recall Older), Chat 0 (Replaced "newer"), Chat 0 (Edited "newer")] recalled
+      editable = typed "edited older" (ack next)
+  in null started && draft next == "older" && replacement next == Just "older"
+       && historyIndex next == Just 1
+       && draft editable == "edited older" && isNothing (replacement editable)
 
 prop_runChangedReplacesLatest :: Requirement' -> Bool
 prop_runChangedReplacesLatest (Requirement' value) =
-  let sent = act Send (typed value initialUI)
+  let sent = chat Send (typed value initialUI)
       progressed = setStep DesignTypes Running (newRun (Requirement value))
       ui = act (Network (RunChanged progressed)) sent
    in runs ui == [progressed]
@@ -107,8 +208,8 @@ prop_runChangedReplacesLatest (Requirement' value) =
 
 prop_scrollRequestsClear :: Bool
 prop_scrollRequestsClear =
-  let ui = act (ScrollTo PageUp) initialUI
-   in scrollRequest ui == Just PageUp && isNothing (scrollRequest (act Scrolled ui))
+  let ui = chat (ScrollTo PageUp) initialUI
+   in scrollRequest ui == Just PageUp && isNothing (scrollRequest (chat Scrolled ui))
 
 -- | A run that ends says so, and one that fails says where.
 prop_runSummary :: Bool
@@ -137,16 +238,24 @@ main :: IO ()
 main = do
   results <-
     sequence
-      [ check "chats retain independent models, drafts and background updates" prop_chatIsolation,
+      [ motionTests,
+        check "chats retain independent models, drafts and background updates" prop_chatIsolation,
+        check "sidebar history contains only chats that have started" prop_historyContainsOnlyStartedChats,
         check "a model must be available before sending" prop_modelRequired,
         check "run errors allow retry without losing the connection" prop_runFailureRecoverable,
         check "sending starts a run and clears the draft" prop_sendStartsRunAndClears,
         check "sending while a run is in progress keeps the draft" prop_sendWhileWaitingKeepsDraft,
         check "a blank draft sends nothing" prop_blankDraftSendsNothing,
         check "nothing is sent once disconnected" prop_disconnectedSendsNothing,
+        check "disconnection survives new chats and chat switching" prop_disconnectionSurvivesNavigation,
+        check "quit survives new chats and chat switching" prop_exitSurvivesNavigation,
+        check "batched component actions retain their originating chat" prop_chatActionsStayWithOrigin,
+        check "background sends respect application and chat availability" prop_backgroundSendChecksApplicationState,
+        check "reopening settings preserves an in-flight login" prop_reopeningSettingsPreservesLogin,
         check "/tools and /quit" prop_commands,
         check "recall goes back through sent messages and restores the draft" prop_recallRestoresDraft,
         check "edits are ignored until a replacement is shown" prop_editsIgnoredUntilReplaced,
+        check "stale composer acknowledgements preserve newly recalled text" prop_staleReplacementAcknowledgement,
         check "a run update replaces the latest run" prop_runChangedReplacesLatest,
         check "scroll requests clear once made" prop_scrollRequestsClear,
         check "run summaries" prop_runSummary,
@@ -164,25 +273,46 @@ prop_chatIsolation :: Bool
 prop_chatIsolation =
   let choices = [ModelChoice (OpenAIModel "first") "First" (Just "account"), ModelChoice (OpenAIModel "second") "Second" (Just "account")]
       base = act (Network (SettingsLoaded (SettingsSnapshot [] choices Nothing))) initialUI
-      first = act (ChooseModel (head choices)) base
-      sent = act Send (typed "first requirement" first)
-      second = act Replaced (act NewChat sent)
-      picked = typed "unsent in second" (act (ChooseModel (choices !! 1)) second)
+      first = chat (ChooseModel (head choices)) base
+      sent = chat Send (typed "first requirement" first)
+      second = ack (act NewChat sent)
+      picked = typed "unsent in second" (chat (ChooseModel (choices !! 1)) second)
       progressed = setStep DesignTypes Running (newRun (Requirement "first requirement"))
       updated = act (Network (ForChat 0 (RunChanged progressed))) picked
       finished = act (Network (ForChat 0 TurnDone)) updated
-      restored = act Replaced (act (SelectChat 0) finished)
-      returned = act Replaced (act (SelectChat 1) restored)
+      restored = ack (act (SelectChat 0) finished)
+      returned = ack (act (SelectChat 1) restored)
    in null (runs finished) && draft finished == "unsent in second" && not (waiting finished)
         && selectedChoice restored == Just (head choices) && runs restored == [progressed] && not (waiting restored)
         && selectedChoice returned == Just (choices !! 1) && draft returned == "unsent in second"
 
+-- | Drafts are retained without becoming sidebar history. Starting a run
+-- makes the originating chat visible even while a different draft is open.
+prop_historyContainsOnlyStartedChats :: Requirement' -> Requirement' -> Bool
+prop_historyContainsOnlyStartedChats (Requirement' first) (Requirement' second) =
+  let drafted = typed first initialUI
+      fresh = typed second (ack (act NewChat drafted))
+      started = chat Send fresh
+      background = typed "another draft" (ack (act NewChat started))
+      (bothStarted, outgoing) = update project (Chat 0 Send) background
+      finished = act (Network (ForChat 0 TurnDone)) bothStarted
+      expectedChoice = selectedChoice initialUI
+  in null (chatSummaries State.initialUI) && null (chatSummaries initialUI)
+       && null (chatSummaries drafted) && null (chatSummaries fresh)
+       && draft (act (SelectChat 0) fresh) == first
+       && chatSummaries started == [(1, second, expectedChoice, True)]
+       && chatSummaries background == chatSummaries started
+       && outgoing == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement first))))
+       && currentChatId bothStarted == 2 && draft bothStarted == "another draft"
+       && chatSummaries bothStarted == [(1, second, expectedChoice, True), (0, first, expectedChoice, True)]
+       && chatSummaries finished == [(1, second, expectedChoice, True), (0, first, expectedChoice, False)]
+
 prop_modelRequired :: Bool
 prop_modelRequired =
   let ui = typed "requirement" State.initialUI
-   in not (canSend ui) && isNothing (snd (update project Send ui))
+   in not (canSend ui) && isNothing (snd (applyChat Send ui))
 
 prop_runFailureRecoverable :: Bool
 prop_runFailureRecoverable =
-  let failed = act Replaced (act (Network (ForChat 0 (RunFailed "limit reached"))) (act Send (typed "first" initialUI)))
+  let failed = ack (act (Network (ForChat 0 (RunFailed "limit reached"))) (chat Send (typed "first" initialUI)))
    in isNothing (failure failed) && runError failed == Just "limit reached" && canSend (typed "retry" failed)

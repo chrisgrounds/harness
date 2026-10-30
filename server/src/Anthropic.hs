@@ -1,12 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Claude through the Anthropic Messages API.
---
--- Claude's thinking blocks are bound to the conversation that produced
--- them, so a chat must only ever grow: every reply is kept exactly as the
--- API sent it ('providerContent') and sent back unchanged, and a chat's
--- system prompt and tools must not change between requests.
 module Anthropic (anthropicLlm, requestBody, betas, replyMessage) where
 
 import Control.Monad.IO.Class (liftIO)
@@ -26,7 +20,6 @@ import Network.HTTP.Client (responseStatus)
 import Network.HTTP.Req
 import Network.HTTP.Types (statusCode)
 
--- | Sends the chat to Claude and returns it with Claude's reply added.
 anthropicLlm :: Text -> Chat -> IO Chat
 anthropicLlm apiKey chat = do
   start <- getMonotonicTimeNSec
@@ -39,7 +32,6 @@ anthropicLlm apiKey chat = do
       ( header "x-api-key" (TE.encodeUtf8 apiKey)
           <> header "anthropic-version" "2026-10-21"
           <> header "anthropic-beta" (B.intercalate "," (betas (model chat)))
-          -- Thinking at high effort can take minutes.
           <> responseTimeout (10 * 60 * 1000000)
       )
   end <- liftIO getMonotonicTimeNSec
@@ -49,8 +41,6 @@ anthropicLlm apiKey chat = do
       let seconds = fromIntegral (end - start) / 1e9 :: Double
        in pure (addMessage message {tokensPerSecond = Just (fromIntegral outputTokens / seconds)} chat)
   where
-    -- Retries rate limits, overload and server errors with backoff;
-    -- anything else is thrown with the API's error message.
     config =
       defaultHttpConfig
         { httpConfigRetryJudge = \_ r -> retryable (statusCode (responseStatus r)),
@@ -58,9 +48,6 @@ anthropicLlm apiKey chat = do
         }
     retryable code = code `elem` [408, 409, 429] || code >= 500
 
--- | The beta features a request uses: dropping, rather than rejecting,
--- thinking blocks the API can no longer use, and on Opus and Sonnet the
--- server-side fallback when a safety classifier declines a request.
 betas :: Model -> [B.ByteString]
 betas m = "thinking-binding-controls-2026-08-01" : ["server-side-fallback-2026-07-01" | hasFallbacks m]
 
@@ -75,7 +62,6 @@ requestBody chat =
       "messages" .= conversation (reverse (messages chat)),
       "thinking" .= object ["type" .= ("adaptive" :: Text), "block_binding" .= object ["prefix_mismatch_behavior" .= ("drop_block" :: Text)]],
       "output_config" .= object ["effort" .= ("high" :: Text)],
-      -- Caches the conversation so far; each request repeats all of it.
       "cache_control" .= object ["type" .= ("ephemeral" :: Text)]
     ]
       ++ ["system" .= T.intercalate "\n\n" system | not (null system)]
@@ -92,9 +78,6 @@ requestBody chat =
               "input_schema" .= toolFunctionParameters f
             ]
 
--- | The chat's messages, oldest first, as alternating user and assistant
--- turns. Tool results and any user text after them share a user turn, and
--- assistant replies are sent back as they were received.
 conversation :: [Message] -> [Value]
 conversation ms = [object ["role" .= r, "content" .= blocks] | (r, blocks) <- merge (filter (not . null . snd) (mapMaybe turn ms))]
   where
@@ -121,8 +104,6 @@ conversation ms = [object ["role" .= r, "content" .= blocks] | (r, blocks) <- me
     merge (t : rest) = t : merge rest
     merge [] = []
 
--- | The assistant message in a Messages API response, and the number of
--- tokens it took. A refusal becomes a message saying so, with no tool calls.
 replyMessage :: Value -> Parser (Message, Int)
 replyMessage = withObject "message" $ \o -> do
   blocks <- o .: "content"

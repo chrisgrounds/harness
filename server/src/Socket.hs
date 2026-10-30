@@ -23,8 +23,6 @@ import System.Timeout (timeout)
 
 type Handler = Model -> Maybe (IO Text) -> (ServerEvent -> IO ()) -> StartRun -> IO ()
 
--- Runs are serialized because they can edit the same working tree. Socket
--- reads remain live while a run waits for client-owned credential refreshes.
 serve :: FilePath -> Model -> [Model] -> Handler -> IO ()
 serve path model available handle = do
   projectLock <- newMVar ()

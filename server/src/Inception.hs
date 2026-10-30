@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Mercury through Inception's OpenAI-style chat completions API.
 module Inception (inceptionLlm, completionReply) where
 
 import Core
@@ -12,7 +11,6 @@ import qualified Data.Text.Encoding as TE
 import GHC.Clock (getMonotonicTimeNSec)
 import Network.HTTP.Req
 
--- | Sends the chat to Mercury and returns it with Mercury's reply added.
 inceptionLlm :: Text -> Chat -> IO Chat
 inceptionLlm apiKey chat = do
   start <- getMonotonicTimeNSec
@@ -21,7 +19,6 @@ inceptionLlm apiKey chat = do
       req
         POST
         (https "api.inceptionlabs.ai" /: "v1" /: "chat" /: "completions")
-        -- The chat keeps its newest message first; the API wants them in order.
         (ReqBodyJson chat {messages = reverse (messages chat)})
         jsonResponse
         (header "Authorization" ("Bearer " <> TE.encodeUtf8 apiKey))
@@ -33,8 +30,6 @@ inceptionLlm apiKey chat = do
       let seconds = fromIntegral (end - start) / 1e9 :: Double
        in pure (addMessage message {tokensPerSecond = Just (fromIntegral tokens / seconds)} chat)
 
--- | The first choice's message, if there is one, and the number of tokens
--- the completion took.
 completionReply :: Value -> Parser (Maybe (Message, Int))
 completionReply = withObject "completion" $ \o -> do
   tokens <- o .: "usage" >>= (.: "completion_tokens")

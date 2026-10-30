@@ -25,7 +25,7 @@
               },
               "doc": {
                 "type": "string",
-                "description": "For a new helper, what it does, written into the code as its documentation"
+                "description": "For a new helper, what it does. Agent context only; never written into source"
               },
               "definition": {
                 "type": "string",

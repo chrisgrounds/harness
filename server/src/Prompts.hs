@@ -30,8 +30,8 @@ designSystemPrompt =
       "You never implement functions. After design, each function is implemented by a separate agent that sees only its module, the design, its signature and documentation, and the properties. So:",
       "- Make the types as precise as possible: newtypes for distinct values, sum types for alternatives, no stringly-typed data. An implementer must be able to rely on the types alone.",
       "- Prefer small pure functions; keep IO at the edges and only where the requirement needs it.",
-      "- Write each function's documentation precisely enough to implement from it and the types alone. It becomes the function's documentation in the code,",
-      "  so describe what the function does, never how it changed; for a changed existing function, say what to change in its separate change note.",
+      "- Write each function's documentation precisely enough to implement from it and the types alone. It is agent context only and is never written into the code.",
+      "  Describe what the function does; for a changed existing function, say what to change in its separate change note. Existing source comments are preserved.",
       "- Express every invariant the types cannot capture as a property.",
       "Existing functions that stop type checking because of your changes are found and repaired automatically, keeping their signatures.",
       "Use ReadFile, ListFiles and RipGrep to understand the existing code before designing, and reuse its types where they fit.",
@@ -61,8 +61,8 @@ functionsInstruction run =
   T.unlines $
     [ "Step 2: functions. Call SetFunctions with every function to add or change, each with its module (from step 1),",
       "its name, its signature (the type only), documentation stating exactly what it does, and, for an existing function, a change note.",
-      "The documentation is written into the code, so it describes the function as it will be, not the change; leave it empty to keep an",
-      "existing function's documentation. The change note tells the function's implementer what to change and is never written into the code.",
+      "The documentation is agent context only and is never written into the code; existing source comments are preserved.",
+      "Describe the function as it will be. The separate change note tells its implementer what to change and is never written into the code.",
       "Naming an existing function in its module replaces it: its implementer sees the previous definition.",
       "Include existing functions whose behaviour must change even if their signature does not. Leave out functions that stay as they are.",
       "Functions may use each other. Do not implement them."
@@ -90,7 +90,6 @@ propertiesInstruction =
       "Properties may only use the types and the functions from step 2, and existing code."
     ]
 
--- | Prepended to a design step's instruction when a previous attempt failed.
 revisionNote :: Int -> Text -> Text
 revisionNote iterationNumber feedback =
   T.unlines
@@ -100,8 +99,6 @@ revisionNote iterationNumber feedback =
       ""
     ]
 
--- | Why a skeleton cannot be repaired: existing functions whose signatures
--- no longer type check.
 brokenSignaturesNote :: [FunctionRef] -> Text
 brokenSignaturesNote refs =
   T.unlines
@@ -111,7 +108,6 @@ brokenSignaturesNote refs =
       "Add them to SetFunctions with new signatures, or keep the design compatible with them."
     ]
 
--- | Asks a design step to fix the skeleton errors in what it wrote.
 fixUpInstruction :: ToolName -> Text -> Text
 fixUpInstruction tool errors =
   T.unlines
@@ -125,8 +121,6 @@ fixUpInstruction tool errors =
       SetFunctions -> "functions"
       _ -> "properties"
 
--- | Asks for the run's functions to be checked against the requirement, and
--- for gaps and duplication to be refactored away.
 reviewInstruction :: Requirement -> [ModulePlan] -> [ComponentName] -> [(ModuleName, [FunctionSpec])] -> Text
 reviewInstruction req plans untouched written =
   T.unlines $

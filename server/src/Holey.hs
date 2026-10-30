@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Runs a requirement through the holey steps.
 module Holey (Config (..), OnFailure (..), runHoley) where
 
 import Agent (Llm, runAgent)
@@ -38,7 +37,6 @@ data Config = Config
     onFailure :: OnFailure
   }
 
--- | What happens to the changes of a run that does not finish.
 data OnFailure
   = Keep
   | Revert
@@ -46,27 +44,20 @@ data OnFailure
 
 data Env = Env
   { config :: Config,
-    -- | The user's project, where files are read and written.
     projectRoot :: FilePath,
     progress :: Progress,
     project :: ProjectInfo,
     originals :: Originals,
-    -- | Where every build's output is kept, so a failed run can be diagnosed.
     buildLog :: FilePath
   }
 
--- | The steps of a run, which read its environment.
 type Holey = ReaderT Env IO
 
--- | Stops the run once the reason is recorded on it.
 data Stopped = Stopped
   deriving (Show)
 
 instance Exception Stopped
 
--- | Runs the requirement. A run that does not finish, because a step failed,
--- it gave up or something went wrong, keeps or reverts its changes as
--- 'onFailure' says.
 runHoley :: Config -> FilePath -> Progress -> IO ()
 runHoley cfg root prog = do
   origs <- newOriginals
@@ -106,8 +97,6 @@ runHoley cfg root prog = do
         Right paths -> addHistory ("The run did not finish, so its changes to " <> T.pack (show (length paths)) <> " files were undone.") . (\r -> r {touchedFiles = []})
         Left err -> addWarning ("Could not undo the run's changes: " <> T.pack (displayException (err :: SomeException)))
 
--- | Each stage records its result on the run. Failed verifications loop back
--- as 'decide' says; any other failure stops the run.
 pipeline :: Holey ()
 pipeline = do
   req <- requirement <$> getRun
@@ -123,8 +112,6 @@ pipeline = do
       chat3 <- designStep WriteProperties SetProperties propertiesInstruction chat2
       verify typesStep chat3 maxFixUps
 
-    -- Errors in what one design step wrote go back to that step, up to
-    -- 'maxFixUps' times; anything else, or more, is a redesign.
     verify :: Text -> Chat -> Int -> Holey ()
     verify typesStep chat fixUps = do
       skeleton <- checkSkeleton
@@ -186,11 +173,9 @@ pipeline = do
           modifyRun (restartFrom Implement)
           build typesStep chat (failedChecks outcome) work
 
--- | Skeleton errors sent back to a design step before the run redesigns.
 maxFixUps :: Int
 maxFixUps = 3
 
--- | A line of the run's history about an iteration.
 atIteration :: Int -> Text -> Text
 atIteration n text = "Iteration " <> T.pack (show n) <> ": " <> text
 
@@ -200,20 +185,15 @@ getRun = asks progress >>= liftIO . readRun
 modifyRun :: (Run -> Run) -> Holey ()
 modifyRun f = asks progress >>= \p -> liftIO (update p f)
 
--- | Applies a change to the run that may be rejected.
 tryModifyRun :: (Run -> Either Text Run) -> Holey (Either Text ())
 tryModifyRun f = asks progress >>= \p -> liftIO (tryUpdate p f)
 
--- | Adds a line to the run's history.
 note :: Text -> Holey ()
 note = modifyRun . addHistory
 
--- | Marks the step failed and stops the run.
 stop :: Step -> Text -> Holey a
 stop step reason = modifyRun (setStep step (Failed reason)) >> liftIO (throwIO Stopped)
 
--- | Runs a verification step: running, then passed, or failed with a
--- description of what went wrong.
 inStep :: Step -> (e -> Text) -> Holey (Either e a) -> Holey (Either e a)
 inStep step describe action = do
   modifyRun (setStep step Running)
@@ -227,11 +207,6 @@ functionRefs = map fnRef . functions . artefact <$> getRun
 definitionsFor :: [ToolName] -> Holey [ToolDefinition]
 definitionsFor names = asks (\env -> map (toolDefinitions (config env)) names)
 
--- | Runs one design step in the shared design conversation. The step passes
--- once the model's call to the step's tool is accepted. Every step offers
--- the same tools, and 'designTool' refuses the other steps' ones, so the
--- conversation only ever grows: Claude's thinking is bound to what came
--- before it, and an unchanged prefix stays cached.
 designStep :: Step -> ToolName -> Text -> Chat -> Holey Chat
 designStep step tool instruction chat = do
   modifyRun (setStep step Running)
@@ -241,13 +216,9 @@ designStep step tool instruction chat = do
     then modifyRun (setStep step Passed) >> pure final
     else stop step ("The model did not call " <> toolNameText tool <> ".")
 
--- | The tools the design conversation offers at every step, the review's
--- included.
 designTools :: [ToolName]
 designTools = [ReadFile, ListFiles, RipGrep, SetTypes, SetFunctions, SetProperties, Refactor, RequirementNotMet]
 
--- | What a tool call did: answered the model, or tried to record the step's
--- result, which was rejected with a reason or accepted.
 data ToolReply = Answer Text | Recorded (Either Text ())
 
 designTool :: ToolName -> ToolRequest -> Holey ToolReply
@@ -270,8 +241,6 @@ designTool tool request = do
     args = toolRequestFunctionParamsArguments function
     unavailable = toolNameText name <> " is not available in this step."
 
--- | Finds each module on disk: a module that exists is changed, any other is
--- created. Existing modules are read now, before the run writes anything.
 setTypes :: TypesArgs -> Holey (Either Text ())
 setTypes args = do
   Env {projectRoot = root, project = info, originals = origs} <- ask
@@ -286,7 +255,6 @@ setTypes args = do
             { planComponent = componentName c,
               planModule = name,
               planPath = fromMaybe (modulePath c name) located,
-              -- A module this run created earlier is still new.
               planIsNew = isNothing before,
               planExtensions = argExtensions arg,
               planImports = argImports arg,
@@ -318,11 +286,6 @@ setFunctions args = do
       ]
   tryModifyRun (applyFunctions offered (`Map.lookup` Map.fromList previous) args)
 
--- | Builds the skeleton. Existing functions and instances it breaks become
--- holes to repair, a changed function whose old equations do not fit its
--- new signature becomes @undefined@, and it is built again. Other errors
--- are returned with the design step that wrote the code they are in, if
--- one did.
 checkSkeleton :: Holey (Either (Text, Maybe ToolName) ())
 checkSkeleton = inStep CheckSkeleton (brief . fst) (attempt (1 :: Int))
   where
@@ -350,8 +313,6 @@ checkSkeleton = inStep CheckSkeleton (brief . fst) (attempt (1 :: Int))
                   feedback = (if null stuck then "" else brokenSignaturesNote stuck <> "\n") <> summarise output
               pure (Left (feedback, owningStep cs (artefact run) blamed))
 
--- | Builds the implementation. Errors are blamed on the functions they are
--- in; existing functions that break become repairs.
 typeCheck :: Holey (Either ([(FunctionRef, Text)], [Text]) ())
 typeCheck = inStep TypeCheck (\(attributed, rest) -> brief (T.unlines (map snd attributed ++ rest))) $ do
   built <- writeAndBuild TypeCheck
@@ -368,11 +329,9 @@ typeCheck = inStep TypeCheck (\(attributed, rest) -> brief (T.unlines (map snd a
           rest = if null attributed && null unblamed then [summarise output] else unblamed
       pure (Left (attributed, rest))
 
--- | Writes the artefact and builds every package with its test suites.
 writeAndBuild :: Step -> Holey (Either Text ())
 writeAndBuild step = writeFiles >>= either (stop step) (const (buildProject step))
 
--- | Writes every file in the plan.
 writeFiles :: Holey (Either Text ())
 writeFiles = do
   run <- getRun
@@ -380,8 +339,6 @@ writeFiles = do
   written <- liftIO (writeArtefact root (components info) origs run)
   traverse (\touched -> modifyRun (\r -> r {touchedFiles = touched})) written
 
--- | Builds every package with its test suites, keeping the output in the
--- build log.
 buildProject :: Step -> Holey (Either Text ())
 buildProject step = do
   root <- asks projectRoot
@@ -394,9 +351,6 @@ buildProject step = do
       <> "\n"
   pure (() <$ built)
 
--- | Blames each error in build output on where it is in the files as
--- written, with the file it is in. An instance the run declared in step 1
--- is the design's, not one to repair.
 blameErrors :: Text -> Holey [(GhcError, Maybe FilePath, Blame)]
 blameErrors output = do
   run <- getRun
@@ -416,10 +370,6 @@ blameErrors output = do
         pure (e, path, blamed)
       _ -> pure (e, path, Unblamed)
 
--- | The design step that wrote the code every error is in, the earliest if
--- several: step 1 a plan module's types and imports, step 2 the signatures
--- of designed and repaired functions, step 3 the property suite. 'Nothing'
--- if any error is elsewhere.
 owningStep :: [Component] -> Artefact -> [(GhcError, Maybe FilePath, Blame)] -> Maybe ToolName
 owningStep cs art blamed
   | null blamed = Nothing
@@ -438,7 +388,6 @@ owningStep cs art blamed
 withUndefined :: [FunctionRef] -> Run -> Run
 withUndefined refs = overFunctions (map (\f -> if fnRef f `elem` refs then f {fnPlaceholder = Undefined} else f))
 
--- | Each function's declaration before the run.
 previousDecls :: [FunctionRef] -> Holey [(FunctionRef, Text)]
 previousDecls refs = do
   Env {projectRoot = root, originals = origs} <- ask
@@ -449,9 +398,6 @@ previousDecls refs = do
 declText :: Decl -> Text
 declText = T.stripEnd . T.unlines . declLines
 
--- | Runs an agent until it records the step's result with the tool, giving
--- it that many attempts, each after the first with a reminder. Each reply's
--- token rate is published as it arrives.
 untilAccepted :: Int -> Int -> ToolName -> (ToolRequest -> Holey ToolReply) -> Chat -> Holey (Bool, Chat)
 untilAccepted budget attempts tool handler chat = do
   env <- ask
@@ -481,7 +427,6 @@ untilAccepted budget attempts tool handler chat = do
     done <- readIORef accepted
     pure (done, final)
 
--- | A model reply as it appears in the build log.
 logReply :: Model -> Message -> Text
 logReply from m =
   T.unlines $
@@ -489,12 +434,6 @@ logReply from m =
       ++ maybe [] (\t -> [t | not (T.null (T.strip t))]) (content m)
       ++ ["Calls " <> toolNameText (toolRequestFunctionParamsName f) <> ": " <> toolRequestFunctionParamsArguments f | r <- toolCalls m, let f = toolRequestFunction r]
 
--- | Implements the given functions in parallel, each by its own agent that
--- sees the design, its module with the run's functions as holes, its
--- signature and documentation or previous definition, the properties that
--- mention it, and any feedback from a failed attempt. Functions not listed
--- keep their current definitions. Returns the functions whose agents did
--- not submit an implementation.
 implementStep :: [(FunctionRef, Maybe Text)] -> Holey [FunctionRef]
 implementStep work = do
   env@Env {projectRoot = root, originals = origs} <- ask
@@ -504,7 +443,6 @@ implementStep work = do
   sources <- liftIO . forM (nub (map (refPath . fst) work)) $ \path -> do
     before <- original root origs path
     pure (path, either id id (renderFile holes path before))
-  -- The project as it was, for the existing types the signatures use.
   project' <- liftIO (sourceFiles root (components (project env)) >>= mapM (\path -> original root origs path))
   let existing = [s | Just s <- project']
   modifyRun (\r -> (setStep Implement Running r) {tasks = [(fnRef f, if fnRef f `elem` queued then Queued else Done) | f <- functions art]})
@@ -529,8 +467,6 @@ implementStep work = do
       else Failed ("No implementation for " <> T.intercalate ", " (map (functionNameText . refName) missing) <> ".")
   pure missing
 
--- | The model to implement a function with: the design's choice or the
--- default, and the next larger one after a failure.
 implementer :: Model -> FunctionSpec -> Maybe Text -> Model
 implementer run fn feedback = maybe id (const (largerImplementer run)) feedback (fromMaybe (defaultImplementer run) (fnModel fn))
 
@@ -550,7 +486,6 @@ implementOne m design types moduleSource fn props feedback = do
       | toolRequestFunctionParamsName (toolRequestFunction request) /= ImplementFunction = pure (Answer "Only ImplementFunction is available.")
       | otherwise = Recorded <$> either (pure . Left) (tryModifyRun . applyImplementation (fnRef fn)) (decodeArgs (toolRequestFunctionParamsArguments (toolRequestFunction request)))
 
--- | Runs the property suite. A failed run returns its output.
 propertiesStep :: Holey (Either Text ())
 propertiesStep = inStep RunProperties (brief . propertyReport) runProperties
 
@@ -562,12 +497,6 @@ runProperties = do
     Nothing -> pure (Left "No module was chosen.")
     Just suite -> fmap (const ()) <$> liftIO (runSuite root (suiteCabalTarget suite))
 
--- | Asks the design conversation to check the run's functions against the
--- requirement and for duplication. A refactor is kept only if everything
--- still builds and the properties still pass, and is otherwise undone. If
--- the review finds the requirement unmet in a way a refactor cannot fix,
--- returns its reason, to redesign; the review's conclusion is noted either
--- way. Returns the conversation with the review in it.
 reviewStep :: Chat -> Holey (Maybe Text, Chat)
 reviewStep chat = do
   modifyRun (setStep Review Running)
@@ -588,7 +517,6 @@ reviewStep chat = do
         _ -> designTool Refactor request
   (recorded, reviewed) <- untilAccepted 30 1 Refactor handler (addMessage (textMessage User instruction) chat {tools = definitions})
   found <- liftIO (readIORef gap)
-  -- After any refactor's build, so the log reads in order.
   let verdict headline details = do
         current <- iteration <$> getRun
         logPath <- asks buildLog
@@ -623,7 +551,6 @@ reviewStep chat = do
       modifyRun (setStep Review Passed)
       pure (Nothing, reviewed)
 
--- | Marks the running step (or the first step) as failed.
 failCurrent :: Progress -> Text -> IO ()
 failCurrent prog reason = do
   run <- readRun prog

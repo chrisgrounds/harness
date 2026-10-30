@@ -1,7 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | A stand-in for the model that replies from a script, so runs can be
--- tested without network access.
 module ScriptedModel (Reply (..), scriptedLlm, latestText, availableTools) where
 
 import Agent (Llm)
@@ -16,7 +14,6 @@ import qualified Data.Text.Encoding as TE
 
 data Reply = CallTool ToolName Value | Say Text
 
--- | The counter numbers tool calls; it is shared because agents run concurrently.
 scriptedLlm :: IORef Int -> (Chat -> IO Reply) -> Llm
 scriptedLlm counter decide chat = do
   n <- atomicModifyIORef' counter (\x -> (x + 1, x))
@@ -31,10 +28,8 @@ scriptedLlm counter decide chat = do
             Nothing
             Nothing
             Nothing
-  -- Every reply carries a token rate, as the real models' do.
   pure (addMessage message {tokensPerSecond = Just 10} chat)
 
--- | The content of the most recent message, with its role.
 latestText :: Chat -> Maybe (Role, Text)
 latestText chat = listToMaybe (messages chat) >>= \m -> (,) (role m) <$> content m
 

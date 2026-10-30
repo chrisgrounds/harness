@@ -115,7 +115,7 @@ data FunctionSpec = FunctionSpec
     fnKind :: FunctionKind,
     -- | The type, without the name or @::@.
     fnSignature :: Text,
-    -- | What the function does, written into the code as its documentation.
+    -- | What the function does, for agent context only; never written into source.
     fnDoc :: Text,
     -- | For a function that already existed, what to change, for its
     -- implementer only.

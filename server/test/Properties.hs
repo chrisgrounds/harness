@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Properties of the pure parts of the server.
 module Properties (propertyTests) where
 
 import Anthropic (replyMessage, requestBody)
@@ -33,7 +32,6 @@ import Test.QuickCheck hiding (once, output)
 import System.FilePath (takeFileName)
 import Verify
 
--- | Returns failure messages; an empty list means every property held.
 propertyTests :: IO [String]
 propertyTests =
   concat
@@ -46,7 +44,7 @@ propertyTests =
         check "a function's equations get a wildcard for each new parameter" prop_equationsAdapted,
         check "a changed function keeps its old equations until implemented" prop_previousBodyKept,
         check "character literals do not end an equation's patterns" prop_characterLiterals,
-        check "change notes stay out of the code, and empty documentation keeps the old" prop_changeNotesNotWritten,
+        check "design documentation stays in agent context and existing source comments are kept" prop_changeNotesNotWritten,
         check "a changed declaration keeps its comments and is exported only if used" prop_changedDeclarationsKept,
         check "errors are blamed on the declaration they are in" prop_errorsBlamed,
         check "errors record the package being built" prop_errorsRecordPackage,
@@ -89,7 +87,6 @@ propertyTests =
       result <- quickCheckResult p
       pure [name | not (isSuccess result)]
 
--- Generators
 
 identifier :: Gen Text
 identifier = do
@@ -97,7 +94,6 @@ identifier = do
   rest <- listOf (elements (['a' .. 'z'] ++ ['0' .. '9']))
   pure (T.pack (first : take 8 rest))
 
--- | Distinct identifiers that are not keywords.
 identifiers :: Int -> Gen [Text]
 identifiers n = take n . nub . map ("f" <>) <$> vectorOf (n * 3) identifier
 
@@ -121,7 +117,6 @@ functionSpec path name = do
   extra <- resize 2 (listOf importLine)
   pure (FunctionSpec (FunctionRef path (FunctionName name)) Designed signature doc "" body Undefined extra Nothing Nothing)
 
--- | A new module and its functions.
 data NewModule = NewModule ModulePlan [FunctionSpec]
   deriving (Show)
 
@@ -134,10 +129,8 @@ instance Arbitrary NewModule where
     types <- elements ["", "data Colour = Red | Green\n  deriving (Eq, Show)", "newtype Count = Count Int"]
     pure (NewModule (ModulePlan (ComponentName "demo") (ModuleName "M") newModulePath True exts baseImports types) fns)
 
--- | An existing module in one of several layouts, with what it declares.
 data Existing = Existing
   { exSource :: Text,
-    -- | Each declaration's key and kind, in order.
     exDecls :: [(Text, DeclKind)],
     exHasExports :: Bool
   }
@@ -186,7 +179,6 @@ exportList Inline names = ["module Demo (" <> T.intercalate ", " names <> ") whe
 exportList Ormolu names = ["module Demo", "  ( -- * Things"] ++ ["    " <> n <> "," | n <- names] ++ ["  )", "where"]
 exportList LeadingCommas names = ["module Demo"] ++ zipWith (\i n -> (if i == (0 :: Int) then "  ( " else "  , ") <> n) [0 ..] names ++ ["  ) where"]
 
--- | The names in a module header's export list, read independently of 'Decls'.
 exportItems :: Text -> [Text]
 exportItems source =
   filter (not . T.null) . map T.strip . splitTop . T.unlines . map dropComment . T.lines . T.drop 1 . T.dropWhile (/= '(') $ before
@@ -202,7 +194,6 @@ exportItems source =
       | c == ',' && depth == 0 = T.pack (reverse acc) : go depth "" cs
       | otherwise = go depth (c : acc) cs
 
--- Decls and Render
 
 prop_splitRoundTrips :: Existing -> NewModule -> Property
 prop_splitRoundTrips e (NewModule plan fns) =
@@ -223,6 +214,7 @@ prop_renderedFunctionsFound (NewModule plan fns) =
             Just d ->
               counterexample (show d) $
                 declKind d === ValueDecl
+                  .&&. leadingComments d === []
                   .&&. any ((name <> " :: ") `T.isPrefixOf`) (declLines d)
                   .&&. last (dropWhileEnd (T.null . T.strip) (declLines d)) === last (maybe [name <> " = undefined"] (T.lines . T.stripEnd) (fnBody f))
             Nothing -> counterexample ("no declaration of " <> T.unpack name) False
@@ -230,8 +222,6 @@ prop_renderedFunctionsFound (NewModule plan fns) =
           let name = functionNameText (fnName f)
         ]
 
--- | Replaces one existing function, repairs another, changes one type and
--- adds a function and a type.
 prop_changeKeepsOthers :: Existing -> Property
 prop_changeKeepsOthers e =
   let fnKeys = [k | (k, ValueDecl) <- exDecls e]
@@ -248,7 +238,6 @@ prop_changeKeepsOthers e =
           FunctionSpec (ref repaired) Repair "" "" "" (Just (repaired <> " _ = 0")) Undefined [] Nothing Nothing
         ]
       before = splitSource (exSource e)
-      -- A declaration without the blank lines and comments after it.
       code d = dropWhileEnd (\l -> T.null (T.strip l) || "--" `T.isPrefixOf` l) (declLines d)
    in case renderChanged (const True) (exSource e) (Just plan) fns of
         Left err -> counterexample (T.unpack err) False
@@ -259,7 +248,7 @@ prop_changeKeepsOthers e =
            in counterexample (T.unpack text) $
                 keys === map fst (exDecls e) ++ ["TNew", "fresh"]
                   .&&. conjoin [same k | (k, _) <- exDecls e, k `notElem` [replaced, repaired, changedType]]
-                  .&&. (code <$> findDecl replaced after) === Just ["-- | Replaced.", replaced <> " :: Text -> Text", replaced <> " t = t"]
+                  .&&. (code <$> findDecl replaced after) === Just (maybe [] leadingComments (findDecl replaced before) ++ [replaced <> " :: Text -> Text", replaced <> " t = t"])
                   .&&. (code <$> findDecl changedType after) === Just ["data " <> changedType <> " = Changed"]
                   .&&. ( case (findDecl repaired before, findDecl repaired after) of
                            (Just old, Just new) -> code new === take (declHeadLength old) (declLines old) ++ [repaired <> " _ = 0"]
@@ -276,7 +265,6 @@ prop_changeKeepsOthers e =
                            else property True
                        )
 
--- | New names are added once; names already exported are left alone.
 prop_equationsAdapted :: Existing -> Property
 prop_equationsAdapted e =
   conjoin
@@ -306,26 +294,31 @@ prop_previousBodyKept =
   let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
       spec placeholder = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" "Greets the name." "" Nothing placeholder [] Nothing Nothing
       rendered placeholder = renderChanged (const False) source Nothing [spec placeholder]
-   in rendered PreviousBody === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting _ = \"hi\"\n"
-        .&&. rendered Undefined === Right "module Demo (greeting) where\n\n-- | Greets the name.\ngreeting :: Name -> String\ngreeting = undefined\n"
+   in rendered PreviousBody === Right "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: Name -> String\ngreeting _ = \"hi\"\n"
+        .&&. rendered Undefined === Right "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: Name -> String\ngreeting = undefined\n"
 
 prop_changeNotesNotWritten :: Property
 prop_changeNotesNotWritten =
   forAll (elements ["", "Greets the name."]) $ \doc ->
     let source = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: String\ngreeting = \"hi\"\n"
         spec = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName "greeting")) Designed "Name -> String" doc "Take the name to greet." (Just "greeting (Name n) = n") PreviousBody [] Nothing Nothing
-        expected = "module Demo (greeting) where\n\n-- | " <> (if T.null doc then "How to greet." else doc) <> "\ngreeting :: Name -> String\ngreeting (Name n) = n\n"
+        expected = "module Demo (greeting) where\n\n-- | How to greet.\ngreeting :: Name -> String\ngreeting (Name n) = n\n"
+        plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") "src/Demo.hs" False [] [] ""
+        art = emptyArtefact {modules = [plan], functions = [spec]}
      in renderChanged (const False) source Nothing [spec] === Right expected
+          .&&. property (doc `T.isInfixOf` designSummary art)
 
 prop_changedDeclarationsKept :: Property
 prop_changedDeclarationsKept =
-  let source = "module Demo (Mode (..), greeting) where\n\n-- | The mode.\ndata Mode = A\n\n-- | How to greet,\n-- warmly.\ngreeting :: String\ngreeting = \"hi\"\n\n-- | Internal.\nhelper :: Int\nhelper = 1\n"
-      plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") "src/Demo.hs" False [] [] "data Mode = A | B"
-      fn name doc = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName name)) Designed "Int" doc "" (Just (name <> " = 2")) Undefined [] Nothing Nothing
-      rendered used = renderChanged used source (Just plan) [fn "greeting" "How to greet, warmly.", fn "helper" "Internal, changed.", fn "fresh" "New."]
-   in rendered (const False)
-        === Right "module Demo (Mode (..), greeting, fresh) where\n\n-- | The mode.\ndata Mode = A | B\n\n-- | How to greet,\n-- warmly.\ngreeting :: Int\ngreeting = 2\n\n-- | Internal, changed.\nhelper :: Int\nhelper = 2\n\n-- | New.\nfresh :: Int\nfresh = 2\n"
-        .&&. fmap (T.isPrefixOf "module Demo (Mode (..), greeting, helper, fresh) where") (rendered (== "helper")) === Right True
+  forAll (elements ["", "-- | The mode.\n", "-- | Suggested mode.\n"]) $ \typeDoc ->
+    let source = "module Demo (Mode (..), greeting) where\n\n-- | The mode.\ndata Mode = A\n\n-- | How to greet,\n-- warmly.\ngreeting :: String\ngreeting = \"hi\"\n\n-- | Internal.\nhelper :: Int\nhelper = 1\n"
+        plan = ModulePlan (ComponentName "demo") (ModuleName "Demo") "src/Demo.hs" False [] [] (typeDoc <> "data Mode = A | B")
+        keptTypeDoc = "-- | The mode.\n" <> if typeDoc == "-- | Suggested mode.\n" then typeDoc else ""
+        fn name doc = FunctionSpec (FunctionRef "src/Demo.hs" (FunctionName name)) Designed "Int" doc "" (Just (name <> " = 2")) Undefined [] Nothing Nothing
+        rendered used = renderChanged used source (Just plan) [fn "greeting" "How to greet, warmly.", fn "helper" "Internal, changed.", fn "fresh" "New."]
+     in rendered (const False)
+          === Right ("module Demo (Mode (..), greeting, fresh) where\n\n" <> keptTypeDoc <> "data Mode = A | B\n\n-- | How to greet,\n-- warmly.\ngreeting :: Int\ngreeting = 2\n\n-- | Internal.\nhelper :: Int\nhelper = 2\n\nfresh :: Int\nfresh = 2\n")
+          .&&. fmap (T.isPrefixOf "module Demo (Mode (..), greeting, helper, fresh) where") (rendered (== "helper")) === Right True
 
 prop_exportsAdded :: Property
 prop_exportsAdded =
@@ -382,7 +375,6 @@ prop_repeatedBuildFailureRedesigned = forAll functionRefs $ \refs ->
           [ case decide i refs [] first of
               Reimplement work -> map fst work === refs
               other -> counterexample (show other) False,
-            -- The same error at another line is the same failure.
             case decide i refs (failedChecks first) (failure (9 :: Int)) of
               Redesign _ -> property True
               other -> counterexample (show other) False,
@@ -391,7 +383,6 @@ prop_repeatedBuildFailureRedesigned = forAll functionRefs $ \refs ->
               other -> counterexample (show other) False
           ]
 
--- | A run with one designed function in a module, @merge@.
 mergeRun :: Run
 mergeRun =
   let plan = ModulePlan (ComponentName "demo") (ModuleName "M") "src/M.hs" True [] [] ""
@@ -478,7 +469,6 @@ prop_failedPropertiesRead = forAll (resize 5 (listOf ((,) <$> (("prop_" <>) <$> 
           ]
    in failedProperties output === [name | (name, False) <- results]
 
--- Policy
 
 functionRefs :: Gen [FunctionRef]
 functionRefs = do
@@ -535,7 +525,6 @@ prop_unmetRequirementRedesigned = forAll functionRefs $ \refs ->
         Redesign feedback -> counterexample (T.unpack feedback) (why `T.isInfixOf` feedback && redesignReason (RequirementUnmet why) == why)
         other -> counterexample (show other) False
 
--- Rendering
 
 prop_boundNamesNotFree :: Property
 prop_boundNamesNotFree = forAll (identifiers 4) $ \names -> case names of
@@ -570,7 +559,6 @@ prop_usedTypesFollowed =
         all (`T.isInfixOf` shown) ["data Request", "data Params"]
           && not (any (`T.isInfixOf` shown) ["Unrelated", "data Name"])
 
--- Implementers
 
 prop_implementersOrdered :: Property
 prop_implementersOrdered = forAll (elements allModels) $ \m ->
@@ -594,22 +582,16 @@ prop_functionModelChecked =
         .&&. either (T.isPrefixOf "Unknown model gpt for f.") (const False) (chosenFor (implementers ClaudeSonnet) (Just "gpt"))
         .&&. chosenFor (implementers Mercury3) (Just "haiku") === Right [Nothing]
 
--- Project
 
 data CabalCase = CabalCase
   { caseComponent :: Component,
     caseCabal :: Text,
     caseModules :: [Text],
     caseNew :: Text,
-    -- | Whether the component imports the common stanza, which adds @text@
-    -- to its dependencies.
     caseImports :: Bool
   }
   deriving (Show)
 
--- | A cabal file whose library or executable lists its modules in one of
--- several layouts, sometimes importing a common stanza, sometimes followed
--- by a stanza that already lists the new module, and a new module for it.
 instance Arbitrary CabalCase where
   arbitrary = do
     modules' <- map T.toTitle . nub <$> resize 4 (listOf1 identifier)
@@ -642,10 +624,6 @@ edited :: CabalCase -> Either Text Text
 edited c =
   upsertTestSuite (caseComponent c) (ModuleName (caseNew c)) [ModuleName (caseNew c)] <$> addModule (caseComponent c) (ModuleName (caseNew c)) (caseCabal c)
 
--- | The component lists its old modules and the new one, and keeps its
--- import; the suite runs the new module's properties, depending on the
--- library or, for an executable, compiling its modules from its source
--- directories.
 prop_cabalEditsParse :: CabalCase -> Property
 prop_cabalEditsParse c = case edited c of
   Left err -> counterexample (T.unpack err) False
@@ -679,7 +657,6 @@ prop_cabalEditsIdempotent c =
       twice = once >>= \text -> edited c {caseCabal = text}
    in isJust (either (const Nothing) Just once) ==> once === twice
 
--- | Writing the suite again with other modules leaves one stanza, listing them.
 prop_suiteReplaced :: CabalCase -> Property
 prop_suiteReplaced c =
   let main = ModuleName (caseNew c)
@@ -692,7 +669,6 @@ prop_suiteReplaced c =
             Exe _ -> property ("Other.Module" `T.isInfixOf` second && not (("other-modules: " <> T.intercalate ", " (caseModules c ++ [caseNew c])) `T.isInfixOf` second))
             Lib -> second === upsertTestSuite (caseComponent c) main [] (caseCabal c)
 
--- | A suite written and then removed leaves the cabal file's components as they were.
 prop_suiteRemoved :: CabalCase -> Property
 prop_suiteRemoved c =
   let main = ModuleName (caseNew c)
@@ -703,11 +679,7 @@ prop_suiteRemoved c =
         not ("test-suite holey-" `T.isInfixOf` removed)
           .&&. (stanzaNames <$> parseGenericPackageDescriptionMaybe (TE.encodeUtf8 removed)) === (stanzaNames <$> parseGenericPackageDescriptionMaybe (TE.encodeUtf8 (caseCabal c)))
 
--- Anthropic
 
--- | An agent conversation as the harness builds one, oldest first: a system
--- prompt and instruction, then rounds of a reply (sometimes kept as the
--- API's content blocks), its tool results, and sometimes a nudge.
 newtype History = History [Message]
   deriving (Show)
 
@@ -765,7 +737,6 @@ prop_toolResultsFollowCalls (History ms) =
 prop_repliesReplayed :: History -> Property
 prop_repliesReplayed (History ms) =
   let raw = [toList blocks | m <- ms, role m == Assistant, Just (Array blocks) <- [providerContent m]]
-      -- Only replies kept as the API sent them have thinking blocks.
       replayed = [b | ("assistant", b) <- turns (chatOf ClaudeHaiku ms), any ((== Just (String "thinking")) . jsonField "type") b]
    in replayed === raw
 

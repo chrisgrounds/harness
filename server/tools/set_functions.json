@@ -14,7 +14,7 @@
               "module": { "type": "string", "description": "The module from SetTypes the function is in" },
               "name": { "type": "string", "description": "Function name; an existing function's name in its module replaces it" },
               "signature": { "type": "string", "description": "The type only, without the name or ::, e.g. \"[Row] -> Either ParseError Table\"" },
-              "doc": { "type": "string", "description": "What the function does, precisely enough to implement from the types and this text alone. It is written into the code as the function's documentation, so describe the function, never the change. Empty for an existing function keeps its documentation" },
+              "doc": { "type": "string", "description": "What the function does, precisely enough to implement from the types and this text alone. Agent context only; never written into source. Describe the function, never the change. Existing source comments are preserved" },
               "change": { "type": "string", "description": "For an existing function: what to change, for its implementer only; never written into the code. Empty for a new function" },
               "model": { "type": "string", "description": "Which model implements the function, when the instructions offer a choice: the cheapest that will get it right. Leave it out for the default" }
             },

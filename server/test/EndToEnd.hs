@@ -1,7 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Runs requirements through 'runHoley' with a scripted model against a
--- throwaway cabal project, using the real cabal and GHC.
 module EndToEnd (endToEndTests) where
 
 import Core
@@ -24,7 +22,6 @@ import System.FilePath (takeDirectory, (</>))
 import Tools (loadToolDefinitions)
 import Verify (buildTarget)
 
--- | Returns failure messages; an empty list means every check passed.
 endToEndTests :: IO [String]
 endToEndTests =
   concat
@@ -43,32 +40,23 @@ endToEndTests =
         scenario "requirement not met" ((sortedMerge libraryProject) {unmet = Just "Nothing shows the merge."}) (const correctMerge) redesignsAfterReview
       ]
 
--- | A throwaway cabal package, and what the scripted model designs in it.
 data Layout = Layout
-  { -- | Every file of the project, including its cabal files.
-    projectFiles :: [(FilePath, String)],
+  { projectFiles :: [(FilePath, String)],
     cabalPath :: FilePath,
-    -- | The file the checks read, and the files the run should create or edit.
     moduleFile :: FilePath,
     changedFiles :: [ChangedFile],
-    -- | The line that registers a new module, if the run creates one.
     registration :: Maybe String,
     suiteHeader :: String,
     typesArgs :: Value,
     functionsArgs :: Value,
     propertiesArgs :: Value,
-    -- | A design to send until an instruction says the following, if it differs.
     draft :: Maybe (Value, Value, Value),
     draftUntil :: Text,
-    -- | What the review refactors, if anything.
     refactoring :: Maybe Value,
-    -- | Why the first review finds the requirement not met, if it does.
     unmet :: Maybe Text,
-    -- | Each function's definition and imports, given how to define @merge@.
     implementations :: Text -> [(Text, (Text, [Text]))]
   }
 
--- | A package with one component for a new sorted-merge module.
 data Package = Package
   { packageStanza :: [String],
     packageSeed :: (FilePath, String),
@@ -95,7 +83,6 @@ executableProject =
       packageField = "other-modules"
     }
 
--- | A new module of sorted lists with @merge@.
 sortedMerge :: Package -> Layout
 sortedMerge package =
   Layout
@@ -137,8 +124,6 @@ sortedMerge package =
   where
     path = packageSourceDir package </> "Sorted/Merge.hs"
 
--- | An existing library whose @greeting@ takes a name from now on, which
--- breaks @shout@, with a test suite that uses @shout@.
 changedGreeting :: Layout
 changedGreeting =
   Layout
@@ -220,11 +205,6 @@ changedGreeting =
           ]
     }
 
--- | A library whose @greeting@ takes a name and may not answer from now on,
--- so its old body no longer fits and its skeleton is @undefined@, which
--- breaks an executable in another package. Both packages have a
--- @src/Main.hs@, so the error can only be placed by the package cabal was
--- building.
 dependentPackage :: Layout
 dependentPackage =
   Layout
@@ -265,7 +245,6 @@ dependentPackage =
 packageHeader :: String -> [String]
 packageHeader name = ["cabal-version: 2.2", "name: " <> name, "version: 0.1.0.0", "build-type: Simple", ""]
 
--- | A project of one package, @demo@, at the root.
 singlePackage :: [String] -> [(FilePath, String)] -> [(FilePath, String)]
 singlePackage stanzas seeds = ("cabal.project", "packages: .\n") : ("demo.cabal", unlines (packageHeader "demo" ++ stanzas)) : seeds
 
@@ -294,12 +273,10 @@ propertiesArg imports helpers name source =
 fn :: Text -> Text -> Text -> Text -> Value
 fn moduleName name sig doc = object ["module" .= moduleName, "name" .= name, "signature" .= sig, "doc" .= doc]
 
--- | A function with a change note for its implementer.
 changing :: Value -> Text -> Value
 changing (Object o) change = Object (o <> KeyMap.fromList [("change", String change)])
 changing v _ = v
 
--- | How the scripted implementer defines @merge@, given its instructions.
 type MergeStrategy = Text -> Text
 
 correctMerge, wrongMerge, illTypedMerge :: Text
@@ -316,7 +293,6 @@ correctMerge =
 wrongMerge = "merge (Sorted xs) (Sorted ys) = Sorted (xs ++ ys)"
 illTypedMerge = "merge (Sorted xs) (Sorted ys) = xs ++ ys"
 
--- | The first definition until the instructions include feedback, then the second.
 onFeedback :: Text -> Text -> MergeStrategy
 onFeedback before after given
   | "A previous implementation failed" `T.isInfixOf` given = after
@@ -397,12 +373,9 @@ reimplementsAfterTypeError run _ =
       ("reimplemented only merge: " <> show (history run))
       (history run == ["Iteration 1: type errors in merge, so reimplementing merge."])
 
--- | A layout whose run does not finish, so it should change nothing.
 undone :: Layout -> Layout
 undone layout = layout {changedFiles = []}
 
--- | Gives up, then puts the project back as it was: every file as written,
--- and the module and property suite, with their directories, gone.
 givesUpAndUndoes :: FilePath -> Run -> String -> IO [String]
 givesUpAndUndoes root run _ = do
   buildLog <- readFile (root </> "dist-newstyle/holey/last-run.log")
@@ -429,20 +402,14 @@ givesUpAndUndoes root run _ = do
   where
     projectFiles' = projectFiles (sortedMerge libraryProject)
 
--- | Checks of the finished run and its module that need nothing else.
 inspect :: (Run -> String -> [String]) -> FilePath -> Run -> String -> IO [String]
 inspect checks _ run source = pure (checks run source)
 
--- | Passes, and the executable still builds with the module registered.
 executableStillBuilds :: FilePath -> Run -> String -> IO [String]
 executableStillBuilds root run source = do
   built <- buildTarget root "demo:exe:demo"
   pure (firstAttemptPasses run source ++ expect ("executable builds: " <> either T.unpack (const "") built) (built == Right ()))
 
--- | Changes @greeting@ in place, adds @farewell@ and @Name@ and exports them,
--- repairs @shout@ while keeping its documentation and signature and the
--- @Show Greeter@ instance, and leaves the test suite, which builds with the
--- rest, as it was.
 repairsCaller :: FilePath -> Run -> String -> IO [String]
 repairsCaller root run source = do
   tests <- readFile (root </> "tests/Main.hs")
@@ -454,17 +421,13 @@ repairsCaller root run source = do
             [(fnName f, fnKind f) | f <- functions (artefact run)]
               == [(FunctionName "greeting", Designed), (FunctionName "farewell", Designed), (FunctionName "shout", Repair), (FunctionName "instance Show Greeter", Repair)],
           expect "instance repaired in place" ("-- | Says hello when shown.\ndata Greeter = Greeter\n\ninstance Show Greeter where\n  show Greeter = greeting (Name \"greeter\")" `isInfixOf` source),
-          expect "greeting replaced in place" ("-- | Greets the name.\ngreeting :: Name -> String\ngreeting (Name n) = \"hi \" ++ n" `isInfixOf` source),
+          expect "greeting replaced in place, keeping its original comment" ("-- | How to greet.\ngreeting :: Name -> String\ngreeting (Name n) = \"hi \" ++ n" `isInfixOf` source),
           expect "the change note is not in the code" (not ("Take the name to greet." `isInfixOf` source)),
           expect "shout keeps its documentation and signature" ("-- | The greeting, loudly.\nshout :: String\nshout = greeting (Name \"you\") ++ \"!\"" `isInfixOf` source),
           expect ("new names exported: " <> takeWhile (/= '\n') source) ("module Demo (greeting, shout, Name (..), farewell) where" `isInfixOf` source),
           expect "existing tests untouched" ("main = if last shout == '!' then exitSuccess else exitFailure" `isInfixOf` tests)
         ]
 
--- | The sorted-merge design, drafted first with @Demo@ as the main module and
--- a property that does not compile until the run redesigns, so asking for
--- corrected properties fails until the run gives up on them and redesigns
--- with a new main module.
 firstDraft :: Layout -> Layout
 firstDraft layout =
   layout
@@ -483,7 +446,6 @@ firstDraft layout =
           )
     }
 
--- | The suite for the first main module is gone once the main module changes.
 dropsOldSuite :: FilePath -> Run -> String -> IO [String]
 dropsOldSuite root run source = do
   cabal <- readFile (root </> "demo.cabal")
@@ -503,8 +465,6 @@ dropsOldSuite root run source = do
           expect "no holes left" (not ("undefined" `isInfixOf` source))
         ]
 
--- | The sorted-merge design whose first properties do not compile, until it
--- is asked to correct them.
 brokenProperties :: Layout -> Layout
 brokenProperties layout =
   layout
@@ -512,8 +472,6 @@ brokenProperties layout =
       draftUntil = "because of what this step wrote"
     }
 
--- | A review that redefines @merge@ with the given definition, and adds
--- @mergeLists@.
 refactored :: Text -> Layout -> Layout
 refactored mergeDefinition layout =
   layout
@@ -546,7 +504,7 @@ keepsRefactor _ run source =
       ++ concat
         [ expect ("refactor kept: " <> show (history run)) (history run == ["Review: refactored merge, mergeLists."]),
           expect "merge uses the helper" ("merge (Sorted xs) (Sorted ys) = Sorted (mergeLists xs ys)" `isInfixOf` source),
-          expect "helper added with its documentation" ("-- | Merges two ascending lists.\nmergeLists :: [Int] -> [Int] -> [Int]" `isInfixOf` source)
+          expect "helper added without emitting its design documentation" ("mergeLists :: [Int] -> [Int] -> [Int]" `isInfixOf` source && not ("Merges two ascending lists." `isInfixOf` source))
         ]
 
 undoesRefactor :: FilePath -> Run -> String -> IO [String]
@@ -558,8 +516,6 @@ undoesRefactor _ run source =
           expect "the implemented merge is back" ("a <= b" `isInfixOf` source && not ("mergeLists" `isInfixOf` source))
         ]
 
--- | The review's gap sends the run back to design once, with the reason,
--- and the second review passes.
 redesignsAfterReview :: FilePath -> Run -> String -> IO [String]
 redesignsAfterReview root run _ = do
   logged <- readFile (root </> "dist-newstyle/holey/last-run.log")
@@ -572,7 +528,6 @@ redesignsAfterReview root run _ = do
             all (`isInfixOf` logged) ["== Iteration 1, Reviewing against the requirement: requirement not met ==\nNothing shows the merge.", "== Iteration 2, Reviewing against the requirement: requirement met =="]
         ]
 
--- | One request for corrected properties fixes the skeleton, with no redesign.
 fixesProperties :: FilePath -> Run -> String -> IO [String]
 fixesProperties _ run source =
   pure $
@@ -581,13 +536,11 @@ fixesProperties _ run source =
   where
     firstAttemptPasses' r s = allPassed r ++ expect "one iteration" (iteration r == 1) ++ expect "no holes left" (not ("undefined" `isInfixOf` s))
 
--- | A history line asking a design step to fix the skeleton.
 fixUpNote :: Text -> Text -> Bool
 fixUpNote tool line =
   "Iteration 1: the skeleton did not type check: Variable not in scope: missingHelper" `T.isPrefixOf` line
     && ("; asking " <> tool <> " to fix it.") `T.isSuffixOf` line
 
--- | Repairs @main@ in the other package's @src/Main.hs@, not the library's.
 repairsDependent :: FilePath -> Run -> String -> IO [String]
 repairsDependent root run source = do
   coreMain <- readFile (root </> "core/src/Main.hs")
@@ -603,8 +556,6 @@ repairsDependent root run source = do
         expect "the library's executable untouched" ("main = putStrLn \"core\"" `isInfixOf` coreMain)
       ]
 
--- | Replies for the layout's design (its draft until the first redesign),
--- and implementations with @merge@ defined by the strategy.
 designer :: Layout -> MergeStrategy -> Chat -> Reply
 designer layout strategy chat = case latestText chat of
   Just (Tool, _) -> Say "Done."
@@ -621,13 +572,10 @@ designer layout strategy chat = case latestText chat of
           | reviewing -> case (refactoring layout, unmet layout) of
               (Just changes, _) -> CallTool Refactor changes
               (_, Just reason) | not ("does not meet the requirement" `T.isInfixOf` instructions chat) -> CallTool RequirementNotMet (object ["reason" .= reason])
-              -- An empty conclusion, so the review adds nothing to the history.
               _ -> Say ""
           | otherwise -> Say "Nothing to do."
   where
     tools' = availableTools chat
-    -- Every design step offers all the design tools; the latest instruction
-    -- names the one to call.
     step = case [text | m <- messages chat, role m == User, Just text <- [content m]] of
       latest : _ -> case [t | t <- [SetTypes, SetFunctions, SetProperties], toolNameText t `T.isInfixOf` latest] of
         t : _ -> Just t
@@ -658,8 +606,6 @@ expect label ok = [label | not ok]
 instructions :: Chat -> Text
 instructions chat = T.unlines [text | m <- messages chat, role m == User, Just text <- [content m]]
 
--- | The function or instance an implementation agent was asked for, from
--- its instructions.
 implementing :: Chat -> Maybe Text
 implementing chat =
   case [ name

@@ -31,7 +31,7 @@ Pass a socket path after the options to use something other than `/tmp/harness.s
 
 ## Design
 
-The sidebar names the project and lists chats, newest first, with each chat's model and running state; click one to switch conversations. Drag the divider to resize the sidebar; User settings sits at its foot. It hides in windows narrower than 860 points. It also shows the average token rate.
+The sidebar names the project and lists chats once their first message is sent, newest first, with each chat's model and running state; click one to switch conversations. Drag the divider to resize the sidebar; User settings sits at its foot. It hides in windows narrower than 860 points. It also shows the average token rate.
 
 Each run opens with the requirement, set a weight up beside a bar in the user's colour, then hangs its eight steps on a rail. The rail fills in the passed colour down from each step that passes and drains when an iteration sends the run back, so how far a run got, and how often it looped, shows at a glance. The running step has a spinner on the rail; while functions are implemented, a progress bar and a line per function hang beneath it. Orange marks only what is running: the live step, the progress bar and the send button.
 
@@ -46,14 +46,20 @@ Movement eases rather than jumps: the progress bar, the rail, scrolling, the com
 | `Client` | The connection to the server, published as `NetworkEvent`s |
 | `Client.Settings` | Account metadata and model catalogs; credentials stay in `openai-auth` |
 | `Client.Commands`, `Client.Tokens` | `/` commands and the average token rate, as in the terminal client |
-| `UI.State` | The interface's state and a pure `update` for each `Action`: what the user did, or news from the server |
+| `UI.State` | Pure application and conversation updates; chat actions carry their originating chat ID |
 | `Theme.Palette` | The palette, read from `themes/orng.toml`, with orng Dark accents on neutral charcoal |
-| `app/UI` | The window: the frame loop, and drawing the state each frame into the actions it produces |
-| `app/UI/Motion` | Values that ease toward their targets, keeping frames coming until they arrive |
-| `app/UI/Widgets`, `app/UI/Fonts`, `app/Theme` | Text, drawn icons, the send button, the composer, fonts, and Dear ImGui's style |
-| `app/ImGui/Extras`, `cbits/imgui_extras.cpp` | Dear ImGui calls the bindings leave out: scrolling, key chords, style values, fading, and the composer |
+| `app/UI` | Window lifecycle, frame scheduling, top-level layout and action routing |
+| `app/UI/Sidebar`, `app/UI/Settings`, `app/UI/Tools` | Navigation and auxiliary windows, each receiving only its own view data |
+| `app/UI/Transcript` | Run rendering, scroll tracking and chat/run-scoped animations |
+| `app/UI/Composer` | Text-buffer and focus state, model selection, and one measured layout shared by sizing and drawing |
+| `UI.Motion` | Backend-independent animation values, sampled at most once per frame, with typed keys |
+| `app/UI/Appearance`, `app/UI/Layout` | Shared read-only fonts/palette and small layout primitives |
+| `app/UI/Widgets`, `app/UI/Fonts`, `app/Theme` | Haskell drawing and interaction for controls, text, icons, fonts and styling |
+| `app/ImGui/Extras`, `cbits/imgui_extras.cpp` | Minimal missing bindings, ABI/struct access and the native text-input callback |
 
-The library holds everything that does not touch the window, and `cabal test hs-gui-client` checks its properties.
+The library holds everything that does not touch the window, and `cabal test hs-gui-client` checks its properties and animation regressions. Connection failure and quitting are application-wide; drafts, model choices and runs belong to conversations. Components emit chat actions that the window tags with the chat shown in that frame, so navigation cannot redirect an edit or acknowledgement to a different chat.
+
+Animation keys use the chat ID and each run's oldest-first ordinal, which stays stable as runs are appended. Animation values live with the session's chat history, with a fixed number of entries per run across retries. The frame loop supplies time; measuring and drawing the same animation returns the same value within a frame. Composer layout is measured once and reused when reserving transcript space and drawing controls.
 
 `cbits/imgui` is a copy of the `imgui.h` and `imconfig.h` that dear-imgui 2.4.1 builds Dear ImGui 1.91.9b from, so the extras compile against the same structs; the cabal file pins that version, and the client refuses to start if the layouts differ. Updating dear-imgui means copying its headers again.
 

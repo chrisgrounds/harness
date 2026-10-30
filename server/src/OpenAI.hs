@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Subscription-backed Responses API, using the harness's own tool loop.
 module OpenAI (openaiLlm, openaiLlmWithToken, requestBody, responseReply, StreamState (..), emptyStream, feedStream, finishStream, listModels) where
 
 import Core
@@ -24,12 +23,10 @@ import qualified OpenAI.Http as Http
 openaiLlm :: IO (Chat -> IO Chat)
 openaiLlm = do
   manager <- Http.newManager
-  -- Check login before the server starts accepting work.
   getToken <- Auth.tokenSource manager
   _ <- getToken
   openaiLlmWithToken getToken
 
--- | The GUI owns OAuth; only a short-lived bearer crosses the local socket.
 openaiLlmWithToken :: IO Text -> IO (Chat -> IO Chat)
 openaiLlmWithToken getToken = do
   manager <- Http.newManager
@@ -53,8 +50,6 @@ openaiLlmWithToken getToken = do
     let seconds = fromIntegral (end - start) / 1e9 :: Double
     pure (addMessage reply {tokensPerSecond = if seconds > 0 then Just (fromIntegral tokens / seconds) else Nothing} chat)
 
--- | System prompts become developer messages; output items, including encrypted
--- reasoning and namespaced calls, are replayed exactly as returned.
 requestBody :: Chat -> Value
 requestBody chat = object
   [ "model" .= modelId (model chat), "store" .= False, "stream" .= True,
@@ -106,8 +101,6 @@ responseReply = withObject "response" $ \o -> do
             "refusal" -> Just <$> b .: "refusal"
             _ -> pure Nothing) blocks
 
--- | Incremental SSE framing. Arbitrary chunk and CRLF boundaries are accepted;
--- partial output never counts as a successful model reply.
 data StreamState = StreamState B.ByteString [B.ByteString] (Maybe Value)
   deriving (Eq, Show)
 

@@ -20,17 +20,17 @@ module ImGui.Extras
     keyPressed,
     takeKey,
     composerBox,
-    navigationButton,
-    resizeSidebar,
-    closableModal,
-    sizedButton,
-    modelCombo,
+    styleColourU32,
+    setMouseCursor,
+    getFramePadding,
+    beginClosableModal,
+    beginComboWithFlags,
   )
 where
 
 import Control.Exception (bracket_)
 import Control.Monad (unless)
-import DearImGui (ImGuiCol (..), ImGuiKey (..), ImGuiStyleVar (..), pattern ImGuiStyleVar_Alpha)
+import DearImGui (ImGuiCol (..), ImGuiComboFlags (..), ImGuiKey (..), ImGuiMouseCursor (..), ImGuiStyleVar (..), ImGuiWindowFlags (..), ImVec2 (..), pattern ImGuiStyleVar_Alpha, pattern ImGuiMouseCursor_Hand)
 import qualified DearImGui.Raw as Raw
 import Data.Bits ((.|.))
 import Data.Word (Word32)
@@ -46,13 +46,14 @@ foreign import ccall unsafe "harness_configure_io" c_configureIO :: CFloat -> IO
 
 foreign import ccall unsafe "harness_set_colour" c_setColour :: CInt -> CFloat -> CFloat -> CFloat -> CFloat -> IO ()
 
-foreign import ccall unsafe "harness_set_metrics" c_setMetrics :: CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> IO ()
+foreign import ccall unsafe "harness_set_metrics" c_setMetrics :: CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> CFloat -> IO ()
 
 foreign import ccall unsafe "harness_push_style_float" c_pushStyleFloat :: CInt -> CFloat -> IO ()
 
 foreign import ccall unsafe "harness_colour" c_colour :: CFloat -> CFloat -> CFloat -> CFloat -> IO Word32
 
-foreign import ccall unsafe "harness_hand_cursor" handCursor :: IO ()
+handCursor :: IO ()
+handCursor = setMouseCursor ImGuiMouseCursor_Hand
 
 foreign import ccall unsafe "harness_scroll_y" c_scrollY :: IO CFloat
 
@@ -67,7 +68,7 @@ foreign import ccall unsafe "harness_chord_pressed" c_chordPressed :: CInt -> IO
 foreign import ccall unsafe "harness_take_chord" c_takeChord :: CInt -> IO CInt
 
 foreign import ccall unsafe "harness_composer"
-  c_composer :: CString -> CString -> Ptr CChar -> CInt -> CFloat -> CFloat -> CInt -> CString -> Ptr CInt -> IO CInt
+  c_composer :: CString -> Ptr CChar -> CInt -> CFloat -> CFloat -> CInt -> CString -> Ptr CInt -> IO CInt
 
 -- | Fails unless the extras were compiled against the Dear ImGui the
 -- bindings link with.
@@ -101,8 +102,17 @@ setMetrics m =
     (f (snd (framePadding m)))
     (f (fst (itemSpacing m)))
     (f (snd (itemSpacing m)))
-    (f (rounding m))
+    (f (rounding m)) -- window
+    (f (rounding m)) -- child
+    (f (rounding m)) -- popup
+    (f (rounding m * 0.75)) -- frame
+    (f (rounding m * 0.75)) -- grab
+    (f (rounding m)) -- scrollbar
     (f (scrollbarSize m))
+    0 -- window border
+    1 -- child border
+    1 -- frame border
+    1 -- popup border
   where
     f = realToFrac
 
@@ -150,45 +160,48 @@ chord mods key = foldr (\(ImGuiKey m) acc -> m .|. acc) (code key) mods
   where
     code (ImGuiKey k) = k
 
--- | The raw composer: label, hint, buffer and its size, width, height,
+-- | The raw composer: label, buffer and its size, width, height,
 -- whether to take the keyboard, and a replacement or 'Nothing'. Returns
 -- whether Enter submitted and whether the replacement was made.
-composerBox :: CString -> CString -> Ptr CChar -> Int -> Float -> Float -> Bool -> CString -> IO (Bool, Bool)
-composerBox label hint buf size width height focus replacement =
+composerBox :: CString -> Ptr CChar -> Int -> Float -> Float -> Bool -> CString -> IO (Bool, Bool)
+composerBox label buf size width height focus replacement =
   alloca $ \replaced -> do
-    submitted <- c_composer label hint buf (fromIntegral size) (realToFrac width) (realToFrac height) (if focus then 1 else 0) replacement replaced
+    submitted <- c_composer label buf (fromIntegral size) (realToFrac width) (realToFrac height) (if focus then 1 else 0) replacement replaced
     made <- peek replaced
     pure (submitted /= 0, made /= 0)
 
-foreign import ccall unsafe "harness_icon_button"
-  c_iconButton :: CString -> CString -> CInt -> IO CInt
-foreign import ccall unsafe "harness_splitter"
-  c_splitter :: Ptr CFloat -> CFloat -> CFloat -> CFloat -> IO CInt
-foreign import ccall unsafe "harness_modal"
-  c_modal :: CString -> Ptr CInt -> IO CInt
-foreign import ccall unsafe "harness_sized_button"
-  c_sizedButton :: CString -> CFloat -> CFloat -> IO CInt
-foreign import ccall unsafe "harness_model_combo"
-  c_modelCombo :: CString -> CString -> CFloat -> IO CInt
+-- Primitive binding extensions only: component style and layout live in UI.Widgets.
+foreign import ccall unsafe "harness_style_colour"
+  c_styleColour :: CInt -> IO Word32
+foreign import ccall unsafe "harness_mouse_cursor"
+  c_mouseCursor :: CInt -> IO ()
+foreign import ccall unsafe "harness_frame_padding"
+  c_framePadding :: Ptr CFloat -> Ptr CFloat -> IO ()
+foreign import ccall unsafe "harness_begin_closable_modal"
+  c_beginClosableModal :: CString -> Ptr CInt -> CInt -> IO CInt
+foreign import ccall unsafe "harness_begin_combo"
+  c_beginCombo :: CString -> CString -> CInt -> IO CInt
 
-navigationButton :: CString -> CString -> Bool -> IO Bool
-navigationButton name tooltip settings = (/= 0) <$> c_iconButton name tooltip (if settings then 0 else 1)
+-- | The current style colour, including the style's opacity.
+styleColourU32 :: ImGuiCol -> IO Word32
+styleColourU32 (ImGuiCol col) = c_styleColour col
 
-resizeSidebar :: Float -> Float -> Float -> Float -> IO Float
-resizeSidebar width minimum' maximum' height = alloca $ \ptr -> do
-  poke ptr (realToFrac width)
-  _ <- c_splitter ptr (realToFrac minimum') (realToFrac maximum') (realToFrac height)
-  realToFrac <$> peek ptr
+setMouseCursor :: ImGuiMouseCursor -> IO ()
+setMouseCursor (ImGuiMouseCursor cursor) = c_mouseCursor cursor
 
-closableModal :: CString -> IO (Bool, Bool)
-closableModal title = alloca $ \ptr -> do
+getFramePadding :: IO ImVec2
+getFramePadding = alloca $ \px -> alloca $ \py -> do
+  c_framePadding px py
+  ImVec2 <$> (realToFrac <$> peek px) <*> (realToFrac <$> peek py)
+
+-- | Begin a modal with a close button. EndPopup is needed only when visible.
+beginClosableModal :: CString -> ImGuiWindowFlags -> IO (Bool, Bool)
+beginClosableModal title (ImGuiWindowFlags flags') = alloca $ \ptr -> do
   poke ptr 1
-  visible <- c_modal title ptr
+  visible <- c_beginClosableModal title ptr flags'
   open <- peek ptr
   pure (visible /= 0, open /= 0)
 
-sizedButton :: CString -> Float -> Float -> IO Bool
-sizedButton label width height = (/= 0) <$> c_sizedButton label (realToFrac width) (realToFrac height)
-
-modelCombo :: CString -> CString -> Float -> IO Bool
-modelCombo label preview width = (/= 0) <$> c_modelCombo label preview (realToFrac width)
+-- | Begin a combo with flags. EndCombo is needed only when open.
+beginComboWithFlags :: CString -> CString -> ImGuiComboFlags -> IO Bool
+beginComboWithFlags label preview (ImGuiComboFlags flags') = (/= 0) <$> c_beginCombo label preview flags'

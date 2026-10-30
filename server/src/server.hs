@@ -56,7 +56,6 @@ parseModel name = case T.stripPrefix (T.pack "openai:") (T.pack name) of
   Just slug | not (T.null slug) -> Just (OpenAIModel slug)
   _ -> lookup name models
 
--- | Short names and full model names.
 models :: [(String, Model)]
 models =
   [(T.unpack (modelName m), m) | m <- allModels] ++ [(T.unpack (modelId m), m) | m <- allModels]

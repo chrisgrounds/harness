@@ -69,7 +69,6 @@ socketTests = do
               ChatFailed 11 _ -> pure ()
               _ -> fail "OpenAI chat without a client account was accepted"
             expect (ChatEvent 11 TurnFinished)
-            -- A bare legacy StartRun still uses the server's default.
             sendJSON client (StartRun dir (Requirement "legacy"))
             expect (TokenRate 12)
             expect TurnFinished

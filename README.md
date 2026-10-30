@@ -5,7 +5,7 @@ A Haskell LLM harness for type-driven development, with a Brick terminal interfa
 Each message is a requirement and starts a *holey run*, which moves through these steps:
 
 1. Creating types: the modules to create or change, with their imports and types
-2. Creating functions (signatures only): new functions, and existing ones to change. Each has documentation, written into the code as its Haddock comment (empty keeps an existing function's), and for an existing function a change note that only its implementer sees. Until they are implemented, new functions are `undefined` and changed ones keep their old equations, with a `_` pattern for each new parameter, or are `undefined` when those cannot fit the new signature
+2. Creating functions (signatures only): new functions, and existing ones to change. Each has documentation kept as agent context, and for an existing function a change note that only its implementer sees. Neither is written into the code; existing declaration comments are preserved. Until they are implemented, new functions are `undefined` and changed ones keep their old equations, with a `_` pattern for each new parameter, or are `undefined` when those cannot fit the new signature
 3. Creating properties (invariants the types can't express)
 4. Checking skeleton (the code type-checks before any implementation)
 5. Implementing functions (one agent per function, in parallel, on the model the design chose for it; each sees the design, its module, the project's existing types its signature uses and its properties)

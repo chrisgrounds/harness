@@ -1,7 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Building and running a run's property suite with the project's cabal, and
--- reading the results.
 module Verify
   ( GhcError (..),
     Blame (..),
@@ -32,15 +30,9 @@ import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import System.Timeout (timeout)
 
--- | Builds every package in the project with its test suites, so code that
--- uses what the run changed is type checked too. One job at a time keeps
--- each package's errors after its "Building" line. 'Left' holds the output
--- of a failed build, 'Right' that of one that passed.
 buildAll :: FilePath -> IO (Either Text Text)
 buildAll root = failOnFatalWarnings <$> cabal root ["build", "all", "--enable-tests", "-j1"]
 
--- | A build that only warns about a record built without some of its fields
--- has still failed: reading the field would crash at runtime.
 failOnFatalWarnings :: Either Text Text -> Either Text Text
 failOnFatalWarnings (Right output) | any fatalWarning (T.lines output) = Left output
 failOnFatalWarnings built = built
@@ -51,7 +43,6 @@ fatalWarning l = ": warning:" `T.isInfixOf` l && "[-Wmissing-fields]" `T.isInfix
 buildTarget :: FilePath -> Text -> IO (Either Text ())
 buildTarget root target = fmap (const ()) <$> cabal root ["build", "--enable-tests", T.unpack target]
 
--- | Runs the run's property suite. 'Left' holds the output of a failed run.
 runSuite :: FilePath -> Text -> IO (Either Text Text)
 runSuite root target = cabal root ["run", "--enable-tests", "-v1", T.unpack target]
 
@@ -64,17 +55,13 @@ cabal root args = do
     Just (ExitFailure _, out, err) -> Left (T.pack (out <> err))
 
 data GhcError = GhcError
-  { -- | As GHC reports it: usually relative to the package's directory.
-    errorFile :: FilePath,
+  { errorFile :: FilePath,
     errorLine :: Int,
     errorText :: Text,
-    -- | The package cabal was building when the error was reported.
     errorPackage :: Maybe Text
   }
   deriving (Eq, Show)
 
--- | GHC errors in build output. Each starts with a @file:line:col: error@
--- header and runs to the next blank line.
 ghcErrors :: Text -> [GhcError]
 ghcErrors = go Nothing . T.lines
   where
@@ -91,7 +78,6 @@ ghcErrors = go Nothing . T.lines
         | otherwise -> parseLocation location
     noLocation = "<no location info>"
 
--- | The package in a line such as @Building library for core-0.1.0.0..@.
 building :: Text -> Maybe Text
 building l
   | any (`T.isPrefixOf` l) ["Building ", "Preprocessing "], (_, rest) <- T.breakOnEnd " for " l, not (T.null rest) =
@@ -104,7 +90,6 @@ building l
       (name, version) | not (T.null name), T.all (\c -> isDigit c || c == '.') version -> T.dropEnd 1 name
       _ -> packageId
 
--- | @file:line:col@ or @file:(line,col)-(line,col)@.
 parseLocation :: Text -> Maybe (FilePath, Int)
 parseLocation location
   | ")" `T.isSuffixOf` location =
@@ -120,21 +105,12 @@ parseLocation location
       digits | not (T.null digits) -> Just (read (T.unpack digits))
       _ -> Nothing
 
--- | Where an error is.
 data Blame
-  = -- | In a function the run designed or is repairing, or in an import line
-    -- one of them added.
-    InPlanned FunctionRef
-  | -- | In another function or instance in the project, which the design broke.
-    InOther FunctionRef
-  | -- | In a type, an instance without methods, the property suite, or
-    -- outside the project.
-    Unblamed
+  = InPlanned FunctionRef
+  | InOther FunctionRef
+  | Unblamed
   deriving (Eq, Show)
 
--- | Blames an error on the line of a file, given the run's functions and the
--- file as written. Functions and instances with methods can be repaired, so
--- an instance is blamed like a function, by its @instance <head>@ key.
 blame :: [FunctionSpec] -> FilePath -> SourceFile -> Int -> Blame
 blame fns path source line = case declAt line source of
   Just d
@@ -151,8 +127,6 @@ blame fns path source line = case declAt line source of
 repairable :: Decl -> Bool
 repairable d = declKind d == ValueDecl || (declKind d == InstanceDecl && isJust (instanceHeadLines d))
 
--- | The first problem in build output as one line: the first GHC error, or
--- else cabal's error and the line after it.
 firstProblem :: Text -> Maybe Text
 firstProblem output = firstError output <|> cabalError
   where
@@ -163,7 +137,6 @@ firstProblem output = firstError output <|> cabalError
       [] -> Nothing
     clip t = if T.length t > 200 then T.take 197 t <> "..." else t
 
--- | The first GHC error in output as one line: its message and where it is.
 firstError :: Text -> Maybe Text
 firstError output = case ghcErrors output of
   e : _ ->
@@ -176,14 +149,12 @@ firstError output = case ghcErrors output of
      in Just (clipped <> if errorLine e == 0 then "" else " (" <> T.pack (errorFile e) <> ":" <> T.pack (show (errorLine e)) <> ")")
   [] -> Nothing
   where
-    -- The source excerpt, @12 | code@ and its gutter, and GHC's suggestions.
     aside l =
       "|" `T.isPrefixOf` l
         || "Suggested fix" `T.isPrefixOf` l
         || let (number, rest) = T.breakOn " |" l in not (T.null rest) && not (T.null number) && T.all isDigit number
     dropBullet l = maybe l T.strip (T.stripPrefix "•" l)
 
--- | Properties reported as failed (or given up on) in the suite's output.
 failedProperties :: Text -> [Text]
 failedProperties = go Nothing . T.lines
   where
@@ -193,8 +164,6 @@ failedProperties = go Nothing . T.lines
       | "*** " `T.isPrefixOf` l, Just name <- current = name : go Nothing rest
       | otherwise = go current rest
 
--- | The GHC errors in build output, or else cabal's error and what follows
--- it, or else the output's tail, limited to a size that fits in a prompt.
 summarise :: Text -> Text
 summarise output = T.take 6000 $ case ghcErrors output of
   [] -> case dropWhile (not . ("Error:" `T.isPrefixOf`) . T.strip) ls of
@@ -204,7 +173,6 @@ summarise output = T.take 6000 $ case ghcErrors output of
   where
     ls = T.lines output
 
--- | The output of the failed properties, with their counterexamples.
 propertyReport :: Text -> Text
 propertyReport output = case failedProperties output of
   [] -> summarise output
@@ -218,11 +186,9 @@ propertyReport output = case failedProperties output of
          in (T.strip name, T.unlines (l : body)) : go rest'
       Nothing -> go rest
 
--- | Whether the source uses the function's name as an identifier.
 mentions :: FunctionName -> Text -> Bool
 mentions (FunctionName name) source = name `elem` T.split (not . isIdentChar) source
 
--- | The first lines of a report, for showing under a failed step.
 brief :: Text -> Text
 brief report
   | length ls > 8 = T.unlines (take 8 ls) <> "…"

@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Writing a run's artefact into the user's project.
 module Workspace
   ( Originals,
     newOriginals,
@@ -38,16 +37,11 @@ import System.FilePath (isAbsolute, isRelative, makeRelative, normalise, splitDi
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import Verify (GhcError (..))
 
--- | Files as they were before the run, read the first time they are needed
--- and before the run writes them, so every rendering starts from them and
--- a run can be undone. For files that did not exist, the directories above
--- them that did not exist either.
 data Originals = Originals (IORef (Map.Map FilePath (Maybe Text))) (IORef [FilePath])
 
 newOriginals :: IO Originals
 newOriginals = Originals <$> newIORef Map.empty <*> newIORef []
 
--- | A file's contents before the run, or 'Nothing' if it did not exist.
 original :: FilePath -> Originals -> FilePath -> IO (Maybe Text)
 original root (Originals ref dirs) path = do
   cached <- Map.lookup path <$> readIORef ref
@@ -63,9 +57,6 @@ original root (Originals ref dirs) path = do
   where
     ancestors = takeWhile (/= ".") . drop 1 . iterate takeDirectory
 
--- | Puts every file the run changed back as it was: existing files get their
--- original contents, and files and directories the run created are
--- removed. Returns the files restored or removed.
 rollback :: FilePath -> Originals -> Run -> IO [FilePath]
 rollback root originals@(Originals _ dirs) run = do
   undone <- fmap catMaybes . forM (touchedPaths run) $ \path -> do
@@ -77,15 +68,12 @@ rollback root originals@(Originals _ dirs) run = do
         when exists (removeFile (root </> path))
         pure (if exists then Just path else Nothing)
   created <- readIORef dirs
-  -- Deepest first, and only those left empty.
   forM_ (sortOn (Down . length . splitDirectories) created) $ \dir -> do
     exists <- doesDirectoryExist (root </> dir)
     empty <- if exists then null <$> listDirectory (root </> dir) else pure False
     when empty (removeDirectory (root </> dir))
   pure undone
 
--- | The run's property suite: the component it is built against, its file
--- and its cabal target.
 data Suite = Suite
   { suiteComponent :: Component,
     suiteFile :: FilePath,
@@ -98,19 +86,12 @@ suiteOf cs art = do
   c <- find ((== planComponent plan) . componentName) cs
   pure (Suite c (propertiesPath c (planModule plan)) (suiteTarget c (planModule plan)))
 
--- | The plan's modules the property suite can import.
 suiteImports :: [Component] -> Suite -> Artefact -> [ModuleName]
 suiteImports cs suite art = [planModule p | p <- modules art, visibleFrom cs (suiteComponent suite) (planComponent p)]
 
--- | The files the run writes code into: its modules, and the files of the
--- functions it repairs.
 plannedFiles :: Artefact -> [FilePath]
 plannedFiles art = nub (map planPath (modules art) ++ map (refPath . fnRef) (functions art))
 
--- | Writes every file in the plan from its original, restores files the
--- plan no longer changes, and registers new modules and the property suite
--- in the cabal files. Refuses to overwrite files the run did not create.
--- Returns every file the run has changed, and whether it created each.
 writeArtefact :: FilePath -> [Component] -> Originals -> Run -> IO (Either Text [ChangedFile])
 writeArtefact root cs originals run = case suiteOf cs art of
   Nothing -> pure (Left "No module was chosen.")
@@ -125,8 +106,6 @@ writeArtefact root cs originals run = case suiteOf cs art of
           Left err -> pure (Left err)
           Right rendered -> do
             forM_ rendered $ \(path, _, text) -> writeIfChanged (root </> path) text
-            -- Suites written for an earlier main module, which would still be built.
-            -- Only suites the run created; it may also have repaired existing ones.
             oldSuites <- filterM (fmap isNothing . original root originals) [p | p <- touchedPaths run, isPropertiesFile p, p /= suiteFile suite]
             mapM_ (removeIfPresent . (root </>)) oldSuites
             restored <- restore [p | p <- touchedPaths run, p `notElem` plannedFiles art, p `notElem` newFiles, p `notElem` oldSuites]
@@ -138,10 +117,7 @@ writeArtefact root cs originals run = case suiteOf cs art of
             Right <$> mapM classify (nub (kept ++ changed ++ [suiteFile suite] ++ cabalFiles))
   where
     art = artefact run
-    -- Every file written has had its original read first, so this is how it
-    -- was before the run rather than now.
     classify path = ChangedFile path . maybe NewFile (const ExistingFile) <$> original root originals path
-    -- Files an earlier design changed, back to how they were.
     restore paths = fmap catMaybes . mapM restoreOne $ paths
     restoreOne path = do
       before <- original root originals path
@@ -161,14 +137,12 @@ writeArtefact root cs originals run = case suiteOf cs art of
                  ]
       fmap catMaybes . mapM (editCabal edits) . nub $ map fst edits
     editCabal edits file = do
-      -- Kept so the run can be undone.
       _ <- original root originals file
       before <- readText (root </> file)
       let after = foldl' (\text (_, edit) -> edit text) before [e | e@(f, _) <- edits, f == file]
       unless (after == before) $ writeText (root </> file) after
       pure (if after /= before || file `elem` touchedPaths run then Just file else Nothing)
 
--- | A property suite holey writes, @Holey<Module>Properties.hs@.
 isPropertiesFile :: FilePath -> Bool
 isPropertiesFile path = "Holey" `isPrefixOf` name && "Properties.hs" `isSuffixOf` name
   where
@@ -179,15 +153,11 @@ removeIfPresent path = do
   exists <- doesFileExist path
   when exists (removeFile path)
 
--- | The paths that exist but were not created by this run.
 existingFiles :: FilePath -> Run -> [FilePath] -> IO [FilePath]
 existingFiles root run paths = do
   existing <- mapM (\p -> (,) p <$> doesFileExist (root </> p)) paths
   pure [p | (p, True) <- existing, p `notElem` touchedPaths run]
 
--- | The file in the project an error is in, relative to the project root.
--- GHC reports paths relative to the package being built, so the package
--- cabal was building is tried first.
 resolveErrorFile :: FilePath -> ProjectInfo -> GhcError -> IO (Maybe FilePath)
 resolveErrorFile root info e
   | isAbsolute file = pure (inProject (makeRelative root file))
@@ -216,7 +186,6 @@ writeText path value = do
 readText :: FilePath -> IO Text
 readText path = TE.decodeUtf8With (\_ _ -> Just '\xFFFD') <$> B.readFile path
 
--- | Whether git reports uncommitted changes. 'False' outside a repository.
 uncommittedChanges :: FilePath -> IO Bool
 uncommittedChanges root = do
   result <- try (readCreateProcessWithExitCode (proc "git" ["status", "--porcelain"]) {cwd = Just root} "")

@@ -18,12 +18,8 @@ import OpenAI (openaiLlm)
 import System.Environment (lookupEnv)
 import System.Exit (die)
 
--- | Sends a chat to a model and returns it with the model's reply added.
 type Llm = Chat -> IO Chat
 
--- | The model's provider, with its API key read from the environment or a
--- @.env@ file: @INCEPTION_API_KEY@ for Mercury, @ANTHROPIC_API_KEY@ for
--- Claude. OpenAI uses the selected saved ChatGPT registration.
 loadLlm :: Model -> IO Llm
 loadLlm m = do
   loadEnv
@@ -34,8 +30,6 @@ loadLlm m = do
   where
     key name = lookupEnv name >>= maybe (die ("Set " <> name <> " to use " <> T.unpack (modelId m) <> ".")) pure
 
--- | Runs the model, answering its tool requests with the handler, until it
--- replies without requesting tools or has used its turn budget.
 runAgent :: Llm -> Int -> (ToolRequest -> IO Text) -> Chat -> IO Chat
 runAgent llm budget handle chat
   | budget <= 0 = pure chat

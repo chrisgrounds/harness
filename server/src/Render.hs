@@ -1,19 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Turns an 'Artefact' into Haskell source.
 module Render (renderFile, renderNewModule, renderChanged, renderProperties, designSummary, usedTypes) where
 
 import Control.Monad (foldM)
 import Core
-import Data.List (dropWhileEnd, nub)
+import Data.List (dropWhileEnd, isPrefixOf, nub)
 import Data.Char (isUpper)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Decls
 
--- | A file the run writes: a new module, or an existing one (given its
--- original source) with the run's changes.
 renderFile :: Artefact -> FilePath -> Maybe Text -> Either Text Text
 renderFile art path original = case (plan, original) of
   (Just p, _) | planIsNew p -> Right (renderNewModule p fns)
@@ -25,7 +22,6 @@ renderFile art path original = case (plan, original) of
       [] -> Nothing
     fns = [f | f <- functions art, refPath (fnRef f) == path]
 
--- | A new module, with @undefined@ for functions not yet implemented.
 renderNewModule :: ModulePlan -> [FunctionSpec] -> Text
 renderNewModule plan fns = T.unlines (header ++ concatMap (\f -> functionLines f ++ [""]) fns)
   where
@@ -37,8 +33,6 @@ renderNewModule plan fns = T.unlines (header ++ concatMap (\f -> functionLines f
         ++ T.lines (T.stripEnd (planTypes plan))
         ++ [""]
 
--- | Whether the run uses a name outside a file: in its properties, or in
--- another file's types and functions.
 usedOutside :: Artefact -> FilePath -> Text -> Bool
 usedOutside art path name = name `elem` concatMap freeNames texts
   where
@@ -48,14 +42,6 @@ usedOutside art path name = name `elem` concatMap freeNames texts
         ++ concat [fnSignature f : maybe [] pure (fnBody f) | f <- functions art, refPath (fnRef f) /= path]
         ++ [planTypes p | p <- modules art, planPath p /= path]
 
--- | An existing module with the run's changes. Type declarations and
--- designed functions replace the declaration of the same name, keeping its
--- comments if they come without their own, or are added after the others.
--- New ones are exported, and changed ones if the run uses them elsewhere.
--- Until it is implemented, a designed function that replaces one keeps the
--- old equations where its placeholder says so and they fit. Repairs keep
--- their comments and signature and get new equations. Every other line is
--- left as it was.
 renderChanged :: (Text -> Bool) -> Text -> Maybe ModulePlan -> [FunctionSpec] -> Either Text Text
 renderChanged used original plan fns = do
   repaired <- foldM repair (foldl (flip upsertDecl) source (typeDecls ++ map designedDecl designed)) repairs
@@ -70,16 +56,13 @@ renderChanged used original plan fns = do
       SourceFile leading (d : ds) -> map tidy (d {declLines = filter (not . T.null . T.strip) leading ++ declLines d} : ds)
       SourceFile _ [] -> []
     keepComments d = case declKey d >>= (`findDecl` source) of
-      Just old | null (leadingComments d) -> d {declLines = leadingComments old ++ declLines d}
+      Just old | not (leadingComments old `isPrefixOf` declLines d) -> d {declLines = leadingComments old ++ declLines d}
       _ -> d
     tidy d = d {declLines = dropWhileEnd (T.null . T.strip) (declLines d)}
     designedDecl f = Decl ValueDecl (Just name) (docs ++ signatureLines f ++ body) 0
       where
         name = functionNameText (fnName f)
-        -- No documentation, or the same in other lines, keeps the existing function's.
-        docs = case findDecl name source of
-          Just old | T.null (T.strip (fnDoc f)) || T.words (fnDoc f) == commentWords (leadingComments old) -> leadingComments old
-          _ -> docLines f
+        docs = maybe [] leadingComments (findDecl name source)
         kept = do
           old <- findDecl name source
           adaptEquations name (fnSignature f) old
@@ -100,15 +83,12 @@ renderChanged used original plan fns = do
       [e | d <- typeDecls, Just key <- [declKey d], isNothing (findDecl key source) || any used (key : constructors d), Just e <- [exportName d]]
         ++ [name | f <- designed, let name = functionNameText (fnName f), isNothing (findDecl name source) || used name]
     constructors d = [w | w <- concatMap (T.split (not . isIdentChar)) (declLines d), maybe False (isUpper . fst) (T.uncons w)]
-    -- The words of a Haddock comment, without its dashes and bar.
-    commentWords = concatMap (filter (`notElem` ["--", "-- |", "|"]) . T.words . T.dropWhile (`elem` ("-| " :: String)))
 
 functionLines :: FunctionSpec -> [Text]
-functionLines f = functionHead f ++ maybe [name <> " = undefined"] (T.lines . T.stripEnd) (fnBody f)
+functionLines f = signatureLines f ++ maybe [name <> " = undefined"] (T.lines . T.stripEnd) (fnBody f)
   where
     name = functionNameText (fnName f)
 
--- | A function's documentation and signature.
 functionHead :: FunctionSpec -> [Text]
 functionHead f = docLines f ++ signatureLines f
 
@@ -120,10 +100,6 @@ docLines f = case T.lines (T.strip (fnDoc f)) of
 signatureLines :: FunctionSpec -> [Text]
 signatureLines f = T.lines (functionNameText (fnName f) <> " :: " <> T.strip (fnSignature f))
 
--- | Renders the property suite: a @Main@ module that imports the plan's
--- modules it can see (never an executable's @Main@), checks every property
--- and prints @=== name@ before each, so failures can be traced to
--- properties.
 renderProperties :: [ModuleName] -> Artefact -> Text
 renderProperties visible art =
   T.unlines $
@@ -151,9 +127,6 @@ renderProperties visible art =
   where
     check p = "putStrLn " <> T.pack (show ("=== " <> propName p)) <> " >> HoleyQuickCheck.quickCheckResult " <> propName p
 
--- | Every module's new and changed types, and the signature and
--- documentation of every designed function, for implementers working on
--- one function.
 designSummary :: Artefact -> Text
 designSummary art = T.intercalate "\n" (map summarise (modules art))
   where
@@ -169,10 +142,6 @@ designSummary art = T.intercalate "\n" (map summarise (modules art))
               refPath (fnRef f) == planPath plan
             ]
 
--- | The project's declarations of the types and classes a function's
--- signature names, and those they name in turn, up to twelve, without
--- those the design declares, so an implementer knows their constructors
--- and fields.
 usedTypes :: [Text] -> Artefact -> FunctionSpec -> Text
 usedTypes sources art fn = T.intercalate "\n" [T.unlines (declLines d) | d <- take 12 (go (typeNames (fnSignature fn)) [])]
   where

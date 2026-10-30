@@ -23,10 +23,15 @@ module UI.Widgets
     newComposer,
     composerPanel,
     composer,
+    Navigation (..),
+    navigationButton,
+    resizeSidebar,
+    closableModal,
+    modelCombo,
   )
 where
 
-import Control.Exception (bracket_)
+import Control.Exception (bracket_, finally)
 import Control.Monad (when)
 import qualified Data.ByteString as B
 import Data.Text (Text)
@@ -39,7 +44,7 @@ import qualified DearImGui.Raw.DrawList as DrawList
 import Foreign
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar, CFloat)
-import ImGui.Extras (Metrics (..), colourU32, composerBox, handCursor)
+import ImGui.Extras (Metrics (..), colourU32, composerBox, handCursor, styleColourU32, setMouseCursor, getFramePadding, beginClosableModal, beginComboWithFlags, withStyleFloat)
 import Theme (metrics, vec4)
 import Theme.Palette (Colour (..))
 
@@ -263,10 +268,16 @@ composer (Composer buffer) hint (ImVec2 width height) focus replacement =
     mapM_ (write p) fitted
     (submitted, replaced) <-
       B.useAsCString "##composer" $ \name ->
-        withText hint $ \hintText ->
-          maybe ($ nullPtr) B.useAsCString fitted $ \replacing ->
-            composerBox name hintText p capacity width height focus replacing
+        maybe ($ nullPtr) B.useAsCString fitted $ \replacing ->
+          composerBox name p capacity width height focus replacing
     contents <- decodeUtf8With lenientDecode <$> B.packCString p
+    when (T.null contents && not (T.null hint)) $ do
+      ImVec2 x0 y0 <- Raw.getItemRectMin
+      ImVec2 px py <- getFramePadding
+      list <- Raw.getWindowDrawList
+      ink <- styleColourU32 ImGuiCol_TextDisabled
+      with (ImVec2 (x0 + px) (y0 + py)) $ \at ->
+        withText hint $ \hintText -> DrawList.addText_ list at ink hintText nullPtr
     pure (submitted, replaced, contents)
   where
     write p bytes = B.useAsCStringLen bytes $ \(source, n) -> copyBytes p source n >> pokeByteOff p n (0 :: Word8)
@@ -280,3 +291,90 @@ fitUtf8 limit t
   where
     bytes = encodeUtf8 t
     startsCharacter i = i == 0 || B.index bytes i .&. 0xC0 /= 0x80
+
+-- | Navigation controls have semantic names, independent of their artwork.
+data Navigation = NewChatButton | SettingsButton
+  deriving (Eq, Show)
+
+-- | A compact button with a generous hit target and a drawn icon.
+navigationButton :: Navigation -> IO Bool
+navigationButton kind = do
+  h <- getTextLineHeight
+  pressed <- withStyleVec ImGuiStyleVar_FramePadding (ImVec2 17 ((diameter - h) / 2)) $
+    withStyleFloat ImGuiStyleVar_FrameBorderSize 0 $
+      bracket_ (with (ImVec4 0 0 0 0) (Raw.pushStyleColor ImGuiCol_Button)) (Raw.popStyleColor 1) $
+        button name
+  ImVec2 x0 y0 <- Raw.getItemRectMin
+  list <- Raw.getWindowDrawList
+  ink <- styleColourU32 ImGuiCol_Text
+  let cx = x0 + diameter / 2
+      cy = y0 + diameter / 2
+      scale = 0.70
+      at px py = ImVec2 (cx + px * scale) (cy + py * scale)
+      stroke closed points = do
+        DrawList.pathClear list
+        mapM_ (`with` DrawList.pathLineTo list) points
+        DrawList.pathStroke list ink closed 1.3
+  case kind of
+    SettingsButton -> do
+      let tooth i =
+            let angle = fromIntegral i * 2 * pi / 48
+                radius = if i `mod` 6 `elem` [1, 2, 3] then 9 else 6.8
+            in at (cos angle * radius) (sin angle * radius)
+      stroke ImDrawFlags_Closed (map tooth [0 :: Int .. 47])
+      with (at 0 0) $ \centre -> DrawList.addCircle list centre (realToFrac (3 * scale)) ink 0 1.3
+    NewChatButton -> do
+      stroke ImDrawFlags_None [at 1 (-7), at (-7) (-7), at (-7) 7, at 7 7, at 7 1]
+      stroke ImDrawFlags_Closed [at (-2) 1, at 6 (-7), at 9 (-4), at 1 4, at (-3) 5]
+  hovered <- Raw.isItemHovered
+  when hovered $ do
+    handCursor
+    visible <- Raw.beginTooltip
+    when visible $ withText hint (\hintText -> Raw.textUnformatted hintText Nothing) `finally` Raw.endTooltip
+  pure pressed
+  where
+    diameter = 34
+    (name, hint) = case kind of
+      NewChatButton -> ("##new-chat", "New chat")
+      SettingsButton -> ("##user-settings", "User settings")
+
+-- | The divider's width follows horizontal dragging and stays within its bounds.
+resizeSidebar :: Float -> Float -> Float -> Float -> IO Float
+resizeSidebar width minimum' maximum' height = do
+  _ <- invisibleButton "##sidebar-resize" (ImVec2 8 height) ImGuiButtonFlags_None
+  active <- Raw.isItemActive
+  hovered <- Raw.isItemHovered
+  when (active || hovered) (setMouseCursor ImGuiMouseCursor_ResizeEW)
+  if not active then pure width else do
+    ImVec2 dx _ <- Raw.getMouseDragDelta ImGuiMouseButton_Left 0
+    Raw.resetMouseDragDelta ImGuiMouseButton_Left
+    pure (max minimum' (min maximum' (width + dx)))
+
+-- | Begin a compact modal with a close button. The caller ends its popup when visible.
+closableModal :: Text -> ImVec2 -> IO (Bool, Bool)
+closableModal title (ImVec2 width height) = do
+  with (ImVec2 280 0) $ \minimum' -> with (ImVec2 (width - 32) (height - 40)) $ \maximum' ->
+    Raw.setNextWindowSizeConstraints minimum' maximum'
+  withText title $ \name -> beginClosableModal name flags'
+  where
+    flags' = ImGuiWindowFlags_NoSavedSettings .|. ImGuiWindowFlags_NoCollapse .|. ImGuiWindowFlags_NoResize .|. ImGuiWindowFlags_AlwaysAutoResize
+
+-- | A quiet model picker with a chevron. The caller ends its combo when open.
+modelCombo :: Text -> Text -> Float -> IO Bool
+modelCombo name caption width = do
+  setNextItemWidth width
+  opened <- withStyleFloat ImGuiStyleVar_FrameBorderSize 0 $
+    bracket_ (with (ImVec4 0 0 0 0) (Raw.pushStyleColor ImGuiCol_FrameBg)) (Raw.popStyleColor 1) $
+      withText name $ \label' -> withText caption $ \preview ->
+        beginComboWithFlags label' preview (ImGuiComboFlags_NoArrowButton .|. ImGuiComboFlags_HeightLarge)
+  when (not opened) $ do
+    ImVec2 x0 y0 <- Raw.getItemRectMin
+    -- dear-imgui 2.4.1's getItemRectMax calls GetItemRectMin by mistake.
+    -- Derive the far corner from the correctly bound item size instead.
+    ImVec2 itemWidth itemHeight <- Raw.getItemRectSize
+    let edge = x0 + itemWidth
+        cy = y0 + itemHeight / 2
+    ink <- styleColourU32 ImGuiCol_TextDisabled
+    line ink 1.3 (ImVec2 (edge - 13) (cy - 2)) (ImVec2 (edge - 9) (cy + 2))
+    line ink 1.3 (ImVec2 (edge - 9) (cy + 2)) (ImVec2 (edge - 5) (cy - 2))
+  pure opened

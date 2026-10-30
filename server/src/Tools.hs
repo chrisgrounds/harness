@@ -20,7 +20,6 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((<.>), (</>))
 import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 
--- | Sets the choices of a function's model field, or removes the field.
 offerImplementers :: [Model] -> ToolDefinition -> ToolDefinition
 offerImplementers offered d = d {toolFunction = f {toolFunctionParameters = edit (toolFunctionParameters f)}}
   where
@@ -32,9 +31,6 @@ offerImplementers offered d = d {toolFunction = f {toolFunctionParameters = edit
     at' g (Object o) = Object (g o)
     at' _ v = v
 
--- | Runs a tool that only reads the project at @root@, against which paths
--- resolve, or 'Nothing' for tools that change the run and are handled by the
--- orchestrator.
 readOnlyTool :: FilePath -> ToolName -> Text -> Maybe (IO Text)
 readOnlyTool root ReadFile args = Just $ withArgument "path" args $ \path ->
   reportIOError ("Could not read " <> path) (TIO.readFile (root </> T.unpack path))
@@ -43,10 +39,6 @@ readOnlyTool root ListFiles args = Just $ withArgument "path" args $ \path ->
 readOnlyTool root RipGrep args = Just $ withArgument "pattern" args (ripGrep root)
 readOnlyTool _ _ _ = Nothing
 
--- | Searches the project's Haskell and cabal files for a fixed string with
--- ripgrep, ignoring the user's ripgrep config so results do not depend on it.
--- The path is given explicitly, as ripgrep would otherwise search its stdin,
--- and results are sorted by path so the same search gives the same lines.
 ripGrep :: FilePath -> Text -> IO Text
 ripGrep root pattern = do
   result <-
@@ -60,7 +52,6 @@ ripGrep root pattern = do
     Right (ExitFailure 1, _, _) -> "No matches."
     Right (ExitFailure _, _, err) -> "RipGrep failed: " <> T.pack err
   where
-    -- ripgrep prefixes paths with the "./" it was asked to search.
     relative line = fromMaybe line (T.stripPrefix "./" line)
 
 truncateLines :: Int -> Text -> Text
@@ -83,14 +74,9 @@ reportIOError context action = do
     Left err -> context <> ": " <> T.pack (show (err :: IOException))
     Right value -> value
 
--- | Every tool's definition, from its packaged schema, @tools/read_file.json@
--- for 'ReadFile' and so on.
--- | The tools, for a run on the given model: SetFunctions offers the models
--- it may implement with, or no model field if there is no choice.
 loadToolDefinitions :: Model -> IO (ToolName -> ToolDefinition)
 loadToolDefinitions m = do
   loaded <- Map.adjust (offerImplementers (implementers m)) SetFunctions . Map.fromList <$> mapM (\name -> (,) name <$> load name) [minBound .. maxBound]
-  -- Every tool was loaded, so the lookup cannot fail.
   pure (loaded Map.!)
   where
     load name = do

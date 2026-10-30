@@ -1,7 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | The run-changing tools: decoding their arguments and applying them to a
--- 'Run'. Rejections are returned to the model so it can correct itself.
 module Edits
   ( TypesArgs (..),
     ModuleArg (..),
@@ -56,9 +54,7 @@ data FunctionArg = FunctionArg
     argFunctionName :: Text,
     argSignature :: Text,
     argDoc :: Text,
-    -- | For an existing function, what to change.
     argChange :: Text,
-    -- | The short name of the model to implement it with, if chosen.
     argModel :: Maybe Text
   }
 
@@ -95,8 +91,6 @@ instance FromJSON ImplementArgs where
 decodeArgs :: (FromJSON a) => Text -> Either Text a
 decodeArgs args = either (Left . ("Invalid arguments: " <>) . T.pack) Right (eitherDecodeStrict (TE.encodeUtf8 args))
 
--- | The component and name of each module, checked, for the caller to
--- find on disk.
 checkModules :: [Component] -> TypesArgs -> Either Text [(Component, ModuleName, ModuleArg)]
 checkModules components (TypesArgs args) = do
   when (null args) $ Left "List at least one module."
@@ -120,10 +114,6 @@ checkModules components (TypesArgs args) = do
       _ <- traverse checkImport (argImports arg)
       pure (component, ModuleName name, arg)
 
--- | Sets the modules the run creates or changes and their imports and
--- types, dropping the repairs found for the previous design and functions
--- in modules no longer listed. A run cannot drop a module it has already
--- created.
 applyModules :: [ModulePlan] -> Run -> Either Text Run
 applyModules plans run = do
   let paths = map planPath plans
@@ -135,10 +125,6 @@ applyModules plans run = do
       tidy p = p {planExtensions = map T.strip (planExtensions p), planImports = map T.strip (planImports p)}
   pure run {artefact = art {modules = map tidy plans, functions = [f | f <- functions art, fnKind f == Designed, refPath (fnRef f) `elem` paths]}}
 
--- | Replaces the function list. Every body is cleared, since the design
--- changed. A function named like an existing one in its module replaces it;
--- the previous declaration is kept for its implementer. A chosen model must
--- be one of those offered, and is ignored if there is no choice.
 applyFunctions :: [Model] -> (FunctionRef -> Maybe Text) -> FunctionsArgs -> Run -> Either Text Run
 applyFunctions offered previous (FunctionsArgs args) run = do
   when (null args) $ Left "Declare at least one function."
@@ -180,7 +166,6 @@ applyProperties (PropertiesArgs importLines helpers props) run = do
       unless (any ((n `T.isPrefixOf`) . T.strip) (T.lines source)) $ Left ("The source of " <> n <> " must define " <> n <> ".")
       pure (PropertySpec n source)
 
--- | Sets one function's definition, dropping any type signature the model repeated.
 applyImplementation :: FunctionRef -> ImplementArgs -> Run -> Either Text Run
 applyImplementation ref (ImplementArgs definition importLines) run = do
   checkedImports <- traverse checkImport importLines
@@ -192,10 +177,6 @@ applyImplementation ref (ImplementArgs definition importLines) run = do
         | otherwise = f
   pure (overFunctions (map set) run)
 
--- | A submitted definition, without any signature of the function the model
--- repeated: every equation of the function, or for an instance its whole
--- declaration. Anything else it defines at the top level would clash with
--- the rest of the module, so it is rejected.
 definitionOf :: FunctionName -> Text -> Either Text Text
 definitionOf name definition = do
   let n = functionNameText name
@@ -211,14 +192,12 @@ definitionOf name definition = do
   pure (T.stripEnd (if isInstanceName name then definition else body))
   where
     isSignature n line = any (`T.isPrefixOf` T.strip line) [n <> " ::", n <> "::"]
-    -- An equation of the function, prefix or infix.
     defines n line =
       n `T.isPrefixOf` line
         || ("`" <> n <> "`") `elem` infixPosition line
         || maybe False (`elem` infixPosition line) (T.stripPrefix "(" n >>= T.stripSuffix ")")
     infixPosition = take 1 . drop 1 . T.words
 
--- | What a review found the code does not do.
 newtype GapArgs = GapArgs Text
 
 instance FromJSON GapArgs where
@@ -229,8 +208,6 @@ newtype RefactorArgs = RefactorArgs [RefactorArg]
 instance FromJSON RefactorArgs where
   parseJSON = withObject "Refactor" $ \o -> RefactorArgs <$> o .: "functions"
 
--- | A new definition for one of the run's functions, or a new helper, which
--- needs a signature.
 data RefactorArg = RefactorArg
   { refactorModule :: Text,
     refactorName :: Text,
@@ -250,7 +227,6 @@ instance FromJSON RefactorArg where
       <*> o .: "definition"
       <*> o .:? "imports" .!= []
 
--- | Rewrites the run's functions and adds helpers, as a review asked.
 applyRefactor :: RefactorArgs -> Run -> Either Text Run
 applyRefactor (RefactorArgs args) run = do
   when (null args) $ Left "List at least one function, or reply without calling Refactor if nothing is duplicated."
@@ -263,7 +239,6 @@ applyRefactor (RefactorArgs args) run = do
     replaced changes f = case [c | (c, False) <- changes, fnRef c == fnRef f] of
       c : _ -> f {fnBody = fnBody c, fnImports = fnImports c, fnSignature = if T.null (fnSignature c) then fnSignature f else fnSignature c}
       [] -> f
-    -- A function to replace, or a new one, said by the flag.
     change arg = do
       let n = T.strip (refactorName arg)
       plan <- case [p | p <- plans, moduleNameText (planModule p) == T.strip (refactorModule arg)] of
@@ -278,14 +253,11 @@ applyRefactor (RefactorArgs args) run = do
       when (new && T.null signature) $ Left ("Give the new helper " <> n <> " a signature.")
       pure (FunctionSpec ref Designed signature (T.strip (refactorDoc arg)) "" (Just body) Undefined imports' Nothing Nothing, new)
 
--- | Adds existing functions the design broke, as holes, given each one's
--- declaration before the run. Functions already in the run are skipped.
 addRepairs :: [(FunctionRef, Text)] -> Run -> Run
 addRepairs broken = overFunctions (\fns -> fns ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef fns])
   where
     repair ref previous = FunctionSpec ref Repair "" "" "" Nothing Undefined [] (Just previous) Nothing
 
--- | Fails with the message if any item repeats.
 unique :: (Eq a) => Text -> [a] -> Either Text ()
 unique message xs = when (length (nub xs) /= length xs) (Left message)
 
