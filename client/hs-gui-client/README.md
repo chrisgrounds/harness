@@ -13,7 +13,7 @@ cabal run hs-gui-client -- --project ~/src/my-project
 
 Use the cog icon at the bottom of the sidebar to open **User settings**, connect ChatGPT, switch or sign out of an account, and refresh its model catalog. Close settings with its X or Escape. Complete the OAuth sign-in in your browser; account setup runs in the background.
 
-Use the right-aligned model dropdown directly below the message box to select this chat's model. The pencil-and-page **New chat** icon creates an independent draft and transcript. Switching chats restores each chat's model, draft and progress, including updates received in the background. Models come from your connected ChatGPT accounts and the server's configured API providers. All available models appear automatically. Chats live for the current window session; account settings and model catalogs are saved on disk.
+Use the model dropdown inside the bottom-right of the message box to select this chat's model, and the circular up-arrow button beside it to send. The pencil-and-page **New chat** icon creates an independent draft and transcript. Switching chats restores each chat's model, draft and progress, including updates received in the background. Models come from your connected ChatGPT accounts and the server's configured API providers. All available models appear automatically. Chats live for the current window session; account settings and model catalogs are saved on disk.
 
 Pass a socket path after the options to use something other than `/tmp/harness.sock`.
 
@@ -47,7 +47,7 @@ Movement eases rather than jumps: the progress bar, the rail, scrolling, the com
 | `Client.Settings` | Account metadata and model catalogs; credentials stay in `openai-auth` |
 | `Client.Commands`, `Client.Tokens` | `/` commands and the average token rate, as in the terminal client |
 | `UI.State` | The interface's state and a pure `update` for each `Action`: what the user did, or news from the server |
-| `Theme.Palette` | The palette, read from `themes/orng.toml`, the terminal client's colours |
+| `Theme.Palette` | The palette, read from `themes/orng.toml`, with orng Dark accents on neutral charcoal |
 | `app/UI` | The window: the frame loop, and drawing the state each frame into the actions it produces |
 | `app/UI/Motion` | Values that ease toward their targets, keeping frames coming until they arrive |
 | `app/UI/Widgets`, `app/UI/Fonts`, `app/Theme` | Text, drawn icons, the send button, the composer, fonts, and Dear ImGui's style |

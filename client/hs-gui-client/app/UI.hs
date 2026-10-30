@@ -371,9 +371,7 @@ mainPane e ui titled size'@(ImVec2 width _) =
         statusLine e ui left column
         gap composerGap
     composed <- composerRow e ui left column
-    gap composerGap
-    modelActions <- chatHeader e ui left column
-    pure (navigation ++ scrolled ++ modelActions ++ composed)
+    pure (navigation ++ scrolled ++ composed)
   where
     p = palette e
 
@@ -605,7 +603,7 @@ statusLine e ui left column = do
   where
     p = palette e
 
--- | The composer and its send button.
+-- | One rounded composer, with the model picker and up arrow in its footer.
 composerRow :: Env -> UI -> Float -> Float -> IO [Action]
 composerRow e ui left column = do
   height <- composerHeight e ui
@@ -613,39 +611,50 @@ composerRow e ui left column = do
   focusGlow <- ease (motion e) "focus" 0.1 (if wasActive then 1 else 0)
   -- The edge lightens while typing; orange is kept for what is running.
   let edge = mix (realToFrac (0.22 * focusGlow)) (foreground p) (seam p)
-      fieldWidth = column - sendWidth - 12
+      textHeight = height - 2 * composerInset - composerControlsHeight - 8
   setCursorPosX left
   ImVec2 _ top <- Raw.getCursorPos
+  composerPanel (ImVec2 column height) (raised p) edge
+  setCursorPos' (ImVec2 (left + 4) (top + 4))
   -- Keep the keyboard in the composer unless something else is in use.
   popup <- isAnyLevelPopupOpen ""
   activeItem <- Raw.isAnyItemActive
   focusedItem <- Raw.isAnyItemFocused
   let focus = not (settingsOpen ui || popup || activeItem || focusedItem)
   (submitted, replaced, value) <-
-    withStyleVec ImGuiStyleVar_FramePadding (ImVec2 16 (snd (framePadding metrics))) $
-      withStyleFloat ImGuiStyleVar_FrameRounding 14 $
-        bracket_ (with (vec4 edge) (Raw.pushStyleColor ImGuiCol_Border)) (Raw.popStyleColor 1) $
-          composer (composerText e) hint (ImVec2 fieldWidth height) focus (replacement ui)
+    withStyleVec ImGuiStyleVar_FramePadding (ImVec2 12 (snd (framePadding metrics))) $
+      withStyleFloat ImGuiStyleVar_FrameBorderSize 0 $
+        bracket_
+          (forM_ [ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive] $ \col ->
+            with (ImVec4 0 0 0 0) (Raw.pushStyleColor col))
+          (Raw.popStyleColor 3) $
+          composer (composerText e) hint (ImVec2 (column - 8) textHeight) focus (replacement ui)
   writeIORef (composing e) =<< Raw.isItemActive
-  setCursorPos' (ImVec2 (left + fieldWidth + 12) top)
-  clicked <- bracket_ (beginDisabled (not (canSend ui))) Raw.endDisabled $
-    withText "Send" $ \title -> sizedButton title sendWidth height
-  pure ([Replaced | replaced] ++ [Edited value | value /= draft ui] ++ [Send | submitted || clicked])
+  let controlsTop = top + height - composerInset - composerControlsHeight
+  pickerHeight <- withFont (small (fonts e)) $ (+ 2 * snd (framePadding metrics)) <$> getTextLineHeight
+  setCursorPosY (controlsTop + (composerControlsHeight - pickerHeight) / 2)
+  modelActions <- modelPicker e ui (left + composerInset) (column - 2 * composerInset - composerControlsHeight - 8)
+  setCursorPos' (ImVec2 (left + column - composerInset - composerControlsHeight) controlsTop)
+  clicked <- sendButton composerControlsHeight (canSend ui) (accent p) (secondaryAccent p) (seam p) (foreground p)
+  setCursorPos' (ImVec2 left top)
+  with (ImVec2 column height) Raw.dummy
+  pure (modelActions ++ [Replaced | replaced] ++ [Edited value | value /= draft ui] ++ [Send | submitted || clicked])
   where
     p = palette e
     hint = case failure ui of
       Just _ -> "Disconnected from the server"
       Nothing -> "Message…"
 
-sendWidth :: Float
-sendWidth = 72
+composerInset, composerControlsHeight :: Float
+composerInset = 12
+composerControlsHeight = 32
 
--- | One to six lines, as many as the draft has, growing smoothly.
+-- | Two to six lines plus the controls, growing smoothly with the draft.
 composerHeight :: Env -> UI -> IO Float
 composerHeight e ui = do
   lineHeight <- getTextLineHeight
-  let rows = max 1 (min 6 (length (T.splitOn "\n" (draft ui))))
-  ease (motion e) "composer" 0.07 (fromIntegral rows * lineHeight + 2 * snd (framePadding metrics))
+  let rows = max 2 (min 6 (length (T.splitOn "\n" (draft ui))))
+  ease (motion e) "composer" 0.07 (fromIntegral rows * lineHeight + 2 * snd (framePadding metrics) + 2 * composerInset + composerControlsHeight + 8)
 
 statusGap, composerGap, bottomGap :: Float
 statusGap = 4
@@ -658,10 +667,8 @@ belowTranscript :: Env -> UI -> IO Float
 belowTranscript e ui = do
   lineHeight <- getTextLineHeight
   composer' <- composerHeight e ui
-  pickerLine <- withFont (small (fonts e)) getTextLineHeight
   let statusHeight = case status ui of Ready -> 0; _ -> statusGap + lineHeight + composerGap + snd (itemSpacing metrics)
-      pickerHeight = pickerLine + 2 * snd (framePadding metrics)
-  pure (statusHeight + composer' + composerGap + pickerHeight + 2 * snd (itemSpacing metrics) + bottomGap)
+  pure (statusHeight + composer' + snd (itemSpacing metrics) + bottomGap)
 
 -- | The window '/tools' opens, centred on the display: every tool the
 -- model can call.
@@ -682,19 +689,20 @@ toolsWindow e (ImVec2 width height) = do
     windowFlags = ImGuiWindowFlags_AlwaysAutoResize .|. ImGuiWindowFlags_NoCollapse .|. ImGuiWindowFlags_NoSavedSettings
 
 -- | The selected model is scoped to this chat, including before its first run.
-chatHeader :: Env -> UI -> Float -> Float -> IO [Action]
-chatHeader e ui left column = withFont (small (fonts e)) $ do
+modelPicker :: Env -> UI -> Float -> Float -> IO [Action]
+modelPicker e ui left column = withFont (small (fonts e)) $ do
   let preview = maybe "Choose a model" (fst . T.breakOn " · " . choiceLabel) (selectedChoice ui)
   measured <- textWidth preview
   let width = min column (measured + 40)
+  shown <- ellipsize (width - 40) preview
   setCursorPosX (left + column - width)
   bracket_ (beginDisabled (waiting ui)) Raw.endDisabled $
-    withText "##chat-model" $ \name -> withText preview $ \caption -> do
+    withText "##chat-model" $ \name -> withText shown $ \caption -> do
       opened <- modelCombo name caption width
       if not opened then pure [] else flip finally Raw.endCombo $
         concat <$> forM (modelChoices ui) (\choice -> do
           picked <- selectableWith defSelectableOptions {selected = Just choice == selectedChoice ui}
-            (choiceLabel choice <> "##" <> modelName (choiceModel choice) <> fromMaybe "" (choiceAccount choice))
+            (fst (T.breakOn " · " (choiceLabel choice)) <> "##" <> modelName (choiceModel choice) <> fromMaybe "" (choiceAccount choice))
           pure [ChooseModel choice | picked])
 
 navButton :: Bool -> IO Bool

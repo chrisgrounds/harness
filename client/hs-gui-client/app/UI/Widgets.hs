@@ -21,6 +21,7 @@ module UI.Widgets
     sendButton,
     Composer,
     newComposer,
+    composerPanel,
     composer,
   )
 where
@@ -235,6 +236,19 @@ newComposer = do
   buffer <- mallocForeignPtrBytes capacity
   withForeignPtr buffer $ \p -> poke p 0
   pure (Composer buffer)
+
+-- | The shared rounded surface behind the text and composer controls.
+-- Leaves the cursor in place so both can be laid out inside it.
+composerPanel :: ImVec2 -> Colour -> Colour -> IO ()
+composerPanel (ImVec2 width height) fill edge = do
+  ImVec2 x0 y0 <- Raw.getCursorScreenPos
+  list <- Raw.getWindowDrawList
+  surface <- colour 1 fill
+  outline <- colour 1 edge
+  with (ImVec2 x0 y0) $ \from ->
+    with (ImVec2 (x0 + width) (y0 + height)) $ \to -> do
+      DrawList.addRectFilled list from to surface 16 ImDrawFlags_None
+      DrawList.addRect list from to outline 16 ImDrawFlags_None 1
 
 -- | Draws the composer at the given size, showing the hint while it is
 -- empty, taking the keyboard when asked, and replacing its text when given
