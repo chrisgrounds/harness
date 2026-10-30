@@ -301,7 +301,7 @@ mainPane e ui titled size'@(ImVec2 width _) =
             Composer.composerChoice = selectedChoice ui,
             Composer.composerEffort = selectedEffort ui
           }
-    layout <- Composer.measureComposer (composerState e) composerView (status ui)
+    layout <- Composer.measureComposer (composerState e) composerView (status ui) column
     scrolled <- pane "transcript" (ImVec2 width (negate (Composer.reservedHeight layout))) Nothing True $
       Transcript.drawTranscript (transcript e)
         (Transcript.TranscriptView (currentChatId ui) (runs ui) (scrollRequest ui)) left column

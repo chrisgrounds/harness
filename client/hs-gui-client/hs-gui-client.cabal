@@ -62,7 +62,7 @@ executable hs-gui-client
     , hs-gui-client
     , bytestring
     , core
-    , dear-imgui == 2.4.1
+    , dear-imgui == 2.5.0
     , containers
     , directory
     , filepath
@@ -72,7 +72,7 @@ executable hs-gui-client
     , text
     , system-cxx-std-lib
   -- Dear ImGui calls the bindings leave out, compiled against a copy of the
-  -- header dear-imgui 2.4.1 was built from, with its default defines.
+  -- header dear-imgui 2.5.0 was built from, with its default defines.
   cxx-sources: cbits/imgui_extras.cpp
   include-dirs: cbits/imgui
   cxx-options: -std=c++11 -DIMGUI_USE_WCHAR32 "-DImDrawIdx=unsigned int"

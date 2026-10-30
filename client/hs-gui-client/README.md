@@ -61,6 +61,6 @@ The library holds everything that does not touch the window, and `cabal test hs-
 
 Animation keys use the chat ID and each run's oldest-first ordinal, which stays stable as runs are appended. Animation values live with the session's chat history, with a fixed number of entries per run across retries. The frame loop supplies time; measuring and drawing the same animation returns the same value within a frame. Composer layout is measured once and reused when reserving transcript space and drawing controls.
 
-`cbits/imgui` is a copy of the `imgui.h` and `imconfig.h` that dear-imgui 2.4.1 builds Dear ImGui 1.91.9b from, so the extras compile against the same structs; the cabal file pins that version, and the client refuses to start if the layouts differ. Updating dear-imgui means copying its headers again.
+`cbits/imgui` is a copy of the `imgui.h` and `imconfig.h` that dear-imgui 2.5.0 builds Dear ImGui 1.92.8 from, so the extras compile against the same structs; the cabal file pins that version, and the client refuses to start if the layouts differ. Updating dear-imgui means copying its headers again.
 
-Dear ImGui 1.91's text boxes do not wrap, so a long line in the composer scrolls sideways; messages in the conversation wrap.
+The composer wraps long lines to its available width and grows from two to six visual lines, then scrolls vertically. Wrapping does not add newlines to the message; Shift-Enter inserts a newline and Enter sends.

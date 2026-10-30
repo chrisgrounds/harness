@@ -58,10 +58,8 @@ loadFonts density = do
       pure (fonts, 1 / density)
   where
     d = FontAtlas.DefaultFont
-    face (Face path index) size = FontAtlas.FromTTF path (size * density) (FontAtlas.fontNo <$> index) glyphs
-    -- Latin, and the punctuation and arrows the interface and typed
-    -- requirements use.
-    glyphs = FontAtlas.RangesBuilder (FontAtlas.addRanges FontAtlas.Latin <> FontAtlas.addText "…·–—‘’“”•→←↑↓")
+    -- The renderer loads glyphs on demand, including punctuation and arrows.
+    face (Face path index) size = FontAtlas.FromTTF path (Just (size * density)) (FontAtlas.fontNo <$> index)
 
 -- | Face 7 is Regular, 5 Medium and 2 DemiBold.
 avenirNext :: FilePath

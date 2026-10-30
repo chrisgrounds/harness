@@ -1,6 +1,6 @@
 // Dear ImGui calls the dear-imgui bindings leave out. This file is compiled
-// against cbits/imgui/imgui.h, a copy of the header dear-imgui 2.4.1 builds
-// Dear ImGui 1.91.9b from, with the package's default defines, so the
+// against cbits/imgui/imgui.h, a copy of the header dear-imgui 2.5.0 builds
+// Dear ImGui 1.92.8 from, with the package's default defines, so the
 // structs agree with the library it links with; harness_layout_matches
 // checks that at start-up.
 
@@ -60,7 +60,7 @@ void harness_configure_io(float font_scale)
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.FontGlobalScale = font_scale;
+    ImGui::GetStyle().FontScaleMain = font_scale;
 }
 
 void harness_set_colour(int colour, float r, float g, float b, float a)
@@ -126,7 +126,7 @@ int harness_take_chord(int chord)
 int harness_composer(const char* label, char* buf, int buf_size, float width, float height,
                      int focus, const char* replacement, int* replaced)
 {
-    const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_CallbackCharFilter;
+    const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_WordWrap;
     if (focus)
         ImGui::SetKeyboardFocusHere();
     ComposerFrame frame = {replacement, false, false};

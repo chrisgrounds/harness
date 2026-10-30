@@ -16,7 +16,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import DearImGui hiding (end, flags, indent, size, w, x, y, z)
 import qualified DearImGui.Raw as Raw
-import Foreign (with)
+import Foreign (nullPtr, with)
 import ImGui.Extras (Metrics (..), withStyleFloat)
 import Theme (metrics, mix, raised, seam)
 import Theme.Palette
@@ -143,10 +143,15 @@ composerControlsHeight = 32
 
 -- | Measure once before reserving the transcript's space; drawing consumes
 -- the same layout without advancing its height animation again.
-measureComposer :: ComposerState -> ComposerView -> Status -> IO ComposerLayout
-measureComposer e view currentStatus = do
+measureComposer :: ComposerState -> ComposerView -> Status -> Float -> IO ComposerLayout
+measureComposer e view currentStatus column = do
   lineHeight <- getTextLineHeight
-  let rows = max 2 (min 6 (length (T.splitOn "\n" (composerDraft view))))
+  -- InputTextMultiline reserves room for its scrollbar even before it appears.
+  let wrapWidth = max 1 (column - 8 - 2 * 12 - scrollbarSize metrics)
+      value = fromMaybe (composerDraft view) (composerReplacement view)
+  ImVec2 _ textHeight <- withText value $ \textPtr -> Raw.calcTextSize textPtr nullPtr 0 (realToFrac wrapWidth)
+  let trailingLine = if "\n" `T.isSuffixOf` value then 1 else 0
+      rows = max 2 (min 6 ((ceiling (textHeight / lineHeight) :: Int) + trailingLine))
   height <- ease (motion e) ComposerHeight 0.07
     (fromIntegral rows * lineHeight + 2 * snd (framePadding metrics) + 2 * composerInset + composerControlsHeight + 8)
   let statusHeight = case currentStatus of Ready -> 0; _ -> statusGap + lineHeight + composerGap + snd (itemSpacing metrics)

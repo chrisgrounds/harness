@@ -155,11 +155,11 @@ icon kind c = do
       stroke points = do
         DrawList.pathClear list
         mapM_ (`with` DrawList.pathLineTo list) points
-        DrawList.pathStroke list ink ImDrawFlags_None thickness
+        DrawList.pathStroke list ink thickness ImDrawFlags_None
       arc from to = do
         DrawList.pathClear list
         with (at 0.5 0.5) $ \centre -> DrawList.pathArcTo list centre radius (realToFrac from) (realToFrac to) 0
-        DrawList.pathStroke list ink ImDrawFlags_None thickness
+        DrawList.pathStroke list ink thickness ImDrawFlags_None
   case kind of
     Hollow -> with (at 0.5 0.5) $ \centre -> DrawList.addCircle list centre radius ink 0 thickness
     Dot -> with (at 0.5 0.5) $ \centre -> DrawList.addCircleFilled list centre (radius * 0.8) ink 0
@@ -225,7 +225,7 @@ sendButton diameter enabled fill hover off arrow = do
   let stroke points = do
         DrawList.pathClear list
         mapM_ (`with` DrawList.pathLineTo list) points
-        DrawList.pathStroke list ink ImDrawFlags_None thickness
+        DrawList.pathStroke list ink thickness ImDrawFlags_None
   stroke [at 0 (s * 1.1), at 0 (-s * 1.1)]
   stroke [at (-s) (-s * 0.1), at 0 (-s * 1.1), at s (-s * 0.1)]
   pure (enabled && clicked)
@@ -253,7 +253,7 @@ composerPanel (ImVec2 width height) fill edge = do
   with (ImVec2 x0 y0) $ \from ->
     with (ImVec2 (x0 + width) (y0 + height)) $ \to -> do
       DrawList.addRectFilled list from to surface 16 ImDrawFlags_None
-      DrawList.addRect list from to outline 16 ImDrawFlags_None 1
+      DrawList.addRect list from to outline 16 1 ImDrawFlags_None
 
 -- | Draws the composer at the given size, showing the hint while it is
 -- empty, taking the keyboard when asked, and replacing its text when given
@@ -314,7 +314,7 @@ navigationButton kind = do
       stroke closed points = do
         DrawList.pathClear list
         mapM_ (`with` DrawList.pathLineTo list) points
-        DrawList.pathStroke list ink closed 1.3
+        DrawList.pathStroke list ink 1.3 closed
   case kind of
     SettingsButton -> do
       let tooth i =
