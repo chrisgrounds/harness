@@ -3,7 +3,9 @@
 
 module UI (runUI) where
 
+import ChatSaver (ChatSaver, offer, updatedTimes, withChatSaver)
 import Client (ClientTask, NetworkEvent, safeText, worker)
+import Client.Chats (chatsFile, loadChats, restamp)
 import Client.Tokens (averageTokens)
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.STM (TQueue, atomically, flushTQueue, newTQueueIO, readTQueue, writeTQueue)
@@ -28,7 +30,10 @@ import SDL.Raw.Enum (pattern SDL_FIRSTEVENT, pattern SDL_LASTEVENT, pattern SDL_
 import qualified SDL.Raw.Event as SDL.Raw
 import qualified SDL.Raw.Types as SDL.Raw
 import qualified SDL.Raw.Video as SDL.Raw
+import qualified Data.Map.Strict as Map
+import Data.Time (UTCTime, getCurrentTime)
 import System.Directory (getHomeDirectory)
+import System.IO (hPutStrLn, stderr)
 import Theme
 import Theme.Palette
 import UI.Appearance
@@ -69,7 +74,10 @@ data Loop = Loop
     requests :: TQueue ClientTask,
     state :: IORef UI,
     -- | Set while a frame is drawn, so a resize cannot start another.
-    drawing :: IORef Bool
+    drawing :: IORef Bool,
+    -- | Absent when the saved chats could not be read, so they are not
+    -- replaced.
+    saver :: Maybe ChatSaver
   }
 
 runUI :: FilePath -> FilePath -> Socket -> IO ()
@@ -94,14 +102,23 @@ runUI path dir sock = do
               box <- Composer.newComposerState look moves
               transcriptState <- Transcript.newTranscript look moves
               sideSize <- newIORef 276
-              ui <- newIORef initialUI
+              file <- chatsFile
+              loaded <- loadChats file
+              now <- getCurrentTime
+              let restored = either (const initialUI) (\saved -> restoreChats dir saved initialUI) loaded
+              either (\err -> hPutStrLn stderr ("hs-gui-client: not saving chats, since " ++ file ++ " could not be read: " ++ err)) (const (pure ())) loaded
+              ui <- newIORef restored
               busy <- newIORef False
               let shown = if home `isPrefixOf` dir then "~" <> drop (length home) dir else dir
                   env' = Env look box transcriptState path dir (T.pack shown) moves sideSize
                   loop = Loop env' ren win newsQueue requestQueue ui busy
                   publish event = atomically (writeTQueue newsQueue event) >> wake
-              bracket (forkIO (worker sock (atomically (readTQueue requestQueue)) publish)) killThread $ \_ ->
-                whileResizing loop $ frames loop settleFrames
+                  saving = case loaded of
+                    Left _ -> \run -> run Nothing
+                    Right saved -> \run -> withChatSaver file dir (restamp saved (chatsToSave dir now restored)) (run . Just)
+              saving $ \chats ->
+                bracket (forkIO (worker sock (atomically (readTQueue requestQueue)) publish)) killThread $ \_ ->
+                  whileResizing (loop chats) $ frames (loop chats) settleFrames
   where
     windowConfig =
       SDL.defaultWindow
@@ -194,7 +211,9 @@ frame loop = do
       sdl2NewFrame
       newFrame
       startFrame (motion e) =<< Raw.getTime
-      actions <- draw e current
+      now <- getCurrentTime
+      times <- maybe (pure Map.empty) updatedTimes (saver loop)
+      actions <- draw e times now current
       render
       -- Dear ImGui lays out in points; the renderer draws in pixels.
       density <- realToFrac <$> pixelDensity (window loop) (renderer loop)
@@ -205,12 +224,14 @@ frame loop = do
       sdlRendererRenderDrawData (renderer loop) =<< getDrawData
       SDL.present (renderer loop)
       let (next, started) = updateAll dir actions current
+          changed = not (null news && null actions)
       writeIORef (state loop) next
       mapM_ (atomically . writeTQueue (requests loop)) started
-      pure (not (null news && null actions))
+      when changed $ forM_ (saver loop) $ \chats -> offer chats (chatsToSave dir now next)
+      pure changed
 
-draw :: Env -> UI -> IO [Action]
-draw e ui = do
+draw :: Env -> Map.Map Int UTCTime -> UTCTime -> UI -> IO [Action]
+draw e times now ui = do
   (shown, size') <- fullscreen $ do
     keys <- if settingsOpen ui then pure [] else shortcuts (currentChatId ui)
     ImVec2 width height <- Raw.getContentRegionAvail
@@ -227,6 +248,8 @@ draw e ui = do
                   sidebarSocket = socketPath e,
                   sidebarChats = chatSummaries ui,
                   sidebarCurrent = currentChatId ui,
+                  sidebarTimes = times,
+                  sidebarNow = now,
                   sidebarRate = averageTokens (tokenStats ui)
                 }
           picked <- sidebar (appearance e) view (ImVec2 side height)

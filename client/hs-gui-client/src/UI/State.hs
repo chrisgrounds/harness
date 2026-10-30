@@ -8,16 +8,21 @@ module UI.State
     implementCounts, target, rateText, runSummary, toolCallLabel, allToolNames,
     runs, draft, replacement, waiting, failure, runError, inputHistory, historyIndex,
     savedDraft, serverModel, tokenStats, showingTools, scrollRequest, quitting,
-    chatSummaries, selectedChoice, selectedEffort
+    ChatSummary (..), chatSummaries, ago, selectedChoice, selectedEffort, restoreChats, chatsToSave
   ) where
 
 import Client (NetworkEvent (..), ClientTask (..), safeText)
+import Client.Chats (SavedChat (SavedChat))
+import qualified Client.Chats as Saved
 import Client.Settings
 import qualified Data.Map.Strict as Map
 import Client.Commands (Command (..), parseCommand)
 import Client.Tokens (TokenStats, addRate, emptyTokenStats)
 import Core hiding (Chat)
+import Data.List (sortOn)
 import Data.Maybe (isNothing, listToMaybe, maybeToList)
+import Data.Ord (Down (..))
+import Data.Time (UTCTime, diffUTCTime)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Printf (printf)
@@ -376,13 +381,70 @@ updateAll dir actions ui = foldl apply (ui, []) actions
   where
     apply (current, started) action = let (next, task) = update dir action current in (next, started ++ maybeToList task)
 
--- | Session history contains chats that have started a run. Unsent drafts
--- retain their state but do not appear as history entries.
-chatSummaries :: UI -> [(Int, Text, Maybe ModelChoice, Bool)]
+-- | A chat as the sidebar lists it.
+data ChatSummary = ChatSummary
+  { summaryChat :: Int,
+    -- | The chat's first requirement.
+    summaryTitle :: Text,
+    summaryChoice :: Maybe ModelChoice,
+    summaryBusy :: Bool,
+    summaryLatest :: Run
+  }
+  deriving (Eq, Show)
+
+-- | Session history contains chats that have started a run, newest first.
+-- Unsent drafts retain their state but do not appear as history entries.
+chatSummaries :: UI -> [ChatSummary]
 chatSummaries ui =
-  [(key, requirementText (requirement oldest), cModelChoice conversation, cWaiting conversation)
+  [ChatSummary key (requirementText (requirement oldest)) (cModelChoice conversation) (cWaiting conversation) latest
    | (key, conversation) <- reverse (Map.toAscList (Map.insert (currentChatId ui) (currentConversation ui) (otherConversations ui))),
+     latest : _ <- [cRuns conversation],
      Just oldest <- [listToMaybe (reverse (cRuns conversation))]]
+
+-- | How long ago the first time was before the second, briefly: @now@,
+-- @7m@, @2h@, @3d@ or @5w@.
+ago :: UTCTime -> UTCTime -> Text
+ago before now
+  | minutes < 1 = "now"
+  | minutes < 60 = T.pack (show minutes) <> "m"
+  | hours < 24 = T.pack (show hours) <> "h"
+  | days < 7 = T.pack (show days) <> "d"
+  | otherwise = T.pack (show (days `div` 7)) <> "w"
+  where
+    minutes = floor (realToFrac (diffUTCTime now before) / 60 :: Double) :: Int
+    hours = minutes `div` 60
+    days = hours `div` 24
+
+-- | The project's saved chats in place of the initial one: the most
+-- recently updated is selected, and the others kept if they started a run.
+-- A run left in progress when the app closed is stopped where it was.
+restoreChats :: FilePath -> [SavedChat] -> UI -> UI
+restoreChats dir saved ui = case sortOn (Down . Saved.lastUpdated) [c | c <- saved, Saved.projectPath c == dir] of
+  [] -> ui
+  latest : others ->
+    ui {currentConversation = (restore latest) {cReplacement = Just (Saved.composerDraft latest), cScrollRequest = Just ToLatest},
+        otherConversations = Map.fromList [(Saved.chatId c, restore c) | c <- others, not (null (Saved.runs c))],
+        currentChatId = Saved.chatId latest,
+        nextChatId = maximum (nextChatId ui : map ((+ 1) . Saved.chatId) saved)}
+  where
+    restore c = initialConversation
+      { cRuns = map interrupt (Saved.runs c),
+        cDraft = Saved.composerDraft c,
+        cInputHistory = Saved.inputHistory c,
+        cSavedDraft = Saved.composerDraft c,
+        cModelChoice = Saved.modelChoice c,
+        cReasoningEffort = Saved.reasoningEffort c
+      }
+    interrupt run = foldr (\(step, s) r -> if s == Running then setStep step (Failed "Interrupted when the app closed") r else r) run (steps run)
+
+-- | The chats worth keeping, all stamped with the given time: those that
+-- started a run or have a draft.
+chatsToSave :: FilePath -> UTCTime -> UI -> [SavedChat]
+chatsToSave dir now ui =
+  [ SavedChat chat dir (cDraft c) (cModelChoice c) (cReasoningEffort c) (cRuns c) (cInputHistory c) now
+  | (chat, c) <- Map.toAscList (Map.insert (currentChatId ui) (currentConversation ui) (otherConversations ui)),
+    not (null (cRuns c)) || not (T.null (T.strip (cDraft c)))
+  ]
 
 runs :: UI -> [Run]
 runs = cRuns . currentConversation

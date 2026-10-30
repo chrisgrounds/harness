@@ -17,6 +17,7 @@ library
   hs-source-dirs: src
   exposed-modules:
       Client
+    , Client.Chats
     , Client.Settings
     , Client.Commands
     , Client.Tokens
@@ -35,6 +36,7 @@ library
     , core
     , network
     , text
+    , time
     , toml-parser >= 2.0 && < 3
   ghc-options: -Wall -Werror=missing-fields
   default-language: Haskell2010
@@ -43,7 +45,8 @@ executable hs-gui-client
   hs-source-dirs: app
   main-is: Main.hs
   other-modules:
-      ImGui.Extras
+      ChatSaver
+    , ImGui.Extras
     , Theme
     , UI
     , UI.Appearance
@@ -75,6 +78,7 @@ executable hs-gui-client
     , sdl2 >= 2.5 && < 2.6
     , stm
     , text
+    , time
     , system-cxx-std-lib
   -- Dear ImGui calls the bindings leave out, compiled against a copy of the
   -- header dear-imgui 2.5.0 was built from, with its default defines.
@@ -89,12 +93,16 @@ test-suite hs-gui-client-tests
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs
-  other-modules: MotionTests
+  other-modules: ChatsTests, MotionTests
   build-depends:
       base
     , hs-gui-client
+    , aeson
     , core
+    , directory
+    , filepath
     , QuickCheck
     , text
+    , time
   ghc-options: -Wall -Werror=missing-fields
   default-language: Haskell2010

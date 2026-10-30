@@ -7,6 +7,7 @@ import Client (NetworkEvent (..), ClientTask (..))
 import Client.Settings
 import Client.Commands (Command (..), parseCommand)
 import Core hiding (Chat)
+import ChatsTests (chatsTests)
 import MotionTests (motionTests)
 import Data.Either (isLeft)
 import Data.Maybe (isJust, isNothing)
@@ -239,6 +240,7 @@ main = do
   results <-
     sequence
       [ motionTests,
+        chatsTests,
         check "chats retain independent models, drafts and background updates" prop_chatIsolation,
         check "OpenAI effort stays with its chat and travels with requests" prop_chatEffort,
         check "sidebar history contains only chats that have started" prop_historyContainsOnlyStartedChats,
@@ -301,12 +303,14 @@ prop_historyContainsOnlyStartedChats (Requirement' first) (Requirement' second) 
   in null (chatSummaries State.initialUI) && null (chatSummaries initialUI)
        && null (chatSummaries drafted) && null (chatSummaries fresh)
        && draft (act (SelectChat 0) fresh) == first
-       && chatSummaries started == [(1, second, expectedChoice, True)]
+       && listed started == [(1, second, expectedChoice, True)]
        && chatSummaries background == chatSummaries started
        && outgoing == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement first) Nothing)))
        && currentChatId bothStarted == 2 && draft bothStarted == "another draft"
-       && chatSummaries bothStarted == [(1, second, expectedChoice, True), (0, first, expectedChoice, True)]
-       && chatSummaries finished == [(1, second, expectedChoice, True), (0, first, expectedChoice, False)]
+       && listed bothStarted == [(1, second, expectedChoice, True), (0, first, expectedChoice, True)]
+       && listed finished == [(1, second, expectedChoice, True), (0, first, expectedChoice, False)]
+  where
+    listed = map (\s -> (summaryChat s, summaryTitle s, summaryChoice s, summaryBusy s)) . chatSummaries
 
 prop_chatEffort :: Property
 prop_chatEffort = forAll (elements (Nothing : map Just [minBound .. maxBound])) $ \effort ->
