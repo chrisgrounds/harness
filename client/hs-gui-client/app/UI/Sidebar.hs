@@ -89,6 +89,10 @@ chatRow e view width summary = do
   clicked <- invisibleButton ("##chat" <> T.pack (show chat)) (ImVec2 cardWidth cardHeight) ImGuiButtonFlags_None
   hovered <- Raw.isItemHovered
   when hovered handCursor
+  -- The id names the chat's server log, so its runs can be debugged.
+  itemContextPopup $ do
+    label (foreground p) ("Chat " <> T.pack (show chat))
+    withFont (small (fonts e)) $ label (muted p) ("~/.config/harness/logs/chat-" <> T.pack (show chat) <> ".log")
   ImVec2 x0 y0 <- Raw.getItemRectMin
   let selected' = chat == sidebarCurrent view
   when (selected' || hovered) $ do

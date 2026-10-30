@@ -28,7 +28,7 @@ socketTests = do
       bracket (do (file,h) <- openTempFile tmp "harness-socket-test"; hClose h; removeFile file; createDirectory file; pure file) removePathForcibly $ \dir -> do
         let path = dir </> "server.sock"
         seen <- newIORef []
-        let handler chosen source publish run = do
+        let handler _ chosen source publish run = do
               token <- maybe (pure "legacy") id source
               modifyIORef' seen (++ [(chosen, token, runReasoningEffort run)])
               publish (TokenRate 12)

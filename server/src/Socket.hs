@@ -21,7 +21,8 @@ import System.Directory (removeFile)
 import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
 
-type Handler = Model -> Maybe (IO Text) -> (ServerEvent -> IO ()) -> StartRun -> IO ()
+-- | Given the chat the run belongs to, if the client named one.
+type Handler = Maybe Int -> Model -> Maybe (IO Text) -> (ServerEvent -> IO ()) -> StartRun -> IO ()
 
 serve :: FilePath -> Model -> [Model] -> Handler -> IO ()
 serve path model available handle = do
@@ -54,13 +55,13 @@ serve path model available handle = do
               answer <- timeout (60 * 1000000) (takeMVar reply)
               either (fail . T.unpack) pure (maybe (Left (T.pack "Client did not supply OpenAI credentials.")) id answer)
           runJob message = withMVar projectLock $ \() -> case message of
-            LegacyRun run -> handle model Nothing publish run `finally` publish TurnFinished
+            LegacyRun run -> handle Nothing model Nothing publish run `finally` publish TurnFinished
             StartChat chat chosen account run -> do
               let source = token <$> account
                   notify = publish . ChatEvent chat
               let execute = do
                     when (provider chosen == OpenAI && isNothing account) (fail "Choose a connected ChatGPT account in User settings.")
-                    handle chosen source notify run
+                    handle (Just chat) chosen source notify run
               (execute `catch` \(err :: IOException) -> publish (ChatFailed chat (T.pack (displayException err))))
                 `finally` notify TurnFinished
             _ -> pure ()

@@ -310,7 +310,8 @@ scenario label layout strategy checks = do
         { llm = scriptedLlm counter (pure . designer layout strategy),
           llmModel = Mercury3,
           toolDefinitions = definitions,
-          onFailure = Revert
+          onFailure = Revert,
+          logFile = root </> "dist-newstyle/holey/last-run.log"
         }
       root
       progress
@@ -396,7 +397,7 @@ givesUpAndUndoes root run _ = do
           length (history run) == maxIterations + 2
             && and (zipWith T.isInfixOf (cycle ["so reimplementing", "they still fail after the functions they mention were reimplemented"]) (take (maxIterations - 1) (history run)))
             && ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` (history run !! (maxIterations - 1))
-            && drop maxIterations (history run) == ["Each build's output is in dist-newstyle/holey/last-run.log.", "The run did not finish, so its changes to 3 files were undone."],
+            && drop maxIterations (history run) == ["Each build's output is in " <> T.pack (root </> "dist-newstyle/holey/last-run.log") <> ".", "The run did not finish, so its changes to 3 files were undone."],
         expect ("every build logged: " <> show (length (filter ("== Iteration " `isPrefixOf`) (lines buildLog)))) $
           length (filter ("== Iteration " `isPrefixOf`) (lines buildLog)) > maxIterations
             && "== Iteration 10, Type checking: passed ==" `elem` lines buildLog,

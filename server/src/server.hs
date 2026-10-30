@@ -7,7 +7,7 @@ import System.Environment (lookupEnv)
 import qualified Core
 import Core (Model (..), StartRun (..), allModels, modelId, modelName, newRun, provider, Provider (..))
 import qualified Data.Text as T
-import Holey (Config (..), OnFailure (..), runHoley)
+import Holey (Config (..), OnFailure (..), runHoley, runLogFile)
 import qualified OpenAI
 import qualified OpenAI.Auth as Auth
 import Progress (Progress, newProgress)
@@ -32,12 +32,13 @@ main = do
       loadEnv
       available <- filterM configured allModels
       putStrLn "opening server, listening..."
-      Socket.serve socketPath model available $ \chosen token publish (StartRun dir req effort) -> do
+      Socket.serve socketPath model available $ \chat chosen token publish (StartRun dir req effort) -> do
         llm' <- case (chosen, token) of
           (OpenAIModel _, Just source) -> OpenAI.openaiLlmWithToken effort source
           (OpenAIModel _, Nothing) -> OpenAI.openaiLlm effort
           _ -> loadLlm chosen
-        run <- holey chosen failure llm'
+        log' <- runLogFile chat
+        run <- holey chosen failure log' llm'
         newProgress publish (newRun req) >>= run dir
   where
     usage =
@@ -61,8 +62,8 @@ models :: [(String, Model)]
 models =
   [(T.unpack (modelName m), m) | m <- allModels] ++ [(T.unpack (modelId m), m) | m <- allModels]
 
-holey :: Model -> OnFailure -> (Core.Chat -> IO Core.Chat) -> IO (FilePath -> Progress -> IO ())
-holey m failure llm' = do
+holey :: Model -> OnFailure -> FilePath -> (Core.Chat -> IO Core.Chat) -> IO (FilePath -> Progress -> IO ())
+holey m failure log' llm' = do
   definitions <- loadToolDefinitions m
   putStrLn ("using " <> T.unpack (modelId m))
   pure $
@@ -71,7 +72,8 @@ holey m failure llm' = do
         { llm = llm',
           llmModel = m,
           toolDefinitions = definitions,
-          onFailure = failure
+          onFailure = failure,
+          logFile = log'
         }
 
 configured :: Model -> IO Bool

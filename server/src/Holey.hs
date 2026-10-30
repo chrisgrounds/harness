@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Holey (Config (..), OnFailure (..), runHoley) where
+module Holey (Config (..), OnFailure (..), runHoley, runLogFile) where
 
 import Agent (Llm, runAgent)
 import Control.Concurrent (newMVar, newQSem, signalQSem, waitQSem, withMVar)
@@ -29,7 +29,7 @@ import Progress (Progress, publishEvent, readRun, tryUpdate, update)
 import Project
 import Prompts
 import Render (designSummary, renderFile, usedTypes)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.Directory (XdgDirectory (XdgConfig), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getXdgDirectory)
 import System.FilePath (isAbsolute, takeDirectory, takeExtension, (</>))
 import Tools (readOnlyTool)
 import Verify
@@ -39,8 +39,16 @@ data Config = Config
   { llm :: Llm,
     llmModel :: Model,
     toolDefinitions :: ToolName -> ToolDefinition,
-    onFailure :: OnFailure
+    onFailure :: OnFailure,
+    -- | Where the run's log goes, as an absolute path; see 'runLogFile'.
+    logFile :: FilePath
   }
+
+-- | Each chat's runs log to their own file in ~/.config/harness/logs, so
+-- any chat can be debugged and not only the latest; runs without a chat
+-- share one. Chat ids are unique across projects.
+runLogFile :: Maybe Int -> IO FilePath
+runLogFile chat = (</> maybe "last-run.log" (\c -> "chat-" <> show c <> ".log") chat) <$> getXdgDirectory XdgConfig ("harness" </> "logs")
 
 data OnFailure
   = Keep
@@ -79,22 +87,21 @@ runHoley cfg root prog = do
         if null (components info)
           then failStart ("No cabal library or executable was found in " <> T.pack root <> ".")
           else do
-            createDirectoryIfMissing True (takeDirectory (root </> logFile))
+            createDirectoryIfMissing True (takeDirectory (logFile cfg))
             req <- requirement <$> readRun prog
-            TIO.writeFile (root </> logFile) ("Requirement: " <> requirementText req <> "\n\n")
+            TIO.writeFile (logFile cfg) ("Project: " <> T.pack root <> "\nRequirement: " <> requirementText req <> "\n\n")
             lock <- newMVar ()
-            True <$ runReaderT pipeline (Env cfg root prog info origs (withMVar lock . const . TIO.appendFile (root </> logFile)))
+            True <$ runReaderT pipeline (Env cfg root prog info origs (withMVar lock . const . TIO.appendFile (logFile cfg)))
   finished <- case result of
     Right done -> pure done
     Left err
       | Just Stopped <- fromException err -> pure False
       | otherwise -> failCurrent prog ("Internal error: " <> T.pack (displayException err)) >> pure False
   unless finished $ do
-    logged <- doesFileExist (root </> logFile)
-    when logged $ update prog (addHistory ("Each build's output is in " <> T.pack logFile <> "."))
+    logged <- doesFileExist (logFile cfg)
+    when logged $ update prog (addHistory ("Each build's output is in " <> T.pack (logFile cfg) <> "."))
   unless (finished || onFailure cfg == Keep) (undo origs)
   where
-    logFile = "dist-newstyle" </> "holey" </> "last-run.log"
     failStart reason = update prog (setStep Discover (Failed reason)) >> pure False
     undo origs = do
       run <- readRun prog
