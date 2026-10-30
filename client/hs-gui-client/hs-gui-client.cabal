@@ -107,3 +107,11 @@ test-suite hs-gui-client-tests
     , time
   ghc-options: -Wall -Werror=missing-fields
   default-language: Haskell2010
+
+test-suite holey-ui-state
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: HoleyUIStateProperties.hs
+  build-depends: base, QuickCheck, hs-gui-client, bytestring, aeson, async, directory, filepath, openai-auth, containers, core, network, text, time, toml-parser
+  default-language: Haskell2010
+  ghc-options: -Wall
