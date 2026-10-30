@@ -112,6 +112,11 @@ streamTest = do
   assert "EOF without completion rejected" (isLeft (OpenAI.feedStream OpenAI.emptyStream "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" >>= OpenAI.finishStream))
   mapM_ (\kind -> assert "terminal failure rejected" (isLeft (OpenAI.feedStream OpenAI.emptyStream ("data: " <> L.toStrict (encode (object ["type" .= kind])) <> "\n\n")))) (["response.failed", "response.incomplete", "error"] :: [Text])
   assert "malformed JSON rejected" (isLeft (OpenAI.feedStream OpenAI.emptyStream "data: {\n\n"))
+  let items = [object ["type" .= ("reasoning" :: Text), "id" .= ("rs_1" :: Text)], object ["type" .= ("message" :: Text), "id" .= ("msg_1" :: Text)]]
+      itemEvent item = "data: " <> L.toStrict (encode (object ["type" .= ("response.output_item.done" :: Text), "item" .= item])) <> "\n\n"
+      bare = object ["status" .= ("completed" :: Text), "output" .= ([] :: [Value])]
+      bareWire = mconcat (map itemEvent items) <> "data: " <> L.toStrict (encode (object ["type" .= ("response.completed" :: Text), "response" .= bare])) <> "\n\n"
+  assert "streamed items fill an empty completed output" ((parseChunks [bareWire] >>= OpenAI.finishStream) == Right (object ["status" .= ("completed" :: Text), "output" .= items]))
 
 callbackTest :: IO ()
 callbackTest = do

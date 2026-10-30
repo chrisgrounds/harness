@@ -101,43 +101,52 @@ responseReply = withObject "response" $ \o -> do
             "refusal" -> Just <$> b .: "refusal"
             _ -> pure Nothing) blocks
 
-data StreamState = StreamState B.ByteString [B.ByteString] (Maybe Value)
+-- Finished output items are kept newest first, because some backends send
+-- response.completed with an empty output list.
+data StreamState = StreamState B.ByteString [B.ByteString] [Value] (Maybe Value)
   deriving (Eq, Show)
 
 emptyStream :: StreamState
-emptyStream = StreamState B.empty [] Nothing
+emptyStream = StreamState B.empty [] [] Nothing
 
 feedStream :: StreamState -> B.ByteString -> Either String StreamState
-feedStream (StreamState pending fields completed) chunk = linesOf (pending <> chunk) fields completed
+feedStream (StreamState pending fields items completed) chunk = linesOf (pending <> chunk) fields (items, completed)
   where
-    linesOf bytes ls done = case B.elemIndex 10 bytes of
-      Nothing -> Right (StreamState bytes ls done)
+    linesOf bytes ls acc = case B.elemIndex 10 bytes of
+      Nothing -> Right (uncurry (StreamState bytes ls) acc)
       Just i -> do
         let line = B.takeWhile (/= 13) (B.take i bytes)
-        (ls', done') <- if B.null line then (,) [] <$> event ls done
-          else Right (if "data:" `B.isPrefixOf` line then ls ++ [B.dropWhile (== 32) (B.drop 5 line)] else ls, done)
-        linesOf (B.drop (i + 1) bytes) ls' done'
-    event [] done = Right done
-    event ls done
-      | B.intercalate "\n" ls == "[DONE]" = Right done
+        (ls', acc') <- if B.null line then (,) [] <$> event ls acc
+          else Right (if "data:" `B.isPrefixOf` line then ls ++ [B.dropWhile (== 32) (B.drop 5 line)] else ls, acc)
+        linesOf (B.drop (i + 1) bytes) ls' acc'
+    event [] acc = Right acc
+    event ls acc
+      | B.intercalate "\n" ls == "[DONE]" = Right acc
       | otherwise = do
           value <- either (const (Left "OpenAI sent invalid stream JSON.")) Right (eitherDecodeStrict (B.intercalate "\n" ls))
-          withEvent value done
-    withEvent (Object o) done = case KM.lookup "type" o of
+          withEvent value acc
+    withEvent (Object o) (done, result) = case KM.lookup "type" o of
+      Just (String "response.output_item.done") -> case KM.lookup "item" o of
+        Just item -> Right (item : done, result)
+        _ -> Left "OpenAI output item event had no item."
       Just (String "response.completed") -> case KM.lookup "response" o of
-        Just r -> Right (Just r)
+        Just (Object r) -> Right (done, Just (Object (withItems done r)))
         _ -> Left "OpenAI completion event had no response."
       Just (String kind) | kind `elem` ["response.failed", "response.incomplete", "error"] ->
         Left ("OpenAI stream failed: " <> T.unpack (TE.decodeUtf8 (L.toStrict (encode (Object o)))) <> " Check https://chatgpt.com/settings/usage for subscription limits.")
-      _ -> Right done
+      _ -> Right (done, result)
     withEvent _ _ = Left "OpenAI sent an invalid stream event."
+    withItems done r = case KM.lookup "output" r of
+      Just (Array a) | not (null a) -> r
+      _ | null done -> r
+      _ -> KM.insert "output" (toJSON (reverse done)) r
 
 finishStream :: StreamState -> Either String Value
-finishStream state@(StreamState pending fields _)
+finishStream state@(StreamState pending fields _ _)
   | not (B.null pending) || not (null fields) = do
-      StreamState _ _ result <- feedStream state "\n\n"
+      StreamState _ _ _ result <- feedStream state "\n\n"
       maybe missing Right result
-finishStream (StreamState _ _ result) = maybe missing Right result
+finishStream (StreamState _ _ _ result) = maybe missing Right result
 
 missing :: Either String a
 missing = Left "OpenAI stream ended without response.completed; the reply was not accepted."

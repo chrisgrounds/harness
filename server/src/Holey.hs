@@ -3,21 +3,26 @@
 module Holey (Config (..), OnFailure (..), runHoley) where
 
 import Agent (Llm, runAgent)
-import Control.Concurrent (newQSem, signalQSem, waitQSem)
+import Control.Concurrent (newMVar, newQSem, signalQSem, waitQSem, withMVar)
 import Control.Concurrent.Async (forConcurrently_)
 import Control.Exception (Exception, SomeException, bracket_, displayException, fromException, throwIO, try)
 import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Reader (ReaderT, ask, asks, runReaderT)
 import Core
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.Aeson (Value (..), encode)
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy as L
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (nub)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Decls (Decl (..), DeclKind (..), SourceFile (..), findDecl, splitSource)
+import GHC.Clock (getMonotonicTimeNSec)
 import Edits
 import Policy
 import Progress (Progress, publishEvent, readRun, tryUpdate, update)
@@ -48,7 +53,8 @@ data Env = Env
     progress :: Progress,
     project :: ProjectInfo,
     originals :: Originals,
-    buildLog :: FilePath
+    -- Implementers run concurrently, so appends are serialised.
+    buildLog :: Text -> IO ()
   }
 
 type Holey = ReaderT Env IO
@@ -76,7 +82,8 @@ runHoley cfg root prog = do
             createDirectoryIfMissing True (takeDirectory (root </> logFile))
             req <- requirement <$> readRun prog
             TIO.writeFile (root </> logFile) ("Requirement: " <> requirementText req <> "\n\n")
-            True <$ runReaderT pipeline (Env cfg root prog info origs (root </> logFile))
+            lock <- newMVar ()
+            True <$ runReaderT pipeline (Env cfg root prog info origs (withMVar lock . const . TIO.appendFile (root </> logFile)))
   finished <- case result of
     Right done -> pure done
     Left err
@@ -350,11 +357,12 @@ writeFiles = do
 buildProject :: Step -> Holey (Either Text ())
 buildProject step = do
   root <- asks projectRoot
-  built <- liftIO (buildAll root)
+  (built, seconds) <- liftIO (timed (buildAll root))
   current <- iteration <$> getRun
-  logPath <- asks buildLog
-  liftIO . TIO.appendFile logPath $
+  appendLog <- asks buildLog
+  liftIO . appendLog $
     "== Iteration " <> T.pack (show current) <> ", " <> stepLabel step <> ": " <> either (const "failed") (const "passed") built <> " ==\n"
+      <> "-- Build took " <> showSeconds seconds <> " --\n"
       <> either id id built
       <> "\n"
   pure (() <$ built)
@@ -410,18 +418,23 @@ untilAccepted :: Int -> Int -> ToolName -> (ToolRequest -> Holey ToolReply) -> C
 untilAccepted budget attempts tool handler chat = do
   env <- ask
   accepted <- liftIO (newIORef False)
+  modelTime <- liftIO (newIORef 0)
+  calls <- liftIO (newIORef (0 :: Int))
   let respond request = do
         runReaderT (modifyRun (setToolCall request)) env
-        reply <- runReaderT (handler request) env
+        (reply, seconds) <- timed (runReaderT (handler request) env)
+        buildLog env ("-- " <> toolNameText (toolRequestFunctionParamsName (toolRequestFunction request)) <> " took " <> showSeconds seconds <> " --\n")
         case reply of
           Answer text -> pure text
           Recorded (Left err) -> pure ("Rejected: " <> err)
           Recorded (Right ()) -> writeIORef accepted True >> pure "Accepted."
       reporting c = do
-        replied <- llm (config env) c
+        (replied, seconds) <- timed (llm (config env) c)
+        modifyIORef' modelTime (+ seconds)
+        modifyIORef' calls (+ 1)
         let reply = listToMaybe (messages replied)
         mapM_ (publishEvent (progress env) . TokenRate) (reply >>= tokensPerSecond)
-        mapM_ (TIO.appendFile (buildLog env) . logReply (model c)) reply
+        mapM_ (buildLog env . logReply (model c) seconds (length (messages c))) reply
         pure replied
       attempt :: Int -> Chat -> IO Chat
       attempt remaining c = do
@@ -431,16 +444,41 @@ untilAccepted budget attempts tool handler chat = do
           then pure c'
           else attempt (remaining - 1) (addMessage (textMessage User (callToolNudge tool)) c')
   liftIO $ do
-    final <- attempt attempts chat
+    (final, total) <- timed (attempt attempts chat)
     done <- readIORef accepted
+    inModel <- readIORef modelTime
+    made <- readIORef calls
+    buildLog env $
+      "-- " <> toolNameText tool <> " finished in " <> showSeconds total <> ": " <> T.pack (show made) <> " model calls took "
+        <> showSeconds inModel <> ", tools and overhead took " <> showSeconds (total - inModel) <> " --\n"
     pure (done, final)
 
-logReply :: Model -> Message -> Text
-logReply from m =
+timed :: IO a -> IO (a, Double)
+timed action = do
+  start <- getMonotonicTimeNSec
+  result <- action
+  end <- getMonotonicTimeNSec
+  pure (result, fromIntegral (end - start) / 1e9)
+
+showSeconds :: Double -> Text
+showSeconds seconds = T.pack (show (fromIntegral (round (seconds * 100) :: Integer) / 100 :: Double)) <> "s"
+
+logReply :: Model -> Double -> Int -> Message -> Text
+logReply from seconds sent m =
   T.unlines $
-    ["-- Reply from " <> modelId from <> " --"]
+    [ "-- Reply from " <> modelId from <> " in " <> showSeconds seconds <> " ("
+        <> maybe "" (\rate -> T.pack (show (round rate :: Int)) <> " tokens/s, ") (tokensPerSecond m)
+        <> T.pack (show sent) <> " messages sent) --"
+    ]
       ++ maybe [] (\t -> [t | not (T.null (T.strip t))]) (content m)
       ++ ["Calls " <> toolNameText (toolRequestFunctionParamsName f) <> ": " <> toolRequestFunctionParamsArguments f | r <- toolCalls m, let f = toolRequestFunction r]
+      ++ [ "No text or tool calls; output items: " <> TE.decodeUtf8 (L.toStrict (encode (readable items)))
+         | null (toolCalls m), maybe True (T.null . T.strip) (content m), Just items <- [providerContent m]
+         ]
+  where
+    readable (Array items) = Array (fmap readable items)
+    readable (Object o) = Object (KM.delete "encrypted_content" o)
+    readable v = v
 
 implementStep :: [(FunctionRef, Maybe Text)] -> Holey [FunctionRef]
 implementStep work = do
@@ -527,8 +565,8 @@ reviewStep chat = do
   found <- liftIO (readIORef gap)
   let verdict headline details = do
         current <- iteration <$> getRun
-        logPath <- asks buildLog
-        liftIO . TIO.appendFile logPath $
+        appendLog <- asks buildLog
+        liftIO . appendLog $
           "== Iteration " <> T.pack (show current) <> ", " <> stepLabel Review <> ": " <> headline <> " ==\n" <> T.unlines details <> "\n"
   case found of
     Just reason -> do
