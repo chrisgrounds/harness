@@ -48,10 +48,9 @@ sidebar e view size'@(ImVec2 width height) =
     withFont (heading (fonts e)) $ paragraph (margin + inner) (foreground p) (sidebarTitle view)
     setCursorPosX margin
     withFont (small (fonts e)) $ label (muted p) =<< ellipsize inner (safeText (sidebarProject view))
-    gap 16
+    gap 4
     setCursorPosX margin
     new <- navigationButton NewChatButton
-    gap 12
     footerHeight <- (* 2) <$> withFont (small (fonts e)) getTextLineHeightWithSpacing
     ImVec2 _ listTop <- Raw.getCursorPos
     picked <-
