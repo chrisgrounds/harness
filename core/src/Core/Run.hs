@@ -51,6 +51,8 @@ import GHC.Generics (Generic)
 import Core.ChangedFile (ChangedFile (..))
 import Core.Model (Model)
 import Core.Tool (ToolCall, ToolRequest, toolCallOf)
+import Core.RunTime
+import qualified Data.Aeson as Aeson
 
 newtype Requirement = Requirement {requirementText :: Text}
   deriving newtype (Eq, Show, ToJSON, FromJSON)
@@ -183,26 +185,22 @@ data Artefact = Artefact
 
 data Run = Run
   { requirement :: Requirement,
-    -- | Starts at 1 and increases each time a failed verification loops back.
     iteration :: Int,
     steps :: [(Step, StepStatus)],
-    -- | One entry per function being implemented, in declaration order.
     tasks :: [(FunctionRef, TaskStatus)],
     artefact :: Artefact,
-    -- | Files the run created or edited, relative to the working directory.
     touchedFiles :: [ChangedFile],
     warnings :: [Text],
-    -- | Why the run looped back or gave up, oldest first.
     history :: [Text],
-    -- | The tool calls still running, oldest first, for the status bar.
-    activeToolCalls :: [ToolCall]
+    activeToolCalls :: [ToolCall],
+    runTiming :: RunTiming
   }
   deriving (Eq, Show, Generic, ToJSON)
 
 -- | Runs saved before 'activeToolCalls' existed decode with none running.
 instance FromJSON Run where
   parseJSON = withObject "Run" $ \o ->
-    genericParseJSON defaultOptions (Object (KeyMap.insertWith (\_ saved -> saved) "activeToolCalls" (Array mempty) o))
+    genericParseJSON defaultOptions (Object (KeyMap.insertWith (\_ saved -> saved) "runTiming" (Aeson.toJSON TimingUnknown) (KeyMap.insertWith (\_ saved -> saved) "activeToolCalls" (Array mempty) o)))
 
 touchedPaths :: Run -> [FilePath]
 touchedPaths = map changedPath . touchedFiles
@@ -240,7 +238,8 @@ newRun req =
       touchedFiles = [],
       warnings = [],
       history = [],
-      activeToolCalls = []
+      activeToolCalls = [],
+      runTiming = TimingUnknown
     }
 
 addHistory :: Text -> Run -> Run

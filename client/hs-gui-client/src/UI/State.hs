@@ -26,6 +26,7 @@ import Data.Time (UTCTime, diffUTCTime)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Printf (printf)
+import Core.RunTime (freezeRunTiming)
 
 data Conversation = Conversation
   { cRuns :: [Run], cDraft :: Text, cReplacement :: Maybe Text,
@@ -454,7 +455,9 @@ restoreChats dir saved ui = case sortOn (Down . Saved.lastUpdated) [c | c <- sav
         cReasoningEffort = Saved.reasoningEffort c,
         cCustomTitle = Saved.customTitle c
       }
-    interrupt run = foldr (\(step, s) r -> if s == Running then setStep step (Failed "Interrupted when the app closed") r else r) run (steps run)
+    interrupt run =
+      (foldr (\(step, s) r -> if s == Running then setStep step (Failed "Interrupted when the app closed") r else r) run (steps run))
+        {runTiming = freezeRunTiming (runTiming run)}
 
 -- | The chats worth keeping, all stamped with the given time: those that
 -- started a run or have a draft.

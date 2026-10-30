@@ -1,6 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Socket (serve) where
+module Socket (serve, withRunTiming) where
 
 import Control.Concurrent (forkFinally)
 import Control.Concurrent.Async (withAsync, link)
@@ -20,6 +20,8 @@ import Network.Socket
 import System.Directory (removeFile)
 import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Core.RunTime
 
 -- | Given the chat the run belongs to, if the client named one.
 type Handler = Maybe Int -> Model -> Maybe (IO Text) -> (ServerEvent -> IO ()) -> StartRun -> IO ()
@@ -55,13 +57,15 @@ serve path model available handle = do
               answer <- timeout (60 * 1000000) (takeMVar reply)
               either (fail . T.unpack) pure (maybe (Left (T.pack "Client did not supply OpenAI credentials.")) id answer)
           runJob message = withMVar projectLock $ \() -> case message of
-            LegacyRun run -> handle Nothing model Nothing publish run `finally` publish TurnFinished
+            LegacyRun run ->
+              withRunTiming publish run (\notify -> handle Nothing model Nothing notify run)
+                `finally` publish TurnFinished
             StartChat chat chosen account run -> do
               let source = token <$> account
                   notify = publish . ChatEvent chat
-              let execute = do
+                  execute = withRunTiming notify run $ \timedPublish -> do
                     when (provider chosen == OpenAI && isNothing account) (fail "Choose a connected ChatGPT account in User settings.")
-                    handle (Just chat) chosen source notify run
+                    handle (Just chat) chosen source timedPublish run
               (execute `catch` \(err :: IOException) -> publish (ChatFailed chat (T.pack (displayException err))))
                 `finally` notify TurnFinished
             _ -> pure ()
@@ -81,3 +85,38 @@ serve path model available handle = do
       withAsync (forever (atomically (readTQueue jobs) >>= runJob)) $ \worker -> do
         link worker
         readRequests B.empty
+
+withRunTiming :: (ServerEvent -> IO ()) -> StartRun -> ((ServerEvent -> IO ()) -> IO a) -> IO a
+withRunTiming publish request action = mask $ \restore -> do
+  start <- timestamp
+  let initial = (newRun (runRequirement request))
+        { runTiming = TimingRunning start start }
+  latest <- newMVar initial
+  let lastSample run = case runTiming run of
+        TimingRunning _ sampled -> max start sampled
+        TimingFinished _ ended -> max start ended
+        TimingUnknown -> start
+      timedPublish event = case event of
+        RunUpdated run -> modifyMVar_ latest $ \previous -> do
+          now <- timestamp
+          let sampled = max (lastSample previous) now
+              updated = run { runTiming = TimingRunning start sampled }
+          publish (RunUpdated updated)
+          pure updated
+        _ -> publish event
+      finish = modifyMVar_ latest $ \previous -> do
+        now <- timestamp
+        let ended = max (lastSample previous) now
+            finished = previous { runTiming = TimingFinished start ended }
+        publish (RunUpdated finished)
+        pure finished
+  publish (RunUpdated initial)
+  result <- try (restore (action timedPublish))
+  finalResult <- try finish
+  case result of
+    Left (err :: SomeException) -> throwIO err
+    Right value -> case finalResult of
+      Left (err :: SomeException) -> throwIO err
+      Right () -> pure value
+  where
+    timestamp = RunTimestamp . floor . (* 1000) <$> getPOSIXTime

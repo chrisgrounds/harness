@@ -25,6 +25,8 @@ import UI.Motion
 import UI.State (ChatAction (..), Scroll (..), implementCounts, target)
 import UI.Text (label, paragraph, rightAt)
 import UI.Widgets (meter)
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Core.RunTime
 
 data Transcript = Transcript
   { appearance :: Appearance,
@@ -133,7 +135,6 @@ drawRun :: Transcript -> Int -> Float -> Float -> Int -> Run -> IO ()
 drawRun e chat left column index run = do
   ImVec2 _ top <- Raw.getCursorPos
   modifyIORef' (runTops e) (Map.insert index top)
-  -- A new run fades in as it is sent.
   appear <- easeFrom (motion e) (RunAppearance chat index) 0.09 0 1
   withAlpha appear $ do
     when (index > 0) $ do
@@ -156,7 +157,6 @@ drawRun e chat left column index run = do
       gap 12
       forM_ (history run) $ \note -> do
         setCursorPosX left
-        -- Loop-backs name their iteration; the review's conclusion does not.
         _ <- icon (if "Iteration" `T.isPrefixOf` note then Retry else Dot) (muted p)
         paragraph (measure left column) (muted p) (safeText note)
     forM_ (warnings run) $ \warning -> do
@@ -170,6 +170,11 @@ drawRun e chat left column index run = do
         forM_ (touchedFiles run) $ \file -> do
           setCursorPosX left
           label (if changedKind file == NewFile then success p else secondaryAccent p) (safeText (changeTag file))
+    now <- RunTimestamp . floor . (* 1000) <$> getPOSIXTime
+    forM_ (runTimeLabel now (runTiming run)) $ \timingLabel -> do
+      gap 8
+      setCursorPosX left
+      withFont (small (fonts e)) $ label (muted p) timingLabel
   where
     p = palette e
 

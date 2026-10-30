@@ -27,12 +27,14 @@ import TerminalWidth (installTerminalWidths)
 import Theme (loadTheme, accent, muted, metadataAttr, borderAttr, userAttr, bodyAttr, danger, successAttr)
 import Client.Tokens (TokenStats, addRate, averageTokens, emptyTokenStats)
 import Text.Printf (printf)
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
+import Core.RunTime
 
 data Name = Transcript | Composer deriving (Eq, Ord, Show)
 
 data UI = UI
-  { -- | Newest first; the head is the run for the latest requirement.
-    runs :: [Run],
+  { runs :: [Run],
     composer :: Editor Text Name,
     waiting :: Bool,
     failure :: Maybe Text,
@@ -41,19 +43,19 @@ data UI = UI
     inputHistory :: [Text],
     historyIndex :: Maybe Int,
     savedDraft :: Text,
-    -- | The model the server runs with, once its 'Connected' greeting arrives.
     serverModel :: Maybe Model,
-    -- | Token-rate statistics across every message received from the server.
     tokenStats :: TokenStats,
-    -- | Whether the tools panel is open: '/tools' opens it, and Esc or the next requirement closes it.
-    showingTools :: Bool
+    showingTools :: Bool,
+    clockNow :: Word64,
+    snapshotReceivedAt :: Word64
   }
 
 runUI :: FilePath -> FilePath -> Socket -> IO ()
 runUI path dir sock = do
   events <- newBChan 16
   requests <- newChan
-  let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing "" Nothing emptyTokenStats False
+  now <- getMonotonicTimeNSec
+  let initial = UI [] (editorText Composer Nothing "") False Nothing 0 True [] Nothing "" Nothing emptyTokenStats False now now
       publish = writeBChan events
       ticker = forever (threadDelay 120000 >> publish Tick)
       buildVty = do
@@ -91,9 +93,12 @@ handleEvent :: FilePath -> Chan StartRun -> BrickEvent Name NetworkEvent -> Even
 handleEvent dir requests event = do
   state <- get
   case event of
-    AppEvent Tick -> when (waiting state) $ modify' (\s -> s {frame = (frame s + 1) `mod` 80})
+    AppEvent Tick -> do
+      now <- liftIO getMonotonicTimeNSec
+      modify' (\s -> s {clockNow = now, frame = if waiting s then (frame s + 1) `mod` 80 else frame s})
     AppEvent (RunChanged run) -> do
-      modify' (\s -> s {runs = run : drop 1 (runs s)})
+      now <- liftIO getMonotonicTimeNSec
+      modify' (\s -> s {runs = run : drop 1 (runs s), clockNow = now, snapshotReceivedAt = now})
       when (followLatest state) scrollEnd
     AppEvent TurnDone -> modify' (\s -> s {waiting = False})
     AppEvent (Disconnected err) -> modify' (\s -> s {failure = Just err, waiting = False})
@@ -360,6 +365,16 @@ drawRun state run =
                  vBox (withAttr muted (txt "Files") : [withAttr metadataAttr (txt ("   " <> safeText (changeTag file))) | file <- touchedFiles run])
            | not (null (touchedFiles run))
            ]
+        ++ [ padTop (Pad 1) $ padLeft (Pad 2) $ withAttr muted $ txt label
+           | Just label <- [runTimeLabel now (runTiming run)]
+           ]
+  where
+    now = case runTiming run of
+      TimingRunning _ sampled ->
+        RunTimestamp
+          (runTimestampMilliseconds sampled
+            + max 0 (toInteger (clockNow state) - toInteger (snapshotReceivedAt state)) `div` 1000000)
+      _ -> RunTimestamp 0
 
 -- | The run's main module and its component, then how many others it changes.
 target :: Run -> Maybe Text

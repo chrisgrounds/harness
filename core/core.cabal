@@ -7,6 +7,7 @@ license-file: LICENSE
 build-type: Simple
 
 library
+  exposed-modules: Core.RunTime
   hs-source-dirs: src
   exposed-modules:
       Core
@@ -55,6 +56,14 @@ test-suite holey-core-changedfile
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: HoleyCoreChangedFileProperties.hs
+  build-depends: base, QuickCheck, core, aeson, attoparsec, attoparsec-aeson, bytestring, network, text
+  default-language: Haskell2010
+  ghc-options: -Wall
+
+test-suite holey-core-runtime
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: HoleyCoreRunTimeProperties.hs
   build-depends: base, QuickCheck, core, aeson, attoparsec, attoparsec-aeson, bytestring, network, text
   default-language: Haskell2010
   ghc-options: -Wall
