@@ -3,11 +3,13 @@
 module EndToEnd (endToEndTests) where
 
 import Core
-import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson (Object, Value (..), object, toJSON, (.=))
+import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
+import Data.Foldable (toList)
 import Data.IORef
 import Data.List (isInfixOf, isPrefixOf)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Clock (getMonotonicTimeNSec)
@@ -388,24 +390,28 @@ givesUpAndUndoes root run _ = do
   leftovers <- filterM (doesPathExist . (root </>)) ["src/Sorted", "test"]
   pure $
     concat
-      [ expect ("stopped at properties: " <> show (steps run)) $
-          case lookup RunProperties (steps run) of
-            Just (Failed _) -> True
+      [ expect ("stopped when the retry came back unchanged: " <> show (steps run)) $
+          case lookup Implement (steps run) of
+            Just (Failed reason) -> "gave back the same code" `T.isInfixOf` reason
             _ -> False,
         expect ("used every iteration: " <> show (iteration run)) (iteration run == maxIterations),
-        expect ("alternately reimplemented and redesigned, gave up, then undid its changes: " <> show (history run)) $
-          length (history run) == maxIterations + 2
-            && and (zipWith T.isInfixOf (cycle ["so reimplementing", "they still fail after the functions they mention were reimplemented"]) (take (maxIterations - 1) (history run)))
-            && ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` (history run !! (maxIterations - 1))
-            && drop maxIterations (history run) == ["Each build's output is in " <> T.pack (root </> "dist-newstyle/holey/last-run.log") <> ".", "The run did not finish, so its changes to 3 files were undone."],
+        expect ("reimplemented, redesigned when that changed nothing, kept the rest, gave up, then undid its changes: " <> show (history run)) $
+          case reverse (history run) of
+            undid : logged : gaveUp : earlier ->
+              ("Gave up after " <> T.pack (show maxIterations) <> " iterations") `T.isPrefixOf` gaveUp
+                && [logged, undid] == ["Each build's output is in " <> T.pack (root </> "dist-newstyle/holey/last-run.log") <> ".", "The run did not finish, so its changes to 3 files were undone."]
+                && all (\line -> any (`T.isInfixOf` line) steps') earlier
+                && all (\s -> any (s `T.isInfixOf`) earlier) steps'
+            _ -> False,
         expect ("every build logged: " <> show (length (filter ("== Iteration " `isPrefixOf`) (lines buildLog)))) $
           length (filter ("== Iteration " `isPrefixOf`) (lines buildLog)) > maxIterations
-            && "== Iteration 10, Type checking: passed ==" `elem` lines buildLog,
+            && "== Iteration 9, Running properties: failed ==" `elem` lines buildLog,
         expect ("files restored: " <> show [p | (p, False) <- files]) (all snd files),
         expect ("created paths removed: " <> show leftovers) (null leftovers)
       ]
   where
     projectFiles' = projectFiles (sortedMerge libraryProject)
+    steps' = ["so reimplementing", "gave back the same code, so redesigning", "kept the implementations of"]
 
 inspect :: (Run -> String -> [String]) -> FilePath -> Run -> String -> IO [String]
 inspect checks _ run source = pure (checks run source)
@@ -527,7 +533,8 @@ redesignsAfterReview root run _ = do
   pure $
     allPassed run
       ++ concat
-        [ expect ("redesigned once, saying why: " <> show (history run)) (history run == ["Iteration 1: the review found the requirement not met: Nothing shows the merge."]),
+        [ expect ("redesigned once, saying why, and kept the unchanged implementations: " <> show (history run)) $
+            history run == ["Iteration 1: the review found the requirement not met: Nothing shows the merge.", "Iteration 2: kept the implementations of fromList, toList, merge from the previous design."],
           expect "two iterations" (iteration run == 2),
           expect "the verdicts are logged" $
             all (`isInfixOf` logged) ["== Iteration 1, Reviewing against the requirement: requirement not met ==\nNothing shows the merge.", "== Iteration 2, Reviewing against the requirement: requirement met =="]
@@ -601,7 +608,25 @@ designer layout strategy chat = case latestText chat of
     reviewing = maybe False ("Step 5: review" `T.isInfixOf`) (listToMaybe [text | m <- messages chat, role m == User, Just text <- [content m]])
     (types, functions', properties') = case draft layout of
       Just first | not revised -> first
-      _ -> (typesArgs layout, functionsArgs layout, propertiesArgs layout)
+      Just (draftTypes, draftFunctions, draftProperties) ->
+        ( withRemovals "modules" (field "module") draftTypes (typesArgs layout),
+          withRemovals "functions" (\e -> object <$> sequence [("module" .=) <$> field "module" e, ("name" .=) <$> field "name" e]) draftFunctions (functionsArgs layout),
+          withRemovals "properties" (field "name") draftProperties (propertiesArgs layout)
+        )
+      Nothing -> (typesArgs layout, functionsArgs layout, propertiesArgs layout)
+    field name e = KeyMap.lookup name e
+
+-- | A revision names in remove what it drops from the draft, as the design
+-- tools ask; anything it does not list stays recorded.
+withRemovals :: Key.Key -> (Object -> Maybe Value) -> Value -> Value -> Value
+withRemovals listed identify drafted final = case final of
+  Object o | not (null gone) -> Object (KeyMap.insert "remove" (toJSON gone) o)
+  _ -> final
+  where
+    entries (Object o) = [e | Just (Array es) <- [KeyMap.lookup listed o], Object e <- toList es]
+    entries _ = []
+    kept = mapMaybe identify (entries final)
+    gone = [i | i <- mapMaybe identify (entries drafted), i `notElem` kept]
 
 withProject :: Layout -> (FilePath -> IO [String]) -> IO [String]
 withProject layout test = do

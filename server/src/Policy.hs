@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Policy (Outcome (..), Decision (..), maxIterations, decide, failedChecks, describeOutcome, describeWork, redesignReason) where
+module Policy (Outcome (..), Decision (..), maxIterations, decide, retriedUnchanged, implicated, failedChecks, describeOutcome, describeWork, redesignReason) where
 
 import Core (FunctionName (..), FunctionRef (..))
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -56,6 +56,33 @@ decide iterationNumber allFunctions previouslyFailed outcome
               )
         | null suspects -> Reimplement [(name, Just report) | name <- allFunctions]
         | otherwise -> Reimplement [(name, Just report) | name <- suspects]
+
+-- | Reimplementing the failing functions gave back the same code, so
+-- retrying cannot help and the design has to change.
+retriedUnchanged :: Int -> [FunctionRef] -> Outcome -> Decision
+retriedUnchanged iterationNumber retried outcome
+  | iterationNumber >= maxIterations =
+      GiveUp ("Gave up after " <> T.pack (show maxIterations) <> " iterations: " <> describeOutcome outcome)
+  | otherwise =
+      Redesign
+        ( "Reimplementing " <> list retried <> " gave back the same code, so the design has to change; "
+            <> describeOutcome outcome
+            <> ":\n"
+            <> details outcome
+        )
+  where
+    details (PropertiesFailed _ _ report) = report
+    details (TypeErrors attributed unattributed) = T.unlines (map snd attributed ++ unattributed)
+    details (SkeletonFailed errors) = errors
+    details (RequirementUnmet reason) = reason
+    details (ImplementationMissing _) = ""
+
+-- | The functions an outcome blames, whose bodies a redesign should not reuse.
+implicated :: Outcome -> [FunctionRef]
+implicated (PropertiesFailed _ suspects _) = suspects
+implicated (TypeErrors attributed _) = map fst attributed
+implicated (ImplementationMissing missing) = missing
+implicated _ = []
 
 failedChecks :: Outcome -> [Text]
 failedChecks (PropertiesFailed failed _ _) = failed

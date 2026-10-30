@@ -2,18 +2,23 @@
   "type": "function",
   "function": {
     "name": "SetProperties",
-    "description": "Sets the QuickCheck properties for invariants the types cannot express. Call again to replace them.",
+    "description": "Sets the QuickCheck properties for invariants the types cannot express. Call again to change them: each property listed replaces the earlier one of the same name, properties not listed stay, and remove drops earlier ones.",
     "parameters": {
       "type": "object",
       "properties": {
         "imports": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Extra complete import lines. The modules from SetTypes and Test.QuickCheck are already imported."
+          "description": "Extra complete import lines. The modules from SetTypes and Test.QuickCheck are already imported. A non-empty list replaces the earlier imports; an empty one keeps them."
         },
         "helpers": {
           "type": "string",
-          "description": "Arbitrary instances and generators for the new types"
+          "description": "Arbitrary instances and generators for the new types. Non-empty replaces the earlier helpers; empty keeps them."
+        },
+        "remove": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of properties recorded earlier to drop"
         },
         "properties": {
           "type": "array",

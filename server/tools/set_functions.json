@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "SetFunctions",
-    "description": "Sets every function to add or change, as signatures and documentation only. Call again to replace them all.",
+    "description": "Sets every function to add or change, as signatures and documentation only. Call again to change them: each function listed replaces the earlier one of the same name in its module, functions not listed stay, and remove drops earlier ones.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -21,6 +21,19 @@
             "required": ["module", "name", "signature", "doc", "change"],
             "additionalProperties": false
           }
+        },
+        "remove": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "module": { "type": "string", "description": "The module the function was recorded in" },
+              "name": { "type": "string", "description": "The function's name" }
+            },
+            "required": ["module", "name"],
+            "additionalProperties": false
+          },
+          "description": "Functions recorded earlier to drop from the design"
         }
       },
       "required": [

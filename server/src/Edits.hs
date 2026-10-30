@@ -13,11 +13,13 @@ module Edits
     RefactorArg (..),
     decodeArgs,
     checkModules,
+    mergeModules,
     applyModules,
     applyFunctions,
     applyProperties,
     applyImplementation,
     applyRefactor,
+    reuseBodies,
     addRepairs,
   )
 where
@@ -28,15 +30,17 @@ import Data.Aeson
 import Data.Char (isLower)
 import Decls (Decl (..), SourceFile (..), isIdentChar, splitSource)
 import Data.List (find, nub)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Project (Component, componentName, validModuleName)
 
-newtype TypesArgs = TypesArgs [ModuleArg]
+-- | Modules to add or replace, then the names of earlier modules to drop.
+data TypesArgs = TypesArgs [ModuleArg] [Text]
 
 instance FromJSON TypesArgs where
-  parseJSON = withObject "SetTypes" $ \o -> TypesArgs <$> o .: "modules"
+  parseJSON = withObject "SetTypes" $ \o -> TypesArgs <$> o .: "modules" <*> o .:? "remove" .!= []
 
 data ModuleArg = ModuleArg
   { argComponent :: Text,
@@ -63,20 +67,25 @@ instance FromJSON FunctionArg where
   parseJSON = withObject "function" $ \o ->
     FunctionArg <$> o .: "module" <*> o .: "name" <*> o .: "signature" <*> o .:? "doc" .!= "" <*> o .:? "change" .!= "" <*> o .:? "model"
 
-newtype FunctionsArgs = FunctionsArgs [FunctionArg]
+-- | Functions to add or replace, then earlier functions to drop, as (module, name).
+data FunctionsArgs = FunctionsArgs [FunctionArg] [(Text, Text)]
 
 instance FromJSON FunctionsArgs where
-  parseJSON = withObject "SetFunctions" $ \o -> FunctionsArgs <$> o .: "functions"
+  parseJSON = withObject "SetFunctions" $ \o ->
+    FunctionsArgs <$> o .: "functions" <*> (o .:? "remove" .!= [] >>= mapM removal)
+    where
+      removal = withObject "removal" $ \r -> (,) <$> r .: "module" <*> r .: "name"
 
 data PropertiesArgs = PropertiesArgs
   { argPropertyImports :: [Text],
     argHelpers :: Text,
-    argProperties :: [PropertySpec]
+    argProperties :: [PropertySpec],
+    argRemovedProperties :: [Text]
   }
 
 instance FromJSON PropertiesArgs where
   parseJSON = withObject "SetProperties" $ \o ->
-    PropertiesArgs <$> o .:? "imports" .!= [] <*> o .:? "helpers" .!= "" <*> (o .: "properties" >>= mapM property)
+    PropertiesArgs <$> o .:? "imports" .!= [] <*> o .:? "helpers" .!= "" <*> (o .: "properties" >>= mapM property) <*> o .:? "remove" .!= []
     where
       property = withObject "property" $ \p -> PropertySpec <$> p .: "name" <*> p .: "source"
 
@@ -93,8 +102,7 @@ decodeArgs :: (FromJSON a) => Text -> Either Text a
 decodeArgs args = either (Left . ("Invalid arguments: " <>) . T.pack) Right (eitherDecodeStrict (TE.encodeUtf8 args))
 
 checkModules :: [Component] -> TypesArgs -> Either Text [(Component, ModuleName, ModuleArg)]
-checkModules components (TypesArgs args) = do
-  when (null args) $ Left "List at least one module."
+checkModules components (TypesArgs args _) = do
   checked <- traverse check args
   let names = [name | (_, name, _) <- checked]
   unique "List each module once." names
@@ -115,6 +123,21 @@ checkModules components (TypesArgs args) = do
       _ <- traverse checkImport (argImports arg)
       pure (component, ModuleName name, arg)
 
+-- | Lays the given modules over the design so far: each replaces the earlier
+-- module of the same name, in place, and new ones follow. Modules not listed
+-- stay, unless named in the removals.
+mergeModules :: [ModulePlan] -> [Text] -> [ModulePlan] -> Either Text [ModulePlan]
+mergeModules given removals earlier = do
+  let removed = map (ModuleName . T.strip) removals
+  case [m | m <- removed, m `notElem` map planModule earlier] of
+    [] -> pure ()
+    unknown -> Left ("Cannot remove " <> T.intercalate ", " (map moduleNameText unknown) <> ": not in the design.")
+  let kept = [p | p <- earlier, planModule p `notElem` removed]
+      replaced p = fromMaybe p (find ((== planModule p) . planModule) given)
+      merged = map replaced kept ++ [p | p <- given, planModule p `notElem` map planModule kept]
+  when (null merged) $ Left "List at least one module."
+  pure merged
+
 applyModules :: [ModulePlan] -> Run -> Either Text Run
 applyModules plans run = do
   let paths = map planPath plans
@@ -127,14 +150,25 @@ applyModules plans run = do
   pure run {artefact = art {modules = map tidy plans, functions = [f | f <- functions art, fnKind f == Designed, refPath (fnRef f) `elem` paths]}}
 
 applyFunctions :: [Model] -> (FunctionRef -> Maybe Text) -> FunctionsArgs -> Run -> Either Text Run
-applyFunctions offered previous (FunctionsArgs args) run = do
-  when (null args) $ Left "Declare at least one function."
+-- | Lays the given functions over the design so far, like 'mergeModules':
+-- each replaces the earlier function of the same name in its module, and
+-- earlier functions not listed stay, unless removed. Repairs are dropped;
+-- the skeleton check finds them again.
+applyFunctions offered previous (FunctionsArgs args removals) run = do
   specs <- traverse spec args
   let refs = map fnRef specs
   unique "Each function may be declared once per module." refs
-  pure (overFunctions (const specs) run)
+  removed <- traverse removal removals
+  let earlier = [f | f <- functions (artefact run), fnKind f == Designed, fnRef f `notElem` removed]
+      replaced f = fromMaybe f (find ((== fnRef f) . fnRef) specs)
+      merged = map replaced earlier ++ [s | s <- specs, fnRef s `notElem` map fnRef earlier]
+  when (null merged) $ Left "Declare at least one function."
+  pure (overFunctions (const merged) run)
   where
     plans = modules (artefact run)
+    removal (moduleName, name) = case [f | f <- functions (artefact run), fnName f == FunctionName (T.strip name), [moduleNameText (planModule p) | p <- plans, planPath p == refPath (fnRef f)] == [T.strip moduleName]] of
+      f : _ -> Right (fnRef f)
+      [] -> Left ("Cannot remove " <> T.strip moduleName <> "." <> T.strip name <> ": not in the design.")
     spec (FunctionArg moduleName name signature doc change chosen) = do
       let n = T.strip name
           m = T.strip moduleName
@@ -154,12 +188,25 @@ applyFunctions offered previous (FunctionsArgs args) run = do
       pure (FunctionSpec ref Designed sig (T.strip doc) (T.strip change) Nothing (maybe Undefined (const PreviousBody) before) [] before implementedBy)
 
 applyProperties :: PropertiesArgs -> Run -> Either Text Run
-applyProperties (PropertiesArgs importLines helpers props) run = do
+-- | Lays the given properties over the earlier ones by name, like
+-- 'mergeModules'. Imports and helpers each replace the earlier ones unless
+-- left empty.
+applyProperties (PropertiesArgs importLines helpers props removals) run = do
   checkedImports <- traverse checkImport importLines
   checked <- traverse check props
   let names = map propName checked
+      removed = map T.strip removals
+      art = artefact run
   unique "Property names must be unique." names
-  pure (overArtefact (\art -> art {propertyImports = checkedImports, propertyHelpers = helpers, properties = checked}) run)
+  case [n | n <- removed, n `notElem` map propName (properties art)] of
+    [] -> pure ()
+    unknown -> Left ("Cannot remove " <> T.intercalate ", " unknown <> ": not among the properties.")
+  let earlier = [p | p <- properties art, propName p `notElem` removed]
+      replaced p = fromMaybe p (find ((== propName p) . propName) checked)
+      merged = map replaced earlier ++ [p | p <- checked, propName p `notElem` map propName earlier]
+      helpers' = if T.null (T.strip helpers) then propertyHelpers art else helpers
+      imports' = if null checkedImports then propertyImports art else checkedImports
+  pure (overArtefact (const art {propertyImports = imports', propertyHelpers = helpers', properties = merged}) run)
   where
     check (PropertySpec name source) = do
       let n = T.strip name
@@ -259,6 +306,23 @@ applyRefactor (RefactorArgs args) run = do
           new = ref `notElem` map fnRef existing
       when (new && T.null signature) $ Left ("Give the new helper " <> n <> " a signature.")
       pure (FunctionSpec ref Designed signature (T.strip (refactorDoc arg)) "" (Just body) Undefined imports' Nothing Nothing, new)
+
+-- | Gives each unimplemented function the body it had in an earlier design,
+-- if its specification is unchanged, so a redesign only reimplements what
+-- it changed. The type check still verifies every reused body.
+reuseBodies :: [FunctionSpec] -> [FunctionSpec] -> [FunctionSpec]
+reuseBodies pool = map reuse
+  where
+    reuse f = case [p | p <- pool, isJust (fnBody p), sameSpec p f] of
+      p : _ | isNothing (fnBody f) -> f {fnBody = fnBody p, fnImports = fnImports p}
+      _ -> f
+    sameSpec p f =
+      fnRef p == fnRef f
+        && fnKind p == fnKind f
+        && fnSignature p == fnSignature f
+        && fnDoc p == fnDoc f
+        && fnChange p == fnChange f
+        && fnPrevious p == fnPrevious f
 
 addRepairs :: [(FunctionRef, Text)] -> Run -> Run
 addRepairs broken = overFunctions (\fns -> fns ++ [repair ref previous | (ref, previous) <- broken, ref `notElem` map fnRef fns])

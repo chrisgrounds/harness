@@ -6,21 +6,23 @@ import Agent (Llm, runAgent)
 import Control.Concurrent (newMVar, newQSem, signalQSem, waitQSem, withMVar)
 import Control.Concurrent.Async (forConcurrently_)
 import Control.Exception (Exception, SomeException, bracket_, displayException, finally, fromException, throwIO, try)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Monad (forM, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Reader (ReaderT, ask, asks, runReaderT)
 import Core
 import Data.Aeson (Value (..), encode)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as L
-import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (nub)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isNothing, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
+import Data.Word (Word64)
 import Decls (Decl (..), DeclKind (..), SourceFile (..), findDecl, splitSource)
 import GHC.Clock (getMonotonicTimeNSec)
 import Edits
@@ -29,7 +31,7 @@ import Progress (Progress, publishEvent, readRun, tryUpdate, update)
 import Project
 import Prompts
 import Render (designSummary, renderFile, usedTypes)
-import System.Directory (XdgDirectory (XdgConfig), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getXdgDirectory)
+import System.Directory (XdgDirectory (XdgConfig), createDirectoryIfMissing, doesDirectoryExist, getXdgDirectory)
 import System.FilePath (isAbsolute, takeDirectory, takeExtension, (</>))
 import Tools (readOnlyTool)
 import Verify
@@ -62,7 +64,12 @@ data Env = Env
     project :: ProjectInfo,
     originals :: Originals,
     -- Implementers run concurrently, so appends are serialised.
-    buildLog :: Text -> IO ()
+    buildLog :: Text -> IO (),
+    -- | Implemented functions from earlier designs, which a redesign reuses
+    -- when their specification has not changed; see 'reuseBodies'.
+    reusable :: IORef [FunctionSpec],
+    -- | When the current iteration began, on the monotonic clock.
+    iterationStarted :: IORef Word64
   }
 
 type Holey = ReaderT Env IO
@@ -75,7 +82,8 @@ instance Exception Stopped
 runHoley :: Config -> FilePath -> Progress -> IO ()
 runHoley cfg root prog = do
   origs <- newOriginals
-  result <- try $ do
+  began <- newIORef False
+  (result, seconds) <- timed . try $ do
     exists <- doesDirectoryExist root
     if not (isAbsolute root && exists)
       then failStart ("The project directory " <> T.pack root <> " is not an absolute path to an existing directory.")
@@ -89,16 +97,23 @@ runHoley cfg root prog = do
           else do
             createDirectoryIfMissing True (takeDirectory (logFile cfg))
             req <- requirement <$> readRun prog
-            TIO.writeFile (logFile cfg) ("Project: " <> T.pack root <> "\nRequirement: " <> requirementText req <> "\n\n")
+            at <- clockTime
+            TIO.writeFile (logFile cfg) ("Project: " <> T.pack root <> "\nRequirement: " <> requirementText req <> "\nStarted at " <> at <> "\n\n")
+            writeIORef began True
             lock <- newMVar ()
-            True <$ runReaderT pipeline (Env cfg root prog info origs (withMVar lock . const . TIO.appendFile (logFile cfg)))
+            pool <- newIORef []
+            started <- getMonotonicTimeNSec >>= newIORef
+            True <$ runReaderT pipeline (Env cfg root prog info origs (withMVar lock . const . TIO.appendFile (logFile cfg)) pool started)
   finished <- case result of
     Right done -> pure done
     Left err
       | Just Stopped <- fromException err -> pure False
       | otherwise -> failCurrent prog ("Internal error: " <> T.pack (displayException err)) >> pure False
-  unless finished $ do
-    logged <- doesFileExist (logFile cfg)
+  logged <- readIORef began
+  when logged $ do
+    at <- clockTime
+    TIO.appendFile (logFile cfg) ("-- Run " <> (if finished then "finished" else "stopped") <> " at " <> at <> " after " <> showSeconds seconds <> " --\n")
+  unless finished $
     when logged $ update prog (addHistory ("Each build's output is in " <> T.pack (logFile cfg) <> "."))
   unless (finished || onFailure cfg == Keep) (undo origs)
   where
@@ -139,23 +154,39 @@ pipeline = do
             describeOutcome (SkeletonFailed feedback) <> ": " <> redesignReason (SkeletonFailed feedback) <> "; asking " <> toolNameText tool <> " to fix it."
           fixed <- designStep (stepOf tool) tool (fixUpInstruction tool feedback) chat
           verify typesStep fixed (fixUps - 1)
-        Left (feedback, _) -> loopBack typesStep chat [] (SkeletonFailed feedback)
+        Left (feedback, _) -> loopBack typesStep chat Nothing (SkeletonFailed feedback)
         Right () -> do
+          -- Reused only once the skeleton checks, so a reused body that no
+          -- longer fits is blamed on itself by the type check, not on the design.
+          kept <- reuseEarlierBodies
+          current <- iteration <$> getRun
           refs <- functionRefs
-          build typesStep chat [] [(ref, Nothing) | ref <- refs]
+          unless (null kept) $
+            note (atIteration current ("kept the implementations of " <> describeWork refs kept <> " from the previous design."))
+          fns <- functions . artefact <$> getRun
+          build typesStep chat Nothing [(fnRef f, Nothing) | f <- fns, isNothing (fnBody f)]
     stepOf SetTypes = DesignTypes
     stepOf SetFunctions = DesignSignatures
     stepOf _ = WriteProperties
 
-    build :: Text -> Chat -> [Text] -> [(FunctionRef, Maybe Text)] -> Holey ()
-    build typesStep chat previouslyFailed work = do
+    -- | @retrying@ is the outcome that sent the run back to reimplement this work.
+    build :: Text -> Chat -> Maybe Outcome -> [(FunctionRef, Maybe Text)] -> Holey ()
+    build typesStep chat retrying work = do
+      before <- bodiesOf (map fst work)
       missing <- implementStep work
-      if not (null missing)
-        then loopBack typesStep chat previouslyFailed (ImplementationMissing missing)
-        else do
+      after <- bodiesOf (map fst work)
+      case retrying of
+        _ | not (null missing) -> loopBack typesStep chat retrying (ImplementationMissing missing)
+        Just outcome | not (null work), all isJust before, after == before -> do
+          current <- iteration <$> getRun
+          refs <- functionRefs
+          let unchanged = "reimplementing " <> describeWork refs (map fst work) <> " gave back the same code"
+          modifyRun (setStep Implement (Failed (T.toUpper (T.take 1 unchanged) <> T.drop 1 unchanged <> ".")))
+          act typesStep chat outcome (retriedUnchanged current (map fst work) outcome) (unchanged <> ", so redesigning.")
+        _ -> do
           typed <- typeCheck
           case typed of
-            Left (attributed, rest) -> loopBack typesStep chat previouslyFailed (TypeErrors attributed rest)
+            Left (attributed, rest) -> loopBack typesStep chat retrying (TypeErrors attributed rest)
             Right () -> do
               checked <- propertiesStep
               case checked of
@@ -170,28 +201,82 @@ pipeline = do
                             f <- functions art,
                             mentions (fnName f) (propSource p)
                           ]
-                  loopBack typesStep chat previouslyFailed (PropertiesFailed failed suspects (propertyReport output))
+                  loopBack typesStep chat retrying (PropertiesFailed failed suspects (propertyReport output))
                 Right () -> do
                   (gap, reviewed) <- reviewStep chat
-                  forM_ gap (loopBack typesStep reviewed previouslyFailed . RequirementUnmet)
+                  case gap of
+                    Nothing -> finishIteration
+                    Just reason -> loopBack typesStep reviewed retrying (RequirementUnmet reason)
 
-    loopBack :: Text -> Chat -> [Text] -> Outcome -> Holey ()
-    loopBack typesStep chat previouslyFailed outcome = do
+    loopBack :: Text -> Chat -> Maybe Outcome -> Outcome -> Holey ()
+    loopBack typesStep chat retrying outcome = do
       current <- iteration <$> getRun
       refs <- functionRefs
-      case decide current refs previouslyFailed outcome of
+      let decision = decide current refs (maybe [] failedChecks retrying) outcome
+      act typesStep chat outcome decision $ case decision of
+        Reimplement work -> describeOutcome outcome <> ", so reimplementing " <> describeWork refs (map fst work) <> "."
+        _ -> describeOutcome outcome <> ": " <> redesignReason outcome
+
+    -- | Carries out a decision, noting @why@ in the history.
+    act :: Text -> Chat -> Outcome -> Decision -> Text -> Holey ()
+    act typesStep chat outcome decision why = do
+      current <- iteration <$> getRun
+      finishIteration
+      case decision of
         GiveUp reason -> note reason >> liftIO (throwIO Stopped)
         Redesign feedback -> do
-          note (atIteration current (describeOutcome outcome <> ": " <> redesignReason outcome))
+          note (atIteration current why)
+          shelveBodies (implicated outcome)
           modifyRun (restartFrom Discover)
           design typesStep (addMessage (textMessage User (revisionNote (current + 1) feedback)) chat)
         Reimplement work -> do
-          note (atIteration current (describeOutcome outcome <> ", so reimplementing " <> describeWork refs (map fst work) <> "."))
+          note (atIteration current why)
           modifyRun (restartFrom Implement)
-          build typesStep chat (failedChecks outcome) work
+          build typesStep chat (Just outcome) work
+
+-- | Moves every implemented body out of the design into the pool a redesign
+-- reuses from, except those of the functions the failure blamed.
+shelveBodies :: [FunctionRef] -> Holey ()
+shelveBodies blamed = do
+  fns <- functions . artefact <$> getRun
+  pool <- asks reusable
+  let implemented = [f | f <- fns, isJust (fnBody f), fnRef f `notElem` blamed]
+  liftIO . modifyIORef' pool $ \old ->
+    implemented ++ [f | f <- old, fnRef f `notElem` map fnRef implemented, fnRef f `notElem` blamed]
+  modifyRun (overFunctions (map (\f -> f {fnBody = Nothing, fnImports = []})))
+
+-- | Restores pooled bodies whose specification is unchanged, returning the
+-- functions that got one.
+reuseEarlierBodies :: Holey [FunctionRef]
+reuseEarlierBodies = do
+  pool <- asks reusable >>= liftIO . readIORef
+  before <- functions . artefact <$> getRun
+  let after = reuseBodies pool before
+  modifyRun (overFunctions (const after))
+  pure [fnRef a | (b, a) <- zip before after, isNothing (fnBody b), isJust (fnBody a)]
+
+bodiesOf :: [FunctionRef] -> Holey [Maybe Text]
+bodiesOf refs = do
+  fns <- functions . artefact <$> getRun
+  pure [fnBody f | ref <- refs, f <- fns, fnRef f == ref]
+
+-- | Logs how long the current iteration took and starts timing the next.
+finishIteration :: Holey ()
+finishIteration = do
+  Env {iterationStarted = started, buildLog = appendLog} <- ask
+  now <- liftIO getMonotonicTimeNSec
+  begun <- liftIO (readIORef started)
+  liftIO (writeIORef started now)
+  current <- iteration <$> getRun
+  liftIO . appendLog $ "-- Iteration " <> T.pack (show current) <> " took " <> showSeconds (fromIntegral (now - begun) / 1e9) <> " --\n"
 
 maxFixUps :: Int
 maxFixUps = 3
+
+-- | Enough that a typical design's functions are all implemented at once,
+-- so the step takes as long as its slowest function.
+concurrentImplementers :: Int
+concurrentImplementers = 16
 
 atIteration :: Int -> Text -> Text
 atIteration n text = "Iteration " <> T.pack (show n) <> ": " <> text
@@ -244,27 +329,40 @@ designTool tool request = do
   case readOnlyTool root name args of
     Just run -> Answer <$> liftIO run
     Nothing
-      | name /= tool -> pure (Answer unavailable)
-      | otherwise ->
-          Recorded <$> case name of
-            SetPlan -> pure $ case decodeArgs args of
-              Left err -> Left err
-              Right (PlanArgs behaviour existing changes assumptions)
-                | any (T.null . T.strip) [behaviour, existing, changes, assumptions] -> Left "Every plan field must be non-empty."
-                | otherwise -> Right ()
-            SetTypes -> either (pure . Left) setTypes (decodeArgs args)
-            SetFunctions -> either (pure . Left) setFunctions (decodeArgs args)
-            SetProperties -> either (pure . Left) (tryModifyRun . applyProperties) (decodeArgs args)
-            Refactor -> either (pure . Left) (tryModifyRun . applyRefactor) (decodeArgs args)
-            _ -> pure (Left unavailable)
+      | name == tool -> Recorded <$> record
+      -- A later step may correct an earlier one rather than carry its mistake
+      -- through implementation to a failed check and a redesign.
+      | name `elem` earlier -> Answer . either ("Rejected: " <>) (const (toolNameText name <> " is updated. Now call " <> toolNameText tool <> " to finish this step.")) <$> record
+      | name == RequirementNotMet && not (null earlier) ->
+          pure . Answer $
+            "RequirementNotMet is for the review. During design, correct the design instead: call "
+              <> T.intercalate " or " (map toolNameText earlier)
+              <> " again with the correction, then "
+              <> toolNameText tool
+              <> "."
+      | otherwise -> pure (Answer unavailable)
   where
     function = toolRequestFunction request
     name = toolRequestFunctionParamsName function
     args = toolRequestFunctionParamsArguments function
     unavailable = toolNameText name <> " is not available in this step."
+    earlier = case break (== tool) [SetPlan, SetTypes, SetFunctions, SetProperties] of
+      (before, _ : _) -> before
+      _ -> []
+    record = case name of
+      SetPlan -> pure $ case decodeArgs args of
+        Left err -> Left err
+        Right (PlanArgs behaviour existing changes assumptions)
+          | any (T.null . T.strip) [behaviour, existing, changes, assumptions] -> Left "Every plan field must be non-empty."
+          | otherwise -> Right ()
+      SetTypes -> either (pure . Left) setTypes (decodeArgs args)
+      SetFunctions -> either (pure . Left) setFunctions (decodeArgs args)
+      SetProperties -> either (pure . Left) (tryModifyRun . applyProperties) (decodeArgs args)
+      Refactor -> either (pure . Left) (tryModifyRun . applyRefactor) (decodeArgs args)
+      _ -> pure (Left unavailable)
 
 setTypes :: TypesArgs -> Holey (Either Text ())
-setTypes args = do
+setTypes args@(TypesArgs _ removals) = do
   Env {projectRoot = root, project = info, originals = origs} <- ask
   case checkModules (components info) args of
     Left err -> pure (Left err)
@@ -283,14 +381,17 @@ setTypes args = do
               planTypes = argTypes arg
             }
       run <- getRun
-      clash <- case suiteOf (components info) (artefact run) {modules = plans} of
-        Just suite -> liftIO (existingFiles root run [suiteFile suite])
-        Nothing -> pure []
-      case [p | p <- plans, planIsNew p, planModule p == ModuleName "Main"] of
-        p : _ -> pure (Left ("A new module cannot be called Main: " <> componentNameText (planComponent p) <> " already has its Main. Choose another name."))
-        []
-          | null clash -> tryModifyRun (applyModules plans)
-          | otherwise -> pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". List another module first."))
+      case mergeModules plans removals (modules (artefact run)) of
+        Left err -> pure (Left err)
+        Right merged -> do
+          clash <- case suiteOf (components info) (artefact run) {modules = merged} of
+            Just suite -> liftIO (existingFiles root run [suiteFile suite])
+            Nothing -> pure []
+          case [p | p <- plans, planIsNew p, planModule p == ModuleName "Main"] of
+            p : _ -> pure (Left ("A new module cannot be called Main: " <> componentNameText (planComponent p) <> " already has its Main. Choose another name."))
+            []
+              | null clash -> tryModifyRun (applyModules merged)
+              | otherwise -> pure (Left ("Already exists: " <> T.intercalate ", " (map T.pack clash) <> ". List another module first."))
 
 setFunctions :: FunctionsArgs -> Holey (Either Text ())
 setFunctions args = do
@@ -365,14 +466,23 @@ buildProject :: Step -> Holey (Either Text ())
 buildProject step = do
   root <- asks projectRoot
   (built, seconds) <- liftIO (timed (buildAll root))
+  logCommand step "Build" built seconds
+  pure (() <$ built)
+
+-- | Logs a cabal command's verdict, duration and output under the current iteration.
+logCommand :: Step -> Text -> Either Text Text -> Double -> Holey ()
+logCommand step what result seconds = do
   current <- iteration <$> getRun
   appendLog <- asks buildLog
+  at <- liftIO clockTime
   liftIO . appendLog $
-    "== Iteration " <> T.pack (show current) <> ", " <> stepLabel step <> ": " <> either (const "failed") (const "passed") built <> " ==\n"
-      <> "-- Build took " <> showSeconds seconds <> " --\n"
-      <> either id id built
+    "== Iteration " <> T.pack (show current) <> ", " <> stepLabel step <> ": " <> either (const "failed") (const "passed") result <> " ==\n"
+      <> "-- " <> what <> " took " <> showSeconds seconds <> ", finished at " <> at <> " --\n"
+      <> either id id result
       <> "\n"
-  pure (() <$ built)
+
+clockTime :: IO Text
+clockTime = T.pack . formatTime defaultTimeLocale "%H:%M:%S" <$> getZonedTime
 
 blameErrors :: Text -> Holey [(GhcError, Maybe FilePath, Blame)]
 blameErrors output = do
@@ -499,8 +609,8 @@ implementStep work = do
   project' <- liftIO (sourceFiles root (components (project env)) >>= mapM (\path -> original root origs path))
   let existing = [s | Just s <- project']
   modifyRun (\r -> (setStep Implement Running r) {tasks = [(fnRef f, if fnRef f `elem` queued then Queued else Done) | f <- functions art]})
-  slots <- liftIO (newQSem 4)
-  liftIO . forConcurrently_ work $ \(ref, feedback) ->
+  slots <- liftIO (newQSem concurrentImplementers)
+  (_, seconds) <- liftIO . timed . forConcurrently_ work $ \(ref, feedback) ->
     bracket_ (waitQSem slots) (signalQSem slots) . flip runReaderT env $
       case [f | f <- functions art, fnRef f == ref] of
         fn : _ ->
@@ -513,6 +623,8 @@ implementStep work = do
             [p | p <- properties art, mentions (fnName fn) (propSource p)]
             feedback
         [] -> modifyRun (setTask ref (TaskFailed "Unknown function"))
+  unless (null work) . liftIO . buildLog env $
+    "-- Implementing " <> T.pack (show (length work)) <> " functions took " <> showSeconds seconds <> " --\n"
   missing <- (\run -> [ref | (ref, TaskFailed _) <- tasks run]) <$> getRun
   modifyRun . setStep Implement $
     if null missing
@@ -548,7 +660,10 @@ runProperties = do
   Env {projectRoot = root, project = info} <- ask
   case suiteOf (components info) (artefact run) of
     Nothing -> pure (Left "No module was chosen.")
-    Just suite -> fmap (const ()) <$> liftIO (runSuite root (suiteCabalTarget suite))
+    Just suite -> do
+      (ran, seconds) <- liftIO (timed (runSuite root (suiteCabalTarget suite)))
+      logCommand RunProperties "Properties" ran seconds
+      pure (fmap (const ()) ran)
 
 reviewStep :: Chat -> Holey (Maybe Text, Chat)
 reviewStep chat = do

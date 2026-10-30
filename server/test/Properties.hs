@@ -9,7 +9,7 @@ import Data.Aeson (Value (..), decodeStrict, object, parseJSON, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Aeson.Types (parseEither)
-import Edits (ImplementArgs (..), applyFunctions, applyImplementation, applyRefactor)
+import Edits (ImplementArgs (..), applyFunctions, applyImplementation, applyProperties, applyRefactor, mergeModules, reuseBodies)
 import Data.Foldable (toList)
 import Data.List (dropWhileEnd, nub, sort)
 import Data.Maybe (isJust)
@@ -56,6 +56,9 @@ propertyTests =
         check "a type error that comes back in the same function is redesigned" prop_repeatedTypeErrorRedesigned,
         check "a record missing fields fails the build" prop_missingFieldsFatal,
         check "a refactor replaces the run's functions and adds helpers" prop_refactorApplied,
+        check "design steps change what is recorded instead of replacing it" prop_designsMerge,
+        check "a redesign reuses only the bodies of unchanged functions" prop_bodiesReused,
+        check "a retry that gives back the same code is redesigned" prop_unchangedRetryRedesigned,
         check "a repaired instance keeps its head while it is a hole" prop_instanceRepaired,
         check "a property suite sees its component and the libraries it depends on" prop_suiteVisibility,
         check "failed properties are read from suite output" prop_failedPropertiesRead,
@@ -426,6 +429,53 @@ prop_refactorApplied =
    in summary (refactor [change "merge" "" "merge = joined", change "joined" "[Int] -> [Int] -> [Int]" "joined = (++)"])
         === Right [("merge", "[Int] -> [Int] -> [Int]", Just "merge = joined"), ("joined", "[Int] -> [Int] -> [Int]", Just "joined = (++)")]
         .&&. summary (refactor [change "joined" "" "joined = (++)"]) === Left "Give the new helper joined a signature."
+
+prop_designsMerge :: Property
+prop_designsMerge =
+  let fn name doc = object ["module" .= ("M" :: Text), "name" .= (name :: Text), "signature" .= ("Int" :: Text), "doc" .= (doc :: Text), "change" .= ("" :: Text)]
+      gone name = object ["module" .= ("M" :: Text), "name" .= (name :: Text)]
+      setFunctions :: [Value] -> [Value] -> Run -> Either Text Run
+      setFunctions given removed run = either (Left . T.pack) Right (parseEither parseJSON (object ["functions" .= given, "remove" .= removed])) >>= \a -> applyFunctions [] (const Nothing) a run
+      names = fmap (map (\f -> (functionNameText (fnName f), fnDoc f)) . functions . artefact)
+      prop name source = object ["name" .= (name :: Text), "source" .= (source :: Text)]
+      setProperties :: [Text] -> Text -> [Value] -> [Text] -> Run -> Either Text Run
+      setProperties imports helpers given removed run = either (Left . T.pack) Right (parseEither parseJSON (object ["imports" .= (imports :: [Text]), "helpers" .= (helpers :: Text), "properties" .= given, "remove" .= (removed :: [Text])])) >>= \a -> applyProperties a run
+      recorded = fmap (\run -> let art = artefact run in (propertyImports art, propertyHelpers art, map propName (properties art)))
+      plan name = ModulePlan (ComponentName "demo") (ModuleName name) ("src/" <> T.unpack name <> ".hs") True [] [] name
+      withProperties = setProperties ["import Data.List (sort)"] "helpers" [prop "prop_a" "prop_a = True", prop "prop_b" "prop_b = True"] [] mergeRun
+   in names (setFunctions [fn "extra" "new"] [] mergeRun) === Right [("merge", ""), ("extra", "new")]
+        .&&. names (setFunctions [fn "merge" "changed"] [] mergeRun) === Right [("merge", "changed")]
+        .&&. names (setFunctions [fn "extra" ""] [gone "merge"] mergeRun) === Right [("extra", "")]
+        .&&. names (setFunctions [] [gone "merge"] mergeRun) === Left "Declare at least one function."
+        .&&. names (setFunctions [] [gone "missing"] mergeRun) === Left "Cannot remove M.missing: not in the design."
+        .&&. recorded (withProperties >>= setProperties [] "" [prop "prop_b" "prop_b = False", prop "prop_c" "prop_c = True"] ["prop_a"])
+          === Right (["import Data.List (sort)"], "helpers", ["prop_b", "prop_c"])
+        .&&. fmap (map planTypes) (mergeModules [plan "B", plan "C"] [] [plan "A", (plan "B") {planTypes = "old"}]) === Right ["A", "B", "C"]
+        .&&. fmap (map planTypes) (mergeModules [] ["A"] [plan "A", plan "B"]) === Right ["B"]
+        .&&. mergeModules [] ["A"] [plan "A"] === Left "List at least one module."
+        .&&. mergeModules [] ["Z"] [plan "A"] === Left "Cannot remove Z: not in the design."
+
+prop_bodiesReused :: Property
+prop_bodiesReused =
+  let spec name doc body = FunctionSpec (FunctionRef "src/M.hs" (FunctionName name)) Designed "Int" doc "" body Undefined [] Nothing Nothing
+      pool = [spec "kept" "same" (Just "kept = 1"), spec "changed" "old" (Just "changed = 1")]
+      reused = map fnBody (reuseBodies pool [spec "kept" "same" Nothing, spec "changed" "new" Nothing, spec "fresh" "" Nothing])
+   in reused === [Just "kept = 1", Nothing, Nothing]
+        .&&. map fnBody (reuseBodies pool [spec "kept" "same" (Just "kept = 2")]) === [Just "kept = 2"]
+
+prop_unchangedRetryRedesigned :: Property
+prop_unchangedRetryRedesigned = forAll functionRefs $ \refs ->
+  let outcome = PropertiesFailed ["prop_x"] (take 1 refs) "=== prop_x\n*** Failed!"
+   in conjoin
+        [ case retriedUnchanged 1 (take 1 refs) outcome of
+            Redesign feedback -> counterexample (T.unpack feedback) ("gave back the same code" `T.isInfixOf` feedback && "*** Failed!" `T.isInfixOf` feedback)
+            other -> counterexample (show other) False,
+          case retriedUnchanged maxIterations refs outcome of
+            GiveUp _ -> property True
+            other -> counterexample (show other) False,
+          implicated outcome === take 1 refs,
+          implicated (RequirementUnmet "r") === []
+        ]
 
 prop_workDescribed :: Property
 prop_workDescribed =

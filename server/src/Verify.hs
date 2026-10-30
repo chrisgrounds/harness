@@ -31,7 +31,17 @@ import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import System.Timeout (timeout)
 
 buildAll :: FilePath -> IO (Either Text Text)
-buildAll root = failOnFatalWarnings <$> cabal root ["build", "all", "--enable-tests", "-j1"]
+buildAll root = failOnFatalWarnings <$> cabal root (["build", "all"] ++ verifyFlags)
+
+-- | Verification only type checks and runs the properties, so it skips
+-- optimisation and builds into its own directory, leaving the project's own
+-- builds untouched. Packages build one at a time because cabal interleaves
+-- concurrent packages' output character by character, which 'ghcErrors'
+-- cannot read; GHC's -j compiles a package's modules in parallel and keeps
+-- each message whole. Every command shares these flags, or cabal would
+-- rebuild between them.
+verifyFlags :: [String]
+verifyFlags = ["--enable-tests", "--disable-optimization", "--builddir=dist-newstyle/holey-build", "-j1", "--ghc-options=-j"]
 
 failOnFatalWarnings :: Either Text Text -> Either Text Text
 failOnFatalWarnings (Right output) | any fatalWarning (T.lines output) = Left output
@@ -41,10 +51,10 @@ fatalWarning :: Text -> Bool
 fatalWarning l = ": warning:" `T.isInfixOf` l && "[-Wmissing-fields]" `T.isInfixOf` l
 
 buildTarget :: FilePath -> Text -> IO (Either Text ())
-buildTarget root target = fmap (const ()) <$> cabal root ["build", "--enable-tests", T.unpack target]
+buildTarget root target = fmap (const ()) <$> cabal root (["build"] ++ verifyFlags ++ [T.unpack target])
 
 runSuite :: FilePath -> Text -> IO (Either Text Text)
-runSuite root target = cabal root ["run", "--enable-tests", "-v1", T.unpack target]
+runSuite root target = cabal root (["run", "-v1"] ++ verifyFlags ++ [T.unpack target])
 
 cabal :: FilePath -> [String] -> IO (Either Text Text)
 cabal root args = do

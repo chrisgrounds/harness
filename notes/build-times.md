@@ -24,12 +24,15 @@ Builds already run once per round, not once per implementer: `implementStep` run
 Every build is `buildAll` in `server/src/Verify.hs`:
 
 ```
-cabal build all --enable-tests -j1
+cabal build all --enable-tests --disable-optimization --builddir=dist-newstyle/holey-build -j1 --ghc-options=-j
 ```
+
+The property suite runs with the same flags, so it doesn't rebuild. `-O0`, a separate build directory and GHC's `-j` (sections 2 and 5 below) are in place. Each build's duration and finish time is in the run log, and so is each property run.
 
 - **`all`** builds every package in `cabal.project`: `openai-auth`, `core`, `server`, `hs-tui-client` and `hs-gui-client`. It arrived with "let holey change existing modules and repair the callers its changes break" (90a8a2d), because a change in `core` can break callers in any client, and holey needs to see those errors to repair them.
 - **`--enable-tests`** builds every test suite too, so the generated property suite and any broken tests are caught.
-- **`-j1`** builds one package at a time. `ghcErrors` decides which package an error belongs to from the most recent `Building library for X` line, so parallel builds would interleave output and put errors on the wrong package.
+- **`-j1`** builds one package at a time. `ghcErrors` decides which package an error belongs to from the most recent `Building library for X` line, so parallel builds would interleave output and put errors on the wrong package. Checked with cabal 3 and GHC 9.6.7: with `-j`, two packages' errors interleave character by character. GHC's own `-j` keeps each message whole.
+- **`hs-tui-client`** keeps its modules in a library, so the executable and its property suites share one compiled copy. Before that, each of the three suites listed `src` as a source directory and compiled `UI.hs` again: four copies per build.
 
 So a one-line change to `hs-gui-client` still checks that every other package is up to date, one at a time. Nothing else changes, so the cost of checking them is small but not free, and cabal's planning step runs every time.
 

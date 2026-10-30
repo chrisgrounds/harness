@@ -37,7 +37,11 @@ designSystemPrompt =
       "Existing functions that stop type checking because of your changes are found and repaired automatically, keeping their signatures.",
       "Use ReadFile, ListFiles and RipGrep to understand the existing code before designing, and reuse its types where they fit.",
       "Batch independent ReadFile, ListFiles and RipGrep calls in one reply to explore in parallel.",
-      "Each step tells you which tool records its result. Call it, then finish your turn with a one-line summary."
+      "Each step tells you which tool records its result. Call it, then finish your turn with a one-line summary.",
+      "If a step shows that an earlier step's result is wrong, call the earlier step's tool again with the correction before finishing the step;",
+      "never carry a mistake you have found into implementation.",
+      "SetTypes, SetFunctions and SetProperties record changes on top of what is already recorded: each module, function or property you list",
+      "replaces the earlier one of the same name, anything you do not list stays as it is, and remove drops earlier ones."
     ]
 
 discoveryInstruction :: Requirement -> [Component] -> Text
@@ -72,7 +76,7 @@ typesInstruction req components =
       "- any LANGUAGE extensions and import lines to add, using only packages the component already depends on (the build cannot add dependencies);",
       "- type declarations and instances only, without functions. In an existing module, give only new types and the complete new",
       "  declaration of each type you change; a declaration replaces the existing one of the same name. Leave out unchanged types.",
-      "The first module is the main one: the property suite is named after it and built against its component."
+      "The first module is the main one: the property suite is named after it and built against its component. Once recorded, the main module stays first."
     ]
 
 functionsInstruction :: Model -> Text
@@ -114,7 +118,9 @@ revisionNote iterationNumber feedback =
   T.unlines
     [ "Iteration " <> T.pack (show iterationNumber) <> ": the previous design failed verification:",
       feedback,
-      "Revise the design to fix this. Call the step's tool again even if this part is unchanged.",
+      "Revise the design to fix this. The previous design is still recorded, so give each step only what changes:",
+      "list only new or changed modules, functions and properties, and remove those to drop. If a step needs no change, call its tool with nothing listed.",
+      "Functions whose signature, documentation and change note stay the same keep their implementations.",
       ""
     ]
 
@@ -132,7 +138,8 @@ fixUpInstruction tool errors =
   T.unlines
     [ "The skeleton does not type check, because of what this step wrote:",
       errors,
-      "Fix it by calling " <> toolNameText tool <> " again with the complete corrected " <> what <> ". The rest of the design stays as it is."
+      "Fix it by calling " <> toolNameText tool <> " again with the corrected " <> what <> ": each one you list replaces the earlier one,"
+        <> " and remove drops any that should go. The rest of the design stays as it is."
     ]
   where
     what = case tool of

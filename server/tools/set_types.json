@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "SetTypes",
-    "description": "Sets the modules to create or change, with their imports and type declarations. The first module is the main one. Call again to replace them all.",
+    "description": "Sets the modules to create or change, with their imports and type declarations. The first module is the main one. Call again to change them: each module listed replaces the earlier entry of the same name, modules not listed stay, and remove drops earlier ones.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -37,6 +37,11 @@
             "required": ["component", "module", "extensions", "imports", "types"],
             "additionalProperties": false
           }
+        },
+        "remove": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of modules recorded earlier to drop from the design"
         }
       },
       "required": ["modules"],
