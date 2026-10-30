@@ -30,21 +30,21 @@ newInput = do
   withForeignPtr buffer $ \p -> poke p 0
   pure (Input buffer)
 
--- | Draws the text box at the given size, showing the hint while it is
--- empty, taking the keyboard when asked, and replacing its text when given
--- a replacement. Returns whether Enter submitted, whether the replacement
--- was made, and the text.
-input :: Input -> Text -> ImVec2 -> Bool -> Maybe Text -> IO (Bool, Bool, Text)
-input (Input buffer) hint (ImVec2 width height) focus replacement =
+-- | Draws the text box with the given ID at the given size, showing the
+-- hint while it is empty, taking the keyboard when asked, and replacing its
+-- text when given a replacement. Returns whether Enter submitted, whether
+-- the replacement was made, and the text.
+input :: Input -> Text -> Text -> ImVec2 -> Bool -> Maybe Text -> IO (Bool, Bool, Text)
+input (Input buffer) name hint (ImVec2 width height) focus replacement =
   withForeignPtr buffer $ \p -> do
     let fitted = fitUtf8 (capacity - 1) <$> replacement
     -- Shown at once if the box is not active; when it is, Dear ImGui keeps
     -- its own copy until the replacement is made.
     mapM_ (write p) fitted
     (submitted, replaced) <-
-      B.useAsCString "##composer" $ \name ->
+      withText name $ \name' ->
         maybe ($ nullPtr) B.useAsCString fitted $ \replacing ->
-          composerBox name p capacity width height focus replacing
+          composerBox name' p capacity width height focus replacing
     contents <- decodeUtf8With lenientDecode <$> B.packCString p
     when (T.null contents && not (T.null hint)) $ do
       ImVec2 x0 y0 <- Raw.getItemRectMin

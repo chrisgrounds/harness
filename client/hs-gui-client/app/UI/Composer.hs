@@ -32,7 +32,7 @@ import UI.Motion
 import UI.State (ChatAction (..), Status (..))
 import UI.Style (transparent, withStyleColours, withStyleVec)
 import UI.Text (ellipsize, label, textWidth, withText)
-import UI.Widgets (modelCombo, sendButton)
+import UI.Widgets (SendColours (..), quietCombo, sendButton)
 
 data ComposerState = ComposerState
   { appearance :: Appearance,
@@ -123,14 +123,14 @@ composerRow e view layout left column = do
     withStyleVec ImGuiStyleVar_FramePadding (ImVec2 12 (snd (framePadding metrics))) $
       withStyleFloat ImGuiStyleVar_FrameBorderSize 0 $
         withStyleColours [(col, transparent) | col <- [ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive]] $
-          input (composerText e) hint (ImVec2 (column - 8) textHeight) focus (composerReplacement view)
+          input (composerText e) "##composer" hint (ImVec2 (column - 8) textHeight) focus (composerReplacement view)
   writeIORef (composing e) =<< Raw.isItemActive
   let controlsTop = top + height - composerInset - composerControlsHeight
   pickerHeight <- withFont (small (fonts e)) $ (+ 2 * snd (framePadding metrics)) <$> getTextLineHeight
   setCursorPosY (controlsTop + (composerControlsHeight - pickerHeight) / 2)
   modelActions <- modelPicker e view (left + composerInset) (column - 2 * composerInset - composerControlsHeight - 8)
   setCursorPos' (ImVec2 (left + column - composerInset - composerControlsHeight) controlsTop)
-  clicked <- sendButton composerControlsHeight (composerCanSend view) (accent p) (secondaryAccent p) (seam p) (foreground p)
+  clicked <- sendButton "##send" composerControlsHeight (composerCanSend view) (SendColours (accent p) (secondaryAccent p) (seam p) (foreground p))
   setCursorPos' (ImVec2 left top)
   with (ImVec2 column height) Raw.dummy
   pure (modelActions ++ [Replaced expected | replaced, Just expected <- [composerReplacement view]] ++ [Edited value | value /= composerDraft view] ++ [Send | submitted || clicked])
@@ -193,7 +193,7 @@ modelPicker e view left column = withFont (small (fonts e)) $ do
   shown <- ellipsize (width - 40) preview
   setCursorPosX controlsLeft
   bracket_ (beginDisabled (composerWaiting view)) Raw.endDisabled $ do
-    opened <- modelCombo "##chat-model" shown width
+    opened <- quietCombo "##chat-model" shown width
     modelActions <- if not opened then pure [] else flip finally Raw.endCombo $
       concat <$> forM (composerChoices view) (\choice -> do
         picked <- selectableWith defSelectableOptions {selected = Just choice == composerChoice view}
@@ -202,7 +202,7 @@ modelPicker e view left column = withFont (small (fonts e)) $ do
     effortActions <- if not showEffort then pure [] else do
       Raw.sameLine
       effortShown <- ellipsize (effortWidth - 40) effortPreview
-      effortOpened <- modelCombo "##chat-effort" effortShown effortWidth
+      effortOpened <- quietCombo "##chat-effort" effortShown effortWidth
       if not effortOpened then pure [] else flip finally Raw.endCombo $
         concat <$> forM (Nothing : map Just [minBound .. maxBound]) (\effort -> do
           picked <- selectableWith defSelectableOptions {selected = effort == composerEffort view} (effortLabel effort)

@@ -256,7 +256,7 @@ draw e times now ui = do
           setCursorPos' (ImVec2 side 0)
           nextWidth <- withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 0 0) $
             pane "sidebar-divider" (ImVec2 gutter height) Nothing False $
-              resizeSidebar side 180 (min 460 (width - 380)) height
+              resizeSidebar "##sidebar-resize" side 180 (min 460 (width - 380)) height
           writeIORef (sidebarSize e) nextWidth
           divider <- colour 1 (seam (palette (appearance e)))
           line divider 1 (ImVec2 (side + gutter / 2) 0) (ImVec2 (side + gutter / 2) height)

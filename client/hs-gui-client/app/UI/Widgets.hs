@@ -4,12 +4,13 @@
 -- | Controls the interface is built from, beyond Dear ImGui's own.
 module UI.Widgets
   ( meter,
+    SendColours (..),
     sendButton,
     Navigation (..),
     navigationButton,
     resizeSidebar,
     closableModal,
-    modelCombo,
+    quietCombo,
   )
 where
 
@@ -44,18 +45,28 @@ meter track fill width fraction = do
   -- Never thinner than its rounded ends, so it starts as a dot.
   bar fill (if fraction > 0 then max height (width * min 1 fraction) else 0)
 
--- | A round button of the given diameter with an arrow pointing up, filled
--- with the first colour when enabled, the second when hovered, and the
--- third when disabled. Returns whether it was clicked.
-sendButton :: Float -> Bool -> Colour -> Colour -> Colour -> Colour -> IO Bool
-sendButton diameter enabled fill hover off arrow = do
-  clicked <- with (ImVec2 diameter diameter) $ \size' -> withText "##send" $ \name -> Raw.invisibleButton name size' ImGuiButtonFlags_None
+-- | The send button's colours.
+data SendColours = SendColours
+  { -- | The disc when enabled.
+    sendFill :: Colour,
+    -- | The disc when hovered.
+    sendHover :: Colour,
+    -- | The disc when disabled.
+    sendOff :: Colour,
+    sendArrow :: Colour
+  }
+
+-- | A round button with the given ID and diameter, with an arrow pointing
+-- up. Returns whether it was clicked.
+sendButton :: Text -> Float -> Bool -> SendColours -> IO Bool
+sendButton name diameter enabled colours = do
+  clicked <- with (ImVec2 diameter diameter) $ \size' -> withText name $ \name' -> Raw.invisibleButton name' size' ImGuiButtonFlags_None
   hovered <- Raw.isItemHovered
   when (enabled && hovered) handCursor
   ImVec2 x0 y0 <- Raw.getItemRectMin
   list <- Raw.getWindowDrawList
-  disc <- colour 1 (if not enabled then off else if hovered then hover else fill)
-  ink <- colour (if enabled then 1 else 0.45) arrow
+  disc <- colour 1 (if not enabled then sendOff colours else if hovered then sendHover colours else sendFill colours)
+  ink <- colour (if enabled then 1 else 0.45) (sendArrow colours)
   let r = diameter / 2
       (cx, cy) = (x0 + r, y0 + r)
       s = diameter * 0.2
@@ -110,10 +121,11 @@ navigationButton kind = do
       NewChatButton -> ("##new-chat", "New chat")
       SettingsButton -> ("##user-settings", "User settings")
 
--- | The divider's width follows horizontal dragging and stays within its bounds.
-resizeSidebar :: Float -> Float -> Float -> Float -> IO Float
-resizeSidebar width minimum' maximum' height = do
-  _ <- invisibleButton "##sidebar-resize" (ImVec2 8 height) ImGuiButtonFlags_None
+-- | A divider with the given ID, whose width follows horizontal dragging
+-- and stays within its bounds.
+resizeSidebar :: Text -> Float -> Float -> Float -> Float -> IO Float
+resizeSidebar name width minimum' maximum' height = do
+  _ <- invisibleButton name (ImVec2 8 height) ImGuiButtonFlags_None
   active <- Raw.isItemActive
   hovered <- Raw.isItemHovered
   when (active || hovered) (setMouseCursor ImGuiMouseCursor_ResizeEW)
@@ -131,9 +143,10 @@ closableModal title (ImVec2 width height) = do
   where
     flags' = ImGuiWindowFlags_NoSavedSettings .|. ImGuiWindowFlags_NoCollapse .|. ImGuiWindowFlags_NoResize .|. ImGuiWindowFlags_AlwaysAutoResize
 
--- | A quiet model picker with a chevron. The caller ends its combo when open.
-modelCombo :: Text -> Text -> Float -> IO Bool
-modelCombo name caption width = do
+-- | A borderless, transparent combo with a chevron. The caller ends its
+-- combo when open.
+quietCombo :: Text -> Text -> Float -> IO Bool
+quietCombo name caption width = do
   setNextItemWidth width
   opened <- withStyleFloat ImGuiStyleVar_FrameBorderSize 0 $
     withStyleColours [(ImGuiCol_FrameBg, transparent)] $
