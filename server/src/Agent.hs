@@ -33,8 +33,9 @@ loadLlm m = do
   where
     key name = lookupEnv name >>= maybe (die ("Set " <> name <> " to use " <> T.unpack (modelId m) <> ".")) pure
 
-runAgent :: Llm -> Int -> (ToolRequest -> IO Text) -> Chat -> IO Chat
-runAgent llm budget handle chat
+-- Stops without another model call once finished reports True after a round of tools.
+runAgent :: Llm -> Int -> IO Bool -> (ToolRequest -> IO Text) -> Chat -> IO Chat
+runAgent llm budget finished handle chat
   | budget <= 0 = pure chat
   | otherwise = do
       replied <- llm chat
@@ -42,7 +43,9 @@ runAgent llm budget handle chat
         [] -> pure replied
         requests -> do
           results <- runTools (\r -> toolMessage (toolRequestId r) <$> handle r) requests
-          runAgent llm (budget - 1) handle (addMessages (reverse results) replied)
+          let next = addMessages (reverse results) replied
+          done <- finished
+          if done then pure next else runAgent llm (budget - 1) finished handle next
 
 -- Reads in the same reply may overlap. State-changing calls form barriers,
 -- so later reads observe earlier changes and multiple updates stay ordered.

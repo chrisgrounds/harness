@@ -12,7 +12,7 @@ import Data.Text (Text)
 import System.Timeout (timeout)
 
 agentTests :: IO [String]
-agentTests = concat <$> mapM check [("parallel tool reads and update barriers", orderedReads), ("failed tool cancels sibling reads", cancelledReads)]
+agentTests = concat <$> mapM check [("parallel tool reads and update barriers", orderedReads), ("failed tool cancels sibling reads", cancelledReads), ("finished agent makes no further model call", stopsWhenFinished)]
   where
     check (label, action) = do
       result <- try (timeout (5 * 1000000) action >>= maybe (fail "timed out") pure) :: IO (Either IOException ())
@@ -22,13 +22,23 @@ request :: Text -> ToolName -> ToolRequest
 request callId name = ToolRequest callId FunctionTool (ToolRequestFunctionParams name "{}")
 
 runRequests :: [ToolRequest] -> (ToolRequest -> IO Text) -> IO Chat
-runRequests requests handle = runAgent reply 2 handle (Chat [] Mercury3 [])
+runRequests requests handle = runAgent reply 2 (pure False) handle (Chat [] Mercury3 [])
   where
     reply chat = pure $ addMessage message chat
       where
         message
           | null (messages chat) = (textMessage Assistant "") {toolCalls = requests}
           | otherwise = textMessage Assistant "Done."
+
+stopsWhenFinished :: IO ()
+stopsWhenFinished = do
+  calls <- newIORef (0 :: Int)
+  let reply chat = do
+        modifyIORef' calls (+ 1)
+        pure (addMessage ((textMessage Assistant "") {toolCalls = [request "set" SetTypes]}) chat)
+  final <- runAgent reply 5 (pure True) (const (pure "Accepted.")) (Chat [] Mercury3 [])
+  made <- readIORef calls
+  unless (made == 1 && length (messages final) == 2) (fail ("expected one model call and a tool result, got " <> show made <> " calls"))
 
 orderedReads :: IO ()
 orderedReads = do

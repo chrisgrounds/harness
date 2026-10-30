@@ -438,7 +438,7 @@ untilAccepted budget attempts tool handler chat = do
         pure replied
       attempt :: Int -> Chat -> IO Chat
       attempt remaining c = do
-        c' <- runAgent reporting budget respond c
+        c' <- runAgent reporting budget (readIORef accepted) respond c
         done <- readIORef accepted
         if done || remaining <= 1
           then pure c'
