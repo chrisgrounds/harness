@@ -24,13 +24,11 @@ data Model
 
 -- | OpenAI reasoning levels. Supported levels depend on the selected model;
 -- Nothing at the call site leaves the provider's default in place.
-data ReasoningEffort = EffortNone | EffortMinimal | EffortLow | EffortMedium | EffortHigh | EffortXHigh | EffortMax
+data ReasoningEffort = EffortLow | EffortMedium | EffortHigh | EffortXHigh | EffortMax
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 reasoningEffortName :: ReasoningEffort -> Text
 reasoningEffortName effort = case effort of
-  EffortNone -> "none"
-  EffortMinimal -> "minimal"
   EffortLow -> "low"
   EffortMedium -> "medium"
   EffortHigh -> "high"

@@ -100,8 +100,7 @@ effortTest = do
     let configured = OpenAI.requestBody (Just effort) chat
     assert "Responses API effort" (field "reasoning" configured == Just (object ["effort" .= (value :: Text)]))
     assert "history unchanged by effort" (field "input" configured == field "input" body))
-    [(EffortNone, "none"), (EffortMinimal, "minimal"), (EffortLow, "low"), (EffortMedium, "medium"),
-     (EffortHigh, "high"), (EffortXHigh, "xhigh"), (EffortMax, "max")]
+    [(EffortLow, "low"), (EffortMedium, "medium"), (EffortHigh, "high"), (EffortXHigh, "xhigh"), (EffortMax, "max")]
 
 streamTest :: IO ()
 streamTest = do
