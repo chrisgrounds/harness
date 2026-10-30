@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Core.Model (Model (..), Provider (..), allModels, provider, modelId, modelName, implementers, defaultImplementer, largerImplementer) where
+module Core.Model (Model (..), Provider (..), allModels, provider, modelId, modelName, implementers, defaultImplementer, largerImplementer, ReasoningEffort (..), reasoningEffortName) where
 
 import Data.Aeson
 import Data.Text (Text)
@@ -21,6 +21,30 @@ data Model
   | -- | A model slug from the signed-in ChatGPT account's catalog.
     OpenAIModel Text
   deriving (Eq, Ord, Show, Generic)
+
+-- | OpenAI reasoning levels. Supported levels depend on the selected model;
+-- Nothing at the call site leaves the provider's default in place.
+data ReasoningEffort = EffortNone | EffortMinimal | EffortLow | EffortMedium | EffortHigh | EffortXHigh | EffortMax
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+reasoningEffortName :: ReasoningEffort -> Text
+reasoningEffortName effort = case effort of
+  EffortNone -> "none"
+  EffortMinimal -> "minimal"
+  EffortLow -> "low"
+  EffortMedium -> "medium"
+  EffortHigh -> "high"
+  EffortXHigh -> "xhigh"
+  EffortMax -> "max"
+
+instance ToJSON ReasoningEffort where
+  toJSON = String . reasoningEffortName
+
+instance FromJSON ReasoningEffort where
+  parseJSON = withText "ReasoningEffort" $ \name ->
+    case [effort | effort <- [minBound .. maxBound], reasoningEffortName effort == name] of
+      effort : _ -> pure effort
+      [] -> fail "unknown reasoning effort"
 
 data Provider = Inception | Anthropic | OpenAI
   deriving (Eq, Show)

@@ -60,6 +60,8 @@ cabal run server -- --model opus      # Claude Opus 5.5
 
 For ChatGPT subscription access, start the server and desktop client, then open **User settings** at the bottom of the sidebar. Choose **Continue with ChatGPT**, complete sign-in in your browser, All available models appear in each chat's right-aligned selector below the message box. **New chat** creates a separate transcript and draft; selecting a different chat restores its model and progress. You can switch accounts and refresh catalogs in settings without restarting the server.
 
+For OpenAI models, the **Effort** selector beside the model picker controls reasoning effort for that chat. **Default** uses the model's own default; explicit levels are None, Minimal, Low, Medium, High, Extra high (`xhigh`) and Max. Supported levels depend on the model. The selection applies to every OpenAI call in the next run, including implementation and review, and can be changed between runs. Switching chats restores each chat's effort; new chats start at Default.
+
 The client owns sign-in, credentials and model catalogs. Credentials are saved under its XDG config directory (`~/.config/harness/openai/accounts.json` by default), protected by owner-only permissions, atomic writes and a refresh lock. Public model catalogs live alongside it in `catalogs.json`. Each chat retains its account registration; the server requests a short-lived access token from that client before each model call, including parallel implementers. Refresh and ID tokens remain on the client. Runs are queued to prevent simultaneous edits to the working tree.
 
 No OpenAI API key or Codex installation is needed. Model access and usage remain subject to your account, workspace and app limits; manage them in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage). This uses OpenAI's preview [ChatGPT plan usage flow](https://developers.openai.com/siwc/token-sharing-open-source) for local/open-source applications. Subscription failures stop the request; billing never switches automatically to an API key.
@@ -101,6 +103,15 @@ nix develop path:. -c cabal build all
 nix build path:.
 nix build 'path:.#hs-tui-client:exe:hs-tui-client'
 ```
+
+Start the server and graphical client together with:
+
+```sh
+nix run . -- --project ~/src/my-project
+nix run . -- --project ~/src/my-project --model opus
+```
+
+The launcher waits for the server to open a private socket before starting the client. Ctrl-C stops both processes and their child processes; closing the client or stopping the server also shuts down the pair. It accepts `--keep-failed` as well. `nix run .#harness` is the same command, and the project defaults to the current directory.
 
 ## Interface
 

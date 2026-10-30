@@ -54,7 +54,7 @@ instance Arbitrary Requirement' where
 prop_sendStartsRunAndClears :: Requirement' -> Bool
 prop_sendStartsRunAndClears (Requirement' value) =
   let (ui, started) = applyChat Send (typed value initialUI)
-   in started == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement value))))
+   in started == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement value) Nothing)))
         && waiting ui
         && draft ui == ""
         && replacement ui == Just ""
@@ -131,7 +131,7 @@ prop_chatActionsStayWithOrigin (Requirement' value) =
        && selectedChoice edited == Just secondChoice && null (runs edited)
        && draft restored == value && selectedChoice restored == Just firstChoice
        && isNothing (scrollRequest edited)
-       && submissionTasks == [SendToServer (StartChat 0 (choiceModel firstChoice) (choiceAccount firstChoice) (StartRun project (Requirement value)))]
+       && submissionTasks == [SendToServer (StartChat 0 (choiceModel firstChoice) (choiceAccount firstChoice) (StartRun project (Requirement value) Nothing))]
        && currentChatId submitted == 1 && replacement submitted == Just ""
        && not (waiting submitted) && null (runs submitted)
        && waiting submittedOrigin && draft submittedOrigin == ""
@@ -240,6 +240,7 @@ main = do
     sequence
       [ motionTests,
         check "chats retain independent models, drafts and background updates" prop_chatIsolation,
+        check "OpenAI effort stays with its chat and travels with requests" prop_chatEffort,
         check "sidebar history contains only chats that have started" prop_historyContainsOnlyStartedChats,
         check "a model must be available before sending" prop_modelRequired,
         check "run errors allow retry without losing the connection" prop_runFailureRecoverable,
@@ -302,10 +303,36 @@ prop_historyContainsOnlyStartedChats (Requirement' first) (Requirement' second) 
        && draft (act (SelectChat 0) fresh) == first
        && chatSummaries started == [(1, second, expectedChoice, True)]
        && chatSummaries background == chatSummaries started
-       && outgoing == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement first))))
+       && outgoing == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement first) Nothing)))
        && currentChatId bothStarted == 2 && draft bothStarted == "another draft"
        && chatSummaries bothStarted == [(1, second, expectedChoice, True), (0, first, expectedChoice, True)]
        && chatSummaries finished == [(1, second, expectedChoice, True), (0, first, expectedChoice, False)]
+
+prop_chatEffort :: Property
+prop_chatEffort = forAll (elements (Nothing : map Just [minBound .. maxBound])) $ \effort ->
+  let choice = ModelChoice (OpenAIModel "example") "Example" (Just "account")
+      base = act (Network (SettingsLoaded (SettingsSnapshot [] [choice] Nothing))) initialUI
+      picked = chat (ChooseEffort effort) (chat (ChooseModel choice) base)
+      fresh = ack (act NewChat picked)
+      changed = chat (ChooseEffort (Just EffortLow)) fresh
+      restored = act (SelectChat 0) changed
+      (busy, outgoing) = applyChat Send (typed "requirement" (ack restored))
+      busyUnchanged = chat (ChooseEffort (Just EffortHigh)) busy == busy
+      defaulted = chat (ChooseEffort Nothing) (ack restored)
+      switched = chat (ChooseModel (ModelChoice Mercury3 "mercury-3" Nothing)) (ack restored)
+      otherRequest = snd (applyChat Send (typed "other" switched))
+      -- Same-frame navigation still sends the originating chat's effort.
+      (_, backgroundTasks) = updateAll project
+        [NewChat, Chat 0 (Replaced ""), Chat 0 (Edited "background"), Chat 0 Send] restored
+  in selectedEffort picked == effort && selectedEffort restored == effort
+       && selectedEffort fresh == Nothing && selectedEffort changed == Just EffortLow
+       && outgoing == Just (SendToServer (StartChat 0 (choiceModel choice) (choiceAccount choice)
+            (StartRun project (Requirement "requirement") effort)))
+       && busyUnchanged && selectedEffort defaulted == Nothing
+       && chat (ChooseEffort (Just EffortHigh)) switched == switched
+       && otherRequest == Just (SendToServer (StartChat 0 Mercury3 Nothing (StartRun project (Requirement "other") Nothing)))
+       && backgroundTasks == [SendToServer (StartChat 0 (choiceModel choice) (choiceAccount choice)
+            (StartRun project (Requirement "background") effort))]
 
 prop_modelRequired :: Bool
 prop_modelRequired =

@@ -28,9 +28,9 @@ socketTests = do
       bracket (do (file,h) <- openTempFile tmp "harness-socket-test"; hClose h; removeFile file; createDirectory file; pure file) removePathForcibly $ \dir -> do
         let path = dir </> "server.sock"
         seen <- newIORef []
-        let handler chosen source publish _ = do
+        let handler chosen source publish run = do
               token <- maybe (pure "legacy") id source
-              modifyIORef' seen (++ [(chosen, token)])
+              modifyIORef' seen (++ [(chosen, token, runReasoningEffort run)])
               publish (TokenRate 12)
         withAsync (Socket.serve path Mercury3 [Mercury3] handler) $ \server -> do
           link server
@@ -49,8 +49,8 @@ socketTests = do
             expect (Connected Mercury3)
             sendJSON client ClientHello
             expect (AvailableModels [Mercury3])
-            sendJSON client (StartChat 4 (OpenAIModel "first") (Just "account-one") (StartRun dir (Requirement "first")))
-            sendJSON client (StartChat 9 (OpenAIModel "second") (Just "account-two") (StartRun dir (Requirement "second")))
+            sendJSON client (StartChat 4 (OpenAIModel "first") (Just "account-one") (StartRun dir (Requirement "first") (Just EffortHigh)))
+            sendJSON client (StartChat 9 (OpenAIModel "second") (Just "account-two") (StartRun dir (Requirement "second") (Just EffortLow)))
             first <- receive
             case first of
               TokenNeeded request "account-one" -> sendJSON client (TokenResponse request (Right "first-access"))
@@ -63,15 +63,15 @@ socketTests = do
               _ -> fail "second chat used the wrong account"
             expect (ChatEvent 9 (TokenRate 12))
             expect (ChatEvent 9 TurnFinished)
-            sendJSON client (StartChat 11 (OpenAIModel "first") Nothing (StartRun dir (Requirement "missing account")))
+            sendJSON client (StartChat 11 (OpenAIModel "first") Nothing (StartRun dir (Requirement "missing account") Nothing))
             rejected <- receive
             case rejected of
               ChatFailed 11 _ -> pure ()
               _ -> fail "OpenAI chat without a client account was accepted"
             expect (ChatEvent 11 TurnFinished)
-            sendJSON client (StartRun dir (Requirement "legacy"))
+            sendJSON client (StartRun dir (Requirement "legacy") Nothing)
             expect (TokenRate 12)
             expect TurnFinished
             recorded <- readIORef seen
-            unless (recorded == [(OpenAIModel "first", "first-access"), (OpenAIModel "second", "second-access"), (Mercury3, "legacy")]) (fail "chat model or token leaked between requests")
+            unless (recorded == [(OpenAIModel "first", "first-access", Just EffortHigh), (OpenAIModel "second", "second-access", Just EffortLow), (Mercury3, "legacy", Nothing)]) (fail "chat model, token or effort leaked between requests")
             unless (not ("secret-token" `T.isInfixOf` T.pack (show (TokenResponse 1 (Right "secret-token" :: Either Text Text))))) (fail "token was shown in diagnostics")

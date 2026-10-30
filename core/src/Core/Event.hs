@@ -8,13 +8,15 @@ import Control.Applicative ((<|>))
 import Data.Aeson
 import Data.Text (Text)
 import GHC.Generics (Generic)
-import Core.Model (Model)
+import Core.Model (Model, ReasoningEffort)
 
 -- | What the client sends: a requirement to run against a cabal project.
 data StartRun = StartRun
   { -- | Absolute, since the server's working directory is unrelated.
     runProject :: FilePath,
-    runRequirement :: Requirement
+    runRequirement :: Requirement,
+    -- | Omitted by older clients; Nothing uses the model's default.
+    runReasoningEffort :: Maybe ReasoningEffort
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 

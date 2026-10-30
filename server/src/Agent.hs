@@ -24,7 +24,7 @@ loadLlm :: Model -> IO Llm
 loadLlm m = do
   loadEnv
   case m of
-    OpenAIModel _ -> openaiLlm
+    OpenAIModel _ -> openaiLlm Nothing
     Mercury3 -> inceptionLlm . T.pack <$> key "INCEPTION_API_KEY"
     _ -> anthropicLlm . T.pack <$> key "ANTHROPIC_API_KEY"
   where

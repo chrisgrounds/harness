@@ -20,21 +20,21 @@ import qualified Network.HTTP.Client as HTTP
 import qualified OpenAI.Auth as Auth
 import qualified OpenAI.Http as Http
 
-openaiLlm :: IO (Chat -> IO Chat)
-openaiLlm = do
+openaiLlm :: Maybe ReasoningEffort -> IO (Chat -> IO Chat)
+openaiLlm effort = do
   manager <- Http.newManager
   getToken <- Auth.tokenSource manager
   _ <- getToken
-  openaiLlmWithToken getToken
+  openaiLlmWithToken effort getToken
 
-openaiLlmWithToken :: IO Text -> IO (Chat -> IO Chat)
-openaiLlmWithToken getToken = do
+openaiLlmWithToken :: Maybe ReasoningEffort -> IO Text -> IO (Chat -> IO Chat)
+openaiLlmWithToken effort getToken = do
   manager <- Http.newManager
   pure $ \chat -> do
     token <- getToken
     r <- Http.request "https://api.openai.com/v1/responses"
     start <- getMonotonicTimeNSec
-    response <- Http.withResponse r {method = "POST", requestHeaders = [("Authorization", "Bearer " <> TE.encodeUtf8 token), ("Content-Type", "application/json"), ("Accept", "text/event-stream")], HTTP.requestBody = RequestBodyLBS (encode (requestBody chat))} manager $ \res -> do
+    response <- Http.withResponse r {method = "POST", requestHeaders = [("Authorization", "Bearer " <> TE.encodeUtf8 token), ("Content-Type", "application/json"), ("Accept", "text/event-stream")], HTTP.requestBody = RequestBodyLBS (encode (requestBody effort chat))} manager $ \res -> do
       let readStream state = do
             chunk <- brRead (responseBody res)
             if B.null chunk then either fail pure (finishStream state)
@@ -50,13 +50,13 @@ openaiLlmWithToken getToken = do
     let seconds = fromIntegral (end - start) / 1e9 :: Double
     pure (addMessage reply {tokensPerSecond = if seconds > 0 then Just (fromIntegral tokens / seconds) else Nothing} chat)
 
-requestBody :: Chat -> Value
-requestBody chat = object
+requestBody :: Maybe ReasoningEffort -> Chat -> Value
+requestBody effort chat = object $
   [ "model" .= modelId (model chat), "store" .= False, "stream" .= True,
     "include" .= ["reasoning.encrypted_content" :: Text],
     "input" .= concatMap input (reverse (messages chat)),
     "tools" .= [object ["type" .= ("namespace" :: Text), "name" .= ("harness" :: Text), "description" .= ("Tools for the current type-driven build step." :: Text), "tools" .= map definition (tools chat)] | not (null (tools chat))]
-  ]
+  ] ++ ["reasoning" .= object ["effort" .= level] | Just level <- [effort]]
   where
     definition d = let f = toolFunction d in object
       ["type" .= ("function" :: Text), "name" .= toolNameText (toolFunctionName f), "description" .= toolFunctionDescription f, "parameters" .= toolFunctionParameters f, "strict" .= False]

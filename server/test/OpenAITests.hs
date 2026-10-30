@@ -40,6 +40,7 @@ import Data.Bits ((.&.))
 openaiTests :: IO [String]
 openaiTests = concat <$> sequence
   [ check "OpenAI request and reply preserve reasoning and tool history" historyTest,
+    check "OpenAI effort uses Responses API settings and leaves defaults unset" effortTest,
     check "OpenAI streams tolerate every byte boundary and reject failures" streamTest,
     check "ChatGPT callback validates state and client binding" callbackTest,
     check "ChatGPT identity requires signature, issuer, audience, expiry and nonce" identityTest,
@@ -75,7 +76,7 @@ historyTest = do
   let m = OpenAIModel "future-account-slug"
       chat = Chat [reply, textMessage User "Read A.hs", textMessage System "Follow the build steps."] m []
       toolReply = (textMessage Tool "module A where") {toolCallId = Just "call_1"}
-      body = OpenAI.requestBody (addMessage toolReply chat)
+      body = OpenAI.requestBody Nothing (addMessage toolReply chat)
       expected = [object ["role" .= ("developer" :: Text), "content" .= ("Follow the build steps." :: Text)], object ["role" .= ("user" :: Text), "content" .= ("Read A.hs" :: Text)]] ++ outputItems ++ [object ["type" .= ("function_call_output" :: Text), "call_id" .= ("call_1" :: Text), "output" .= ("module A where" :: Text)]]
   assert "output retained" (providerContent reply == Just (toJSON outputItems) && count == 10)
   assert "correct tool call" (map toolRequestId (toolCalls reply) == ["call_1"])
@@ -85,10 +86,22 @@ historyTest = do
   assert "model protocol round-trip" (eitherDecode (encode m) == Right m)
   assert "no arbitrary capability ranking" (implementers m == [m] && defaultImplementer m == m && largerImplementer m m == m)
   let tool = ToolDefinition FunctionTool (ToolFunction ReadFile "Read a file" (object ["type" .= ("object" :: Text)]))
-      withTools = OpenAI.requestBody chat {tools = [tool]}
+      withTools = OpenAI.requestBody Nothing chat {tools = [tool]}
   assert "namespace tool schema" (case field "tools" withTools of Just (Array a) -> any ((== Just (String "namespace")) . field "type") a; _ -> False)
   let unknown = object ["status" .= ("completed" :: Text), "output" .= [object ["type" .= ("function_call" :: Text), "namespace" .= ("other" :: Text), "name" .= ("ReadFile" :: Text)]], "usage" .= object ["output_tokens" .= (1 :: Int)]]
   assert "unknown namespace rejected" (isLeft (parseEither OpenAI.responseReply unknown))
+
+effortTest :: IO ()
+effortTest = do
+  let chat = Chat [textMessage User "Implement this function."] (OpenAIModel "example") []
+      body = OpenAI.requestBody Nothing chat
+  assert "default effort omitted" (field "reasoning" body == Nothing)
+  mapM_ (\(effort, value) -> do
+    let configured = OpenAI.requestBody (Just effort) chat
+    assert "Responses API effort" (field "reasoning" configured == Just (object ["effort" .= (value :: Text)]))
+    assert "history unchanged by effort" (field "input" configured == field "input" body))
+    [(EffortNone, "none"), (EffortMinimal, "minimal"), (EffortLow, "low"), (EffortMedium, "medium"),
+     (EffortHigh, "high"), (EffortXHigh, "xhigh"), (EffortMax, "max")]
 
 streamTest :: IO ()
 streamTest = do

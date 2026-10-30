@@ -26,14 +26,30 @@
         pkgs = import (if system == "x86_64-darwin" then nixpkgs-2605 else nixpkgs)
           { inherit system overlays; inherit (haskellNix) config; };
         flake = pkgs.hixProject.flake {};
+        harness = pkgs.writeShellScriptBin "harness" ''
+          exec ${pkgs.python3}/bin/python3 ${./nix/run.py} \
+            ${flake.packages."server:exe:server"}/bin/server \
+            ${flake.packages."hs-gui-client:exe:hs-gui-client"}/bin/hs-gui-client "$@"
+        '';
+        harnessApp = {
+          type = "app";
+          program = "${harness}/bin/harness";
+        };
       in {
         # Named explicitly rather than `flake // { ... }` so that eachSystem
         # can see the output names without evaluating the project (IFD) for
         # every supported system.
-        inherit (flake) apps checks devShells ciJobs hydraJobs;
+        inherit (flake) devShells ciJobs hydraJobs;
+        checks = flake.checks // {
+          harness-launcher = pkgs.runCommand "harness-launcher-tests" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            python ${./nix}/test_run.py
+            touch "$out"
+          '';
+        };
+        apps = flake.apps // { default = harnessApp; harness = harnessApp; };
         legacyPackages = pkgs;
 
-        packages = flake.packages // { default = flake.packages."server:exe:server"; };
+        packages = flake.packages // { inherit harness; default = flake.packages."server:exe:server"; };
       });
 
   nixConfig = {

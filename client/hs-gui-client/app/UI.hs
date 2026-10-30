@@ -298,7 +298,8 @@ mainPane e ui titled size'@(ImVec2 width _) =
             Composer.composerBlocked = settingsOpen ui,
             Composer.composerWaiting = waiting ui,
             Composer.composerChoices = modelChoices ui,
-            Composer.composerChoice = selectedChoice ui
+            Composer.composerChoice = selectedChoice ui,
+            Composer.composerEffort = selectedEffort ui
           }
     layout <- Composer.measureComposer (composerState e) composerView (status ui)
     scrolled <- pane "transcript" (ImVec2 width (negate (Composer.reservedHeight layout))) Nothing True $

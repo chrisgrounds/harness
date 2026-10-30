@@ -51,8 +51,9 @@ sidebar e view size'@(ImVec2 width height) =
     settings <- navigationButton SettingsButton
     gap 10
     withFont (small (fonts e)) $ do
-      setCursorPosX margin
-      label (muted p) (maybe "No replies yet" rateText (sidebarRate view))
+      forM_ (sidebarRate view) $ \rate -> do
+        setCursorPosX margin
+        label (muted p) (rateText rate)
       setCursorPosX margin
       label (muted p) =<< ellipsize inner (safeText (T.pack (sidebarSocket view)))
     pure (picked ++ [NewChat | new] ++ [OpenSettings | settings])
@@ -63,15 +64,23 @@ sidebar e view size'@(ImVec2 width height) =
 -- | Chat navigation shows titles and running state.
 chatRow :: Appearance -> Int -> Float -> (Int, Text, Maybe ModelChoice, Bool) -> IO [Action]
 chatRow e current width (chat, title, _, busy) = do
-  setCursorPosX 12
-  shown <- ellipsize (width - 36) (safeText title)
+  let horizontalPadding = 22
+      verticalPadding = 6
+      rowWidth = width - 2 * horizontalPadding
+  setCursorPosX horizontalPadding
+  shown <- ellipsize rowWidth (safeText title)
+  lineHeight <- getTextLineHeight
   let clear = ImVec4 0 0 0 0
       colours = [ImGuiCol_Header, ImGuiCol_HeaderHovered, ImGuiCol_HeaderActive]
       push = forM_ colours (\key -> with clear (Raw.pushStyleColor key))
   clicked <- bracket_ push (Raw.popStyleColor 3) $
-    selectableWith defSelectableOptions {selected = chat == current} (shown <> "##chat" <> T.pack (show chat))
+    withStyleVec ImGuiStyleVar_SelectableTextAlign (ImVec2 0 0.5) $
+      selectableWith defSelectableOptions
+        { selected = chat == current,
+          size = ImVec2 rowWidth (lineHeight + 2 * verticalPadding)
+        } (shown <> "##chat" <> T.pack (show chat))
   when busy $ do
-    setCursorPosX 22
+    setCursorPosX horizontalPadding
     withFont (small (fonts e)) $ label (accent p) "Running"
   gap 10
   pure [SelectChat chat | clicked]

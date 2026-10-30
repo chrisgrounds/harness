@@ -28,28 +28,29 @@ main = do
     ["use", "openai", name] -> Auth.useAccount (T.pack name)
     ["models", "openai"] -> OpenAI.listModels
     _ -> do
-      (model, failure) <- maybe (die usage) pure (options args Mercury3 Revert)
+      (model, failure, socketPath) <- maybe (die usage) pure (options args Mercury3 Revert "/tmp/harness.sock")
       loadEnv
       available <- filterM configured allModels
-      let socketPath = "/tmp/harness.sock"
       putStrLn "opening server, listening..."
-      Socket.serve socketPath model available $ \chosen token publish (StartRun dir req) -> do
+      Socket.serve socketPath model available $ \chosen token publish (StartRun dir req effort) -> do
         llm' <- case (chosen, token) of
-          (OpenAIModel _, Just source) -> OpenAI.openaiLlmWithToken source
+          (OpenAIModel _, Just source) -> OpenAI.openaiLlmWithToken effort source
+          (OpenAIModel _, Nothing) -> OpenAI.openaiLlm effort
           _ -> loadLlm chosen
         run <- holey chosen failure llm'
         newProgress publish (newRun req) >>= run dir
   where
     usage =
-      "Usage: server [--model MODEL] [--keep-failed]\nserver login openai [--new | --account CLIENT_ID]\nserver accounts openai | use openai CLIENT_ID | logout openai | models openai\n"
+      "Usage: server [--model MODEL] [--keep-failed] [--socket PATH]\nserver login openai [--new | --account CLIENT_ID]\nserver accounts openai | use openai CLIENT_ID | logout openai | models openai\n"
         <> "MODEL is mercury (the default, with INCEPTION_API_KEY), or opus, sonnet or haiku (Claude, with ANTHROPIC_API_KEY).\n"
         <> "OpenAI models use --model openai:SLUG; login openai and models openai first.\n"
         <> "A run that does not finish undoes its changes; --keep-failed leaves them.\n"
         <> "The client says which project each run works on."
-    options ("--model" : name : rest) _ failure = parseModel name >>= \m -> options rest m failure
-    options ("--keep-failed" : rest) m _ = options rest m Keep
-    options [] m failure = Just (m, failure)
-    options _ _ _ = Nothing
+    options ("--model" : name : rest) _ failure path = parseModel name >>= \m -> options rest m failure path
+    options ("--keep-failed" : rest) m _ path = options rest m Keep path
+    options ("--socket" : path : rest) m failure _ = options rest m failure path
+    options [] m failure path = Just (m, failure, path)
+    options _ _ _ _ = Nothing
 
 parseModel :: String -> Maybe Model
 parseModel name = case T.stripPrefix (T.pack "openai:") (T.pack name) of

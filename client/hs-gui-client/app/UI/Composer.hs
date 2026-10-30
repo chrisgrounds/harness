@@ -9,7 +9,7 @@ import Client (safeText)
 import Client.Settings
 import Control.Exception (bracket_, finally)
 import Control.Monad (forM, forM_)
-import Core (modelName, stepLabel)
+import Core (modelName, stepLabel, provider, Provider (OpenAI), ReasoningEffort (..), reasoningEffortName)
 import Data.IORef
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -43,7 +43,8 @@ data ComposerView = ComposerView
     composerBlocked :: Bool,
     composerWaiting :: Bool,
     composerChoices :: [ModelChoice],
-    composerChoice :: Maybe ModelChoice
+    composerChoice :: Maybe ModelChoice,
+    composerEffort :: Maybe ReasoningEffort
   }
 
 data ComposerLayout = ComposerLayout
@@ -94,7 +95,7 @@ statusLine e currentStatus left column = do
   where
     p = palette e
 
--- | One rounded composer, with the model picker and up arrow in its footer.
+-- | One rounded composer, with model and effort pickers and an up arrow in its footer.
 composerRow :: ComposerState -> ComposerView -> ComposerLayout -> Float -> Float -> IO [ChatAction]
 composerRow e view layout left column = do
   let height = boxHeight layout
@@ -160,15 +161,33 @@ bottomGap = 20
 modelPicker :: ComposerState -> ComposerView -> Float -> Float -> IO [ChatAction]
 modelPicker e view left column = withFont (small (fonts e)) $ do
   let preview = maybe "Choose a model" (fst . T.breakOn " · " . choiceLabel) (composerChoice view)
+      showEffort = maybe False ((== OpenAI) . provider . choiceModel) (composerChoice view)
+      effortPreview = "Effort: " <> effortLabel (composerEffort view)
   measured <- textWidth preview
-  let width = min column (measured + 40)
+  effortMeasured <- textWidth effortPreview
+  let effortWidth = if showEffort then min (column / 2) (effortMeasured + 40) else 0
+      effortSpace = if showEffort then effortWidth + 8 else 0
+      width = min (column - effortSpace) (measured + 40)
+      controlsLeft = left + column - width - effortSpace
   shown <- ellipsize (width - 40) preview
-  setCursorPosX (left + column - width)
-  bracket_ (beginDisabled (composerWaiting view)) Raw.endDisabled $
-    do
-      opened <- modelCombo "##chat-model" shown width
-      if not opened then pure [] else flip finally Raw.endCombo $
-        concat <$> forM (composerChoices view) (\choice -> do
-          picked <- selectableWith defSelectableOptions {selected = Just choice == composerChoice view}
-            (fst (T.breakOn " · " (choiceLabel choice)) <> "##" <> modelName (choiceModel choice) <> fromMaybe "" (choiceAccount choice))
-          pure [ChooseModel choice | picked])
+  setCursorPosX controlsLeft
+  bracket_ (beginDisabled (composerWaiting view)) Raw.endDisabled $ do
+    opened <- modelCombo "##chat-model" shown width
+    modelActions <- if not opened then pure [] else flip finally Raw.endCombo $
+      concat <$> forM (composerChoices view) (\choice -> do
+        picked <- selectableWith defSelectableOptions {selected = Just choice == composerChoice view}
+          (fst (T.breakOn " · " (choiceLabel choice)) <> "##" <> modelName (choiceModel choice) <> fromMaybe "" (choiceAccount choice))
+        pure [ChooseModel choice | picked])
+    effortActions <- if not showEffort then pure [] else do
+      Raw.sameLine
+      effortShown <- ellipsize (effortWidth - 40) effortPreview
+      effortOpened <- modelCombo "##chat-effort" effortShown effortWidth
+      if not effortOpened then pure [] else flip finally Raw.endCombo $
+        concat <$> forM (Nothing : map Just [minBound .. maxBound]) (\effort -> do
+          picked <- selectableWith defSelectableOptions {selected = effort == composerEffort view} (effortLabel effort)
+          pure [ChooseEffort effort | picked])
+    pure (modelActions ++ effortActions)
+  where
+    effortLabel Nothing = "Default"
+    effortLabel (Just EffortXHigh) = "Extra high"
+    effortLabel (Just effort) = T.toTitle (reasoningEffortName effort)

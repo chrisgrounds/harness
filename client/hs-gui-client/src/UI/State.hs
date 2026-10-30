@@ -8,7 +8,7 @@ module UI.State
     implementCounts, target, rateText, runSummary, toolCallLabel, allToolNames,
     runs, draft, replacement, waiting, failure, runError, inputHistory, historyIndex,
     savedDraft, serverModel, tokenStats, showingTools, scrollRequest, quitting,
-    chatSummaries, selectedChoice
+    chatSummaries, selectedChoice, selectedEffort
   ) where
 
 import Client (NetworkEvent (..), ClientTask (..), safeText)
@@ -41,6 +41,7 @@ data Conversation = Conversation
     cSavedDraft :: Text,
     -- | This chat's model and account, independent of which chat is selected.
     cModelChoice :: Maybe ModelChoice,
+    cReasoningEffort :: Maybe ReasoningEffort,
     -- | Token-rate statistics across every message received from the server.
     cTokenStats :: TokenStats,
     -- | Whether the tools window is open: '/tools' opens it, and Esc, its
@@ -79,6 +80,7 @@ data ChatAction
   | -- | The transcript made the requested scroll.
     Scrolled
   | ChooseModel ModelChoice
+  | ChooseEffort (Maybe ReasoningEffort)
   deriving (Eq, Show)
 
 data Action
@@ -108,6 +110,7 @@ initialConversation =
       cHistoryIndex = Nothing,
       cSavedDraft = "",
       cModelChoice = Nothing,
+      cReasoningEffort = Nothing,
       cTokenStats = emptyTokenStats,
       cShowingTools = False,
       cScrollRequest = Nothing
@@ -128,6 +131,7 @@ updateConversation dir action ui = case action of
   ScrollTo scroll -> (ui {cScrollRequest = Just scroll}, Nothing)
   Scrolled -> (ui {cScrollRequest = Nothing}, Nothing)
   ChooseModel choice -> (ui {cModelChoice = Just choice}, Nothing)
+  ChooseEffort effort -> (ui {cReasoningEffort = effort}, Nothing)
 
 receive :: NetworkEvent -> Conversation -> Conversation
 receive event ui = case event of
@@ -156,7 +160,9 @@ send dir ui = case parseCommand (cDraft ui) of
               cShowingTools = False,
               cScrollRequest = Just ToLatest
             },
-          Just (StartRun dir req)
+          Just (StartRun dir req (case choiceModel <$> cModelChoice ui of
+            Just (OpenAIModel _) -> cReasoningEffort ui
+            _ -> Nothing))
         )
     | otherwise -> (ui, Nothing)
   where
@@ -277,6 +283,9 @@ initialUI = UI
 selectedChoice :: UI -> Maybe ModelChoice
 selectedChoice = cModelChoice . currentConversation
 
+selectedEffort :: UI -> Maybe ReasoningEffort
+selectedEffort = cReasoningEffort . currentConversation
+
 canSend :: UI -> Bool
 canSend ui = canSendConversation ui (currentConversation ui)
 
@@ -346,6 +355,7 @@ updateChat dir chat action ui = case conversation of
     Send | parseCommand (cDraft current) == Quit -> (ui {exitRequested = True}, Nothing)
     Send | parseCommand (cDraft current) /= ListTools && not (canSendConversation ui current) -> (ui, Nothing)
     ChooseModel choice | cWaiting current || choice `notElem` modelChoices ui -> (ui, Nothing)
+    ChooseEffort _ | cWaiting current || maybe True ((/= OpenAI) . provider . choiceModel) (cModelChoice current) -> (ui, Nothing)
     _ ->
       let (next, request) = updateConversation dir action current
           outgoing = do

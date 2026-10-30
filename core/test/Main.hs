@@ -1,9 +1,11 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Main (main) where
 
 import Core
-import Data.Aeson (FromJSON, ToJSON, decode, encode)
+import Data.Aeson (FromJSON, ToJSON, decode, encode, object, (.=), fromJSON)
+import qualified Data.Aeson as Aeson
 import qualified Data.Text as T
 import System.Exit (exitFailure)
 import Test.QuickCheck
@@ -94,6 +96,20 @@ prop_eventRoundTrips = roundTrips
 prop_requirementRoundTrips :: Requirement -> Bool
 prop_requirementRoundTrips = roundTrips
 
+prop_effortProtocol :: Bool
+prop_effortProtocol =
+  let project = "/project"
+      req = Requirement (T.pack "implement")
+      legacy = object ["runProject" .= project, "runRequirement" .= req]
+      request effort = StartChat 3 (OpenAIModel (T.pack "example")) (Just (T.pack "account")) (StartRun project req effort)
+  in fromJSON legacy == Aeson.Success (StartRun project req Nothing)
+       && fromJSON legacy == Aeson.Success (LegacyRun (StartRun project req Nothing))
+       && all (roundTrips . request) (Nothing : map Just [minBound .. maxBound])
+       && case (fromJSON (object ["runProject" .= project, "runRequirement" .= req,
+                       "runReasoningEffort" .= T.pack "invalid"]) :: Aeson.Result StartRun) of
+            Aeson.Error _ -> True
+            Aeson.Success _ -> False
+
 prop_newRunIsPending :: Requirement -> Bool
 prop_newRunIsPending req =
   let run = newRun req
@@ -132,6 +148,7 @@ main = do
       [ check "Run JSON round-trips" prop_runRoundTrips,
         check "ServerEvent JSON round-trips" prop_eventRoundTrips,
         check "Requirement JSON round-trips" prop_requirementRoundTrips,
+        check "effort round-trips and legacy requests keep provider defaults" prop_effortProtocol,
         check "newRun starts every step pending" prop_newRunIsPending,
         check "setStep changes only that step" prop_setStepChangesOnlyThatStep,
         check "setTask sets the task and keeps order" prop_setTaskSetsAndKeepsOrder,

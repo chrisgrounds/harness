@@ -152,7 +152,7 @@ submit dir requests = do
         )
     RunRequirement req ->
       when (not (waiting state) && failure state == Nothing && not (T.null (T.strip value))) $ do
-        liftIO $ writeChan requests (StartRun dir req)
+        liftIO $ writeChan requests (StartRun dir req Nothing)
         modify'
           ( \s ->
               s

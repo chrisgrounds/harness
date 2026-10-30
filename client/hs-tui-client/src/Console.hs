@@ -29,7 +29,7 @@ runConsole dir sock = do
           "" -> loop pending
           _ -> do
             TIO.putStrLn (renderLine "you" line)
-            sendJSON sock (StartRun dir (Requirement line))
+            sendJSON sock (StartRun dir (Requirement line) Nothing)
             rest <- follow Nothing pending
             putStrLn ""
             loop rest
