@@ -5,6 +5,7 @@
 // checks that at start-up.
 
 #include "imgui.h"
+#include "SDL.h"
 
 namespace
 {
@@ -102,6 +103,16 @@ float harness_scroll_y(void) { return ImGui::GetScrollY(); }
 float harness_scroll_max_y(void) { return ImGui::GetScrollMaxY(); }
 void harness_set_scroll_y(float y) { ImGui::SetScrollY(y); }
 void harness_set_scroll_here_y(float ratio) { ImGui::SetScrollHereY(ratio); }
+
+// Scales a mouse wheel event before Dear ImGui's SDL backend sees it. The
+// backend scrolls by the precise amounts, so only those change.
+void harness_scale_wheel(SDL_Event* event, float factor)
+{
+    if (event->type != SDL_MOUSEWHEEL)
+        return;
+    event->wheel.preciseX *= factor;
+    event->wheel.preciseY *= factor;
+}
 
 // Whether the key chord was pressed this frame, whichever item owns the
 // keys, so shortcuts work while the composer is active.

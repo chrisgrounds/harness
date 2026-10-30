@@ -80,6 +80,7 @@ executable hs-gui-client
   -- header dear-imgui 2.5.0 was built from, with its default defines.
   cxx-sources: cbits/imgui_extras.cpp
   include-dirs: cbits/imgui
+  pkgconfig-depends: sdl2
   cxx-options: -std=c++11 -DIMGUI_USE_WCHAR32 "-DImDrawIdx=unsigned int"
   ghc-options: -Wall -Werror=missing-fields -threaded
   default-language: Haskell2010

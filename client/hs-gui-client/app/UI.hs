@@ -16,14 +16,15 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import DearImGui hiding (end, flags, indent, size, w, x, y, z)
 import qualified DearImGui.Raw as Raw
-import DearImGui.SDL (pollEventsWithImGui, sdl2NewFrame, sdl2Shutdown)
+import DearImGui.SDL (dispatchRawEvent, sdl2NewFrame, sdl2Shutdown)
 import DearImGui.SDL.Renderer (sdl2InitForSDLRenderer, sdlRendererInit, sdlRendererNewFrame, sdlRendererRenderDrawData, sdlRendererShutdown)
-import Foreign (alloca, freeHaskellFunPtr, nullPtr, peek, with)
+import Foreign (Ptr, alloca, freeHaskellFunPtr, nullPtr, peek, with)
+import Foreign.C.Types (CFloat (..))
 import ImGui.Extras (configureIO, ensureLayout, keyPressed, takeKey)
 import Network.Socket (Socket)
 import qualified SDL
 import qualified SDL.Internal.Types as SDL.Internal
-import SDL.Raw.Enum (pattern SDL_USEREVENT, pattern SDL_WINDOWEVENT_EXPOSED, pattern SDL_WINDOWEVENT_SIZE_CHANGED)
+import SDL.Raw.Enum (pattern SDL_FIRSTEVENT, pattern SDL_LASTEVENT, pattern SDL_PEEKEVENT, pattern SDL_USEREVENT, pattern SDL_WINDOWEVENT_EXPOSED, pattern SDL_WINDOWEVENT_SIZE_CHANGED)
 import qualified SDL.Raw.Event as SDL.Raw
 import qualified SDL.Raw.Types as SDL.Raw
 import qualified SDL.Raw.Video as SDL.Raw
@@ -152,11 +153,30 @@ frames loop settle = do
   ui <- readIORef (state loop)
   animating <- moving (motion (env loop))
   when (not (waiting ui) && not animating && settle <= 0) $ void (SDL.Raw.waitEventTimeout nullPtr 500)
-  events <- pollEventsWithImGui
+  events <- pollEvents
   changed <- frame loop
   next <- readIORef (state loop)
   let closed = any ((== SDL.QuitEvent) . SDL.eventPayload) events
   unless (closed || quitting next) $ frames loop (if null events && not changed then settle - 1 else settleFrames)
+
+-- | How far the mouse wheel scrolls, against Dear ImGui's default.
+wheelSpeed :: Float
+wheelSpeed = 0.5
+
+foreign import ccall unsafe "harness_scale_wheel" c_scaleWheel :: Ptr SDL.Raw.Event -> CFloat -> IO ()
+
+-- | Takes every waiting event, passing each to Dear ImGui with the mouse
+-- wheel slowed to 'wheelSpeed'.
+pollEvents :: IO [SDL.Event]
+pollEvents = alloca $ \event -> do
+  SDL.pumpEvents
+  queued <- SDL.Raw.peepEvents event 1 SDL_PEEKEVENT SDL_FIRSTEVENT SDL_LASTEVENT
+  if queued <= 0
+    then pure []
+    else do
+      c_scaleWheel event (realToFrac wheelSpeed)
+      void (dispatchRawEvent event)
+      SDL.pollEvent >>= maybe (pure []) (\e -> (e :) <$> pollEvents)
 
 -- | Draws one frame and applies what happened in it. Returns whether
 -- anything did.
