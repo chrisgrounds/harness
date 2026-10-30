@@ -166,12 +166,9 @@ extern "C" void harness_frame_padding(float* x, float* y)
     *y = padding.y;
 }
 
-extern "C" int harness_begin_closable_modal(const char* title, int* open, int flags)
+extern "C" int harness_begin_modal(const char* title, int flags)
 {
-    bool shown = *open != 0;
-    const bool visible = ImGui::BeginPopupModal(title, &shown, static_cast<ImGuiWindowFlags>(flags));
-    *open = shown ? 1 : 0;
-    return visible ? 1 : 0;
+    return ImGui::BeginPopupModal(title, nullptr, static_cast<ImGuiWindowFlags>(flags)) ? 1 : 0;
 }
 
 extern "C" int harness_begin_combo(const char* id, const char* preview, int flags)

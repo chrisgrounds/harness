@@ -49,7 +49,8 @@ saved chat dir time =
       reasoningEffort = Just EffortHigh,
       runs = [setStep Discover Passed (newRun (Requirement "requirement"))],
       inputHistory = ["requirement"],
-      lastUpdated = time
+      lastUpdated = time,
+      customTitle = Nothing
     }
 
 prop_jsonRoundTrip :: Bool

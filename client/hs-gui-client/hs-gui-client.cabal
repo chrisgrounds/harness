@@ -56,6 +56,7 @@ executable hs-gui-client
     , UI.Fonts
     , UI.Icons
     , UI.Layout
+    , UI.Modal
     , UI.Settings
     , UI.Sidebar
     , UI.Style

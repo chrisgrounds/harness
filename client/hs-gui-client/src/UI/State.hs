@@ -8,7 +8,7 @@ module UI.State
     implementCounts, target, rateText, runSummary, toolCallLabel, toolCallsLabel, allToolNames,
     runs, draft, replacement, waiting, failure, runError, inputHistory, historyIndex,
     savedDraft, serverModel, tokenStats, showingTools, scrollRequest, quitting,
-    ChatSummary (..), chatSummaries, ago, selectedChoice, selectedEffort, restoreChats, chatsToSave
+    ChatSummary (..), chatSummaries, ago, selectedChoice, selectedEffort, restoreChats, chatsToSave, RenameEditor (..)
   ) where
 
 import Client (NetworkEvent (..), ClientTask (..), safeText)
@@ -28,34 +28,14 @@ import qualified Data.Text as T
 import Text.Printf (printf)
 
 data Conversation = Conversation
-  { -- | Newest first; the head is the run for the latest requirement.
-    cRuns :: [Run],
-    -- | The composer's text.
-    cDraft :: Text,
-    -- | Text the composer is to show in place of its own, with the cursor
-    -- at the end: set when sending clears the draft or recall replaces it,
-    -- and cleared once the composer shows it.
-    cReplacement :: Maybe Text,
-    cWaiting :: Bool,
-    cRunError :: Maybe Text,
-    -- | Sent messages, newest first.
-    cInputHistory :: [Text],
-    -- | Which sent message the composer shows, while recalling.
-    cHistoryIndex :: Maybe Int,
-    -- | The draft from before recalling, restored after the newest.
-    cSavedDraft :: Text,
-    -- | This chat's model and account, independent of which chat is selected.
-    cModelChoice :: Maybe ModelChoice,
-    cReasoningEffort :: Maybe ReasoningEffort,
-    -- | Token-rate statistics across every message received from the server.
-    cTokenStats :: TokenStats,
-    -- | Whether the tools window is open: '/tools' opens it, and Esc, its
-    -- close button or the next requirement closes it.
-    cShowingTools :: Bool,
-    -- | A scroll the transcript is to make on the next frame.
-    cScrollRequest :: Maybe Scroll
-  }
-  deriving (Eq, Show)
+  { cRuns :: [Run], cDraft :: Text, cReplacement :: Maybe Text,
+    cWaiting :: Bool, cRunError :: Maybe Text, cInputHistory :: [Text],
+    cHistoryIndex :: Maybe Int, cSavedDraft :: Text,
+    cModelChoice :: Maybe ModelChoice, cReasoningEffort :: Maybe ReasoningEffort,
+    cTokenStats :: TokenStats, cShowingTools :: Bool,
+    cScrollRequest :: Maybe Scroll,
+    cCustomTitle :: Maybe Text
+  } deriving (Eq, Show)
 
 data Scroll
   = ToFirst
@@ -89,18 +69,10 @@ data ChatAction
   deriving (Eq, Show)
 
 data Action
-  = Network NetworkEvent
-  | Chat Int ChatAction
-  | Exit
-  | NewChat
-  | SelectChat Int
-  | OpenSettings
-  | CloseSettings
-  | ConnectOpenAI Bool
-  | DisconnectOpenAI
-  | ChangeAccount Text
-  | RefreshModels
-  | CancelLogin
+  = Network NetworkEvent | Chat Int ChatAction | Exit | NewChat | SelectChat Int
+  | OpenSettings | CloseSettings | ConnectOpenAI Bool | DisconnectOpenAI
+  | ChangeAccount Text | RefreshModels | CancelLogin
+  | BeginRename Int | EditRename Text | SaveRename | CancelRename | DeleteChat Int
   deriving (Eq, Show)
 
 initialConversation :: Conversation
@@ -118,7 +90,8 @@ initialConversation =
       cReasoningEffort = Nothing,
       cTokenStats = emptyTokenStats,
       cShowingTools = False,
-      cScrollRequest = Nothing
+      cScrollRequest = Nothing,
+      cCustomTitle = Nothing
     }
 
 -- | Applies an action, with the run to start in the given project, if it
@@ -265,17 +238,12 @@ allToolNames = map toolNameText [minBound .. maxBound]
 -- | Application lifetime, connection and account settings are shared by all
 -- chats. Each conversation owns its transcript, draft and model choice.
 data UI = UI
-  { currentConversation :: Conversation,
-    otherConversations :: Map.Map Int Conversation,
-    currentChatId :: Int,
-    nextChatId :: Int,
-    connectionFailure :: Maybe Text,
-    exitRequested :: Bool,
-    modelChoices :: [ModelChoice],
-    openAISettings :: SettingsSnapshot,
-    settingsOpen :: Bool,
-    settingsBusy :: Bool,
-    settingsError :: Maybe Text
+  { currentConversation :: Conversation, otherConversations :: Map.Map Int Conversation,
+    currentChatId :: Int, nextChatId :: Int, connectionFailure :: Maybe Text,
+    exitRequested :: Bool, modelChoices :: [ModelChoice],
+    openAISettings :: SettingsSnapshot, settingsOpen :: Bool,
+    settingsBusy :: Bool, settingsError :: Maybe Text,
+    renameEditor :: Maybe RenameEditor
   } deriving (Eq, Show)
 
 initialUI :: UI
@@ -290,7 +258,8 @@ initialUI = UI
     openAISettings = SettingsSnapshot [] [] Nothing,
     settingsOpen = False,
     settingsBusy = False,
-    settingsError = Nothing
+    settingsError = Nothing,
+    renameEditor = Nothing
   }
 
 selectedChoice :: UI -> Maybe ModelChoice
@@ -315,6 +284,43 @@ status ui = case failure ui of
 
 update :: FilePath -> Action -> UI -> (UI, Maybe ClientTask)
 update dir action ui = case action of
+  BeginRename chat -> case lookupChat chat of
+    Nothing -> (ui, Nothing)
+    Just conversation ->
+      let title = case cCustomTitle conversation of
+            Just t -> t
+            Nothing -> maybe "" (requirementText . requirement) (listToMaybe (reverse (cRuns conversation)))
+      in (ui {renameEditor = Just (RenameEditor chat title)}, Nothing)
+  EditRename value -> (ui {renameEditor = fmap (\editor -> editor {renameDraft = value}) (renameEditor ui)}, Nothing)
+  CancelRename -> (ui {renameEditor = Nothing}, Nothing)
+  SaveRename -> case renameEditor ui of
+    Nothing -> (ui, Nothing)
+    Just editor -> case lookupChat (renameChatId editor) of
+      Nothing -> (ui {renameEditor = Nothing}, Nothing)
+      Just conversation
+        | T.null (T.strip (renameDraft editor)) -> (ui, Nothing)
+        | otherwise ->
+            let renamed = conversation {cCustomTitle = Just (T.strip (renameDraft editor))}
+                updated = if renameChatId editor == currentChatId ui
+                  then ui {currentConversation = renamed}
+                  else ui {otherConversations = Map.insert (renameChatId editor) renamed (otherConversations ui)}
+            in (updated {renameEditor = Nothing}, Nothing)
+  DeleteChat chat -> case lookupChat chat of
+    Nothing -> (ui, Nothing)
+    Just _ ->
+      let cleared = ui {renameEditor = case renameEditor ui of
+                         Just editor | renameChatId editor == chat -> Nothing
+                         editor -> editor}
+      in if chat /= currentChatId ui
+         then (cleared {otherConversations = Map.delete chat (otherConversations ui)}, Nothing)
+         else case Map.maxViewWithKey (Map.delete chat (otherConversations ui)) of
+           Just ((key, conversation), remaining) ->
+             (cleared {currentChatId = key, otherConversations = remaining,
+                       currentConversation = conversation {cReplacement = Just (cDraft conversation), cScrollRequest = Just ToLatest}}, Nothing)
+           Nothing ->
+             (cleared {currentChatId = nextChatId ui, nextChatId = nextChatId ui + 1,
+                       otherConversations = Map.empty,
+                       currentConversation = initialConversation {cReplacement = Just "", cModelChoice = listToMaybe (modelChoices ui)}}, Nothing)
   Exit -> (ui {exitRequested = True}, Nothing)
   Chat chat chatAction -> updateChat dir chat chatAction ui
   OpenSettings -> (ui {settingsOpen = True}, if settingsBusy ui then Nothing else Just RefreshSettings)
@@ -349,6 +355,9 @@ update dir action ui = case action of
   Network event -> (ui {currentConversation = receive event (currentConversation ui)}, Nothing)
   SelectChat _ -> (ui, Nothing)
   where
+    lookupChat chat
+      | chat == currentChatId ui = Just (currentConversation ui)
+      | otherwise = Map.lookup chat (otherConversations ui)
     isJustAccount (Just _) = True
     isJustAccount _ = False
     withChoices choices current =
@@ -404,7 +413,7 @@ data ChatSummary = ChatSummary
 -- Unsent drafts retain their state but do not appear as history entries.
 chatSummaries :: UI -> [ChatSummary]
 chatSummaries ui =
-  [ChatSummary key (requirementText (requirement oldest)) (cModelChoice conversation) (cWaiting conversation) latest
+  [ChatSummary key (maybe (requirementText (requirement oldest)) id (cCustomTitle conversation)) (cModelChoice conversation) (cWaiting conversation) latest
    | (key, conversation) <- reverse (Map.toAscList (Map.insert (currentChatId ui) (currentConversation ui) (otherConversations ui))),
      latest : _ <- [cRuns conversation],
      Just oldest <- [listToMaybe (reverse (cRuns conversation))]]
@@ -433,7 +442,8 @@ restoreChats dir saved ui = case sortOn (Down . Saved.lastUpdated) [c | c <- sav
     ui {currentConversation = (restore latest) {cReplacement = Just (Saved.composerDraft latest), cScrollRequest = Just ToLatest},
         otherConversations = Map.fromList [(Saved.chatId c, restore c) | c <- others, not (null (Saved.runs c))],
         currentChatId = Saved.chatId latest,
-        nextChatId = maximum (nextChatId ui : map ((+ 1) . Saved.chatId) saved)}
+        nextChatId = maximum (nextChatId ui : map ((+ 1) . Saved.chatId) saved),
+        renameEditor = Nothing}
   where
     restore c = initialConversation
       { cRuns = map interrupt (Saved.runs c),
@@ -441,7 +451,8 @@ restoreChats dir saved ui = case sortOn (Down . Saved.lastUpdated) [c | c <- sav
         cInputHistory = Saved.inputHistory c,
         cSavedDraft = Saved.composerDraft c,
         cModelChoice = Saved.modelChoice c,
-        cReasoningEffort = Saved.reasoningEffort c
+        cReasoningEffort = Saved.reasoningEffort c,
+        cCustomTitle = Saved.customTitle c
       }
     interrupt run = foldr (\(step, s) r -> if s == Running then setStep step (Failed "Interrupted when the app closed") r else r) run (steps run)
 
@@ -449,7 +460,7 @@ restoreChats dir saved ui = case sortOn (Down . Saved.lastUpdated) [c | c <- sav
 -- started a run or have a draft.
 chatsToSave :: FilePath -> UTCTime -> UI -> [SavedChat]
 chatsToSave dir now ui =
-  [ SavedChat chat dir (cDraft c) (cModelChoice c) (cReasoningEffort c) (cRuns c) (cInputHistory c) now
+  [ SavedChat chat dir (cDraft c) (cModelChoice c) (cReasoningEffort c) (cRuns c) (cInputHistory c) now (cCustomTitle c)
   | (chat, c) <- Map.toAscList (Map.insert (currentChatId ui) (currentConversation ui) (otherConversations ui)),
     not (null (cRuns c)) || not (T.null (T.strip (cDraft c)))
   ]
@@ -495,3 +506,5 @@ quitting = exitRequested
 
 runError :: UI -> Maybe Text
 runError = cRunError . currentConversation
+
+data RenameEditor = RenameEditor { renameChatId :: Int, renameDraft :: Text } deriving (Eq, Show)

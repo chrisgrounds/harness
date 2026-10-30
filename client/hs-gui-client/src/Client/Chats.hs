@@ -26,43 +26,17 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO (hClose, openBinaryTempFile)
 
 data SavedChat = SavedChat
-  { chatId :: Int,
-    projectPath :: FilePath,
-    composerDraft :: Text,
-    modelChoice :: Maybe ModelChoice,
-    reasoningEffort :: Maybe ReasoningEffort,
-    -- | Newest first, as the conversation holds them.
-    runs :: [Run],
-    -- | Sent messages, newest first.
-    inputHistory :: [Text],
-    lastUpdated :: UTCTime
-  }
-  deriving (Eq, Show)
+  { chatId :: Int, projectPath :: FilePath, composerDraft :: Text,
+    modelChoice :: Maybe ModelChoice, reasoningEffort :: Maybe ReasoningEffort,
+    runs :: [Run], inputHistory :: [Text], lastUpdated :: UTCTime,
+    customTitle :: Maybe Text
+  } deriving (Eq, Show)
 
 instance ToJSON SavedChat where
-  toJSON c =
-    object
-      [ "id" .= chatId c,
-        "project" .= projectPath c,
-        "draft" .= composerDraft c,
-        "modelChoice" .= modelChoice c,
-        "reasoningEffort" .= reasoningEffort c,
-        "runs" .= runs c,
-        "inputHistory" .= inputHistory c,
-        "lastUpdated" .= lastUpdated c
-      ]
+  toJSON c = object ["id" .= chatId c, "project" .= projectPath c, "draft" .= composerDraft c, "modelChoice" .= modelChoice c, "reasoningEffort" .= reasoningEffort c, "runs" .= runs c, "inputHistory" .= inputHistory c, "lastUpdated" .= lastUpdated c, "customTitle" .= customTitle c]
 
 instance FromJSON SavedChat where
-  parseJSON = withObject "SavedChat" $ \o ->
-    SavedChat
-      <$> o .: "id"
-      <*> o .: "project"
-      <*> o .:? "draft" .!= ""
-      <*> o .:? "modelChoice"
-      <*> o .:? "reasoningEffort"
-      <*> o .: "runs"
-      <*> o .:? "inputHistory" .!= []
-      <*> o .: "lastUpdated"
+  parseJSON = withObject "SavedChat" $ \o -> SavedChat <$> o .: "id" <*> o .: "project" <*> o .:? "draft" .!= "" <*> o .:? "modelChoice" <*> o .:? "reasoningEffort" <*> o .: "runs" <*> o .:? "inputHistory" .!= [] <*> o .: "lastUpdated" <*> o .:? "customTitle"
 
 -- | The file's top level, so later formats can read and migrate this one.
 newtype ChatsFile = ChatsFile [SavedChat]
@@ -121,4 +95,4 @@ restamp before = map keep
 urgentChange :: [SavedChat] -> [SavedChat] -> Bool
 urgentChange before after = map outline before /= map outline after
   where
-    outline c = (chatId c, modelChoice c, reasoningEffort c, inputHistory c, map (\r -> (iteration r, steps r)) (runs c))
+    outline c = (chatId c, modelChoice c, reasoningEffort c, inputHistory c, map (\r -> (iteration r, steps r)) (runs c), customTitle c)

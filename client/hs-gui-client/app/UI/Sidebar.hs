@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module UI.Sidebar (SidebarView (..), sidebar) where
+module UI.Sidebar (SidebarView (..), sidebar, renameModal) where
 
 import Client (safeText)
 import Client.Settings (ModelChoice (..))
@@ -25,6 +25,11 @@ import UI.Layout (gap, pane, setCursorPos')
 import UI.State (Action (..), ChatSummary (..), ago, rateText, runSummary)
 import UI.Text (ellipsize, label, paragraph, rightAt, textWidth)
 import UI.Widgets (Navigation (..), navigationButton)
+import Data.IORef (newIORef, readIORef, writeIORef)
+import UI.State (RenameEditor (..))
+import UI.Style (withColourOf)
+import UI.Modal (Modal (..), modal, modalActions, modalField)
+import ImGui.Extras (keyPressed)
 
 data SidebarView = SidebarView
   { sidebarTitle :: Text,
@@ -88,12 +93,22 @@ chatRow e view width summary = do
   ImVec2 _ top <- Raw.getCursorPos
   clicked <- invisibleButton ("##chat" <> T.pack (show chat)) (ImVec2 cardWidth cardHeight) ImGuiButtonFlags_None
   hovered <- Raw.isItemHovered
+  ImVec2 x0 y0 <- Raw.getItemRectMin
   when hovered handCursor
-  -- The id names the chat's server log, so its runs can be debugged.
+  actionsRef <- newIORef []
   itemContextPopup $ do
+    rename <- selectable "Rename"
+    when rename $ do
+      writeIORef actionsRef [BeginRename chat]
+      closeCurrentPopup
+    deleted <- withColourOf (danger p) $ selectable "Delete"
+    when deleted $ do
+      writeIORef actionsRef [DeleteChat chat]
+      closeCurrentPopup
+    separator
     label (foreground p) ("Chat " <> T.pack (show chat))
     withFont (small (fonts e)) $ label (muted p) ("~/.config/harness/logs/chat-" <> T.pack (show chat) <> ".log")
-  ImVec2 x0 y0 <- Raw.getItemRectMin
+  actions <- readIORef actionsRef
   let selected' = chat == sidebarCurrent view
   when (selected' || hovered) $ do
     list <- Raw.getWindowDrawList
@@ -126,5 +141,19 @@ chatRow e view width summary = do
     label ink =<< ellipsize (textWidth' - smallHeight - 8) (runSummary run)
   setCursorPos' (ImVec2 inset (top + cardHeight))
   gap 4
-  pure [SelectChat chat | clicked]
+  pure (actions ++ [SelectChat chat | clicked && null actions])
   where p = palette e
+
+-- | The chat's title, edited in a modal; Enter saves it unless blank.
+renameModal :: Appearance -> Maybe RenameEditor -> ImVec2 -> IO [Action]
+renameModal _ Nothing _ = pure []
+renameModal e (Just editor) display = do
+  let dialog = Modal ("rename-chat-" <> T.pack (show (renameChatId editor))) "Rename chat" 420
+  (contents, dismissed) <- modal e dialog display $ do
+    (value, changed) <- modalField e "##rename-title" "Title" (renameDraft editor)
+    let blank = T.null (T.strip value)
+    (save, cancel) <- modalActions e "Save" (not blank) "Cancel"
+    entered <- keyPressed [] ImGuiKey_Enter
+    let saved = (save || entered) && not blank
+    pure ([EditRename value | changed] ++ [SaveRename | saved] ++ [CancelRename | cancel], saved || cancel)
+  pure (concat contents ++ [CancelRename | dismissed])

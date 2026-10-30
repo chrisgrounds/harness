@@ -9,7 +9,6 @@ module UI.Widgets
     Navigation (..),
     navigationButton,
     resizeSidebar,
-    closableModal,
     quietCombo,
   )
 where
@@ -22,7 +21,7 @@ import qualified DearImGui.Raw as Raw
 import qualified DearImGui.Raw.DrawList as DrawList
 import Foreign (with, (.|.))
 import Foreign.C.Types (CFloat)
-import ImGui.Extras (beginClosableModal, beginComboWithFlags, handCursor, setMouseCursor, styleColourU32, withStyleFloat)
+import ImGui.Extras (beginComboWithFlags, handCursor, setMouseCursor, styleColourU32, withStyleFloat)
 import Theme.Palette (Colour)
 import UI.Draw (colour, line, stroke)
 import UI.Style (transparent, withStyleColours, withStyleVec)
@@ -133,15 +132,6 @@ resizeSidebar name width minimum' maximum' height = do
     ImVec2 dx _ <- Raw.getMouseDragDelta ImGuiMouseButton_Left 0
     Raw.resetMouseDragDelta ImGuiMouseButton_Left
     pure (max minimum' (min maximum' (width + dx)))
-
--- | Begin a compact modal with a close button. The caller ends its popup when visible.
-closableModal :: Text -> ImVec2 -> IO (Bool, Bool)
-closableModal title (ImVec2 width height) = do
-  with (ImVec2 280 0) $ \minimum' -> with (ImVec2 (width - 32) (height - 40)) $ \maximum' ->
-    Raw.setNextWindowSizeConstraints minimum' maximum'
-  withText title $ \name -> beginClosableModal name flags'
-  where
-    flags' = ImGuiWindowFlags_NoSavedSettings .|. ImGuiWindowFlags_NoCollapse .|. ImGuiWindowFlags_NoResize .|. ImGuiWindowFlags_AlwaysAutoResize
 
 -- | A borderless, transparent combo with a chevron. The caller ends its
 -- combo when open.

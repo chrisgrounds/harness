@@ -4,22 +4,20 @@ module UI.Settings (SettingsView (..), settingsModal) where
 
 import Client (safeText)
 import Client.Settings
-import Control.Exception (bracket_, finally)
-import Control.Monad (forM, forM_, unless, when)
-import Data.Maybe (listToMaybe)
+import Control.Exception (bracket_)
+import Control.Monad (forM, forM_, when)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import DearImGui
 import qualified DearImGui.Raw as Raw
-import Foreign (with)
-import ImGui.Extras (keyPressed)
 import Theme.Palette
 import UI.Appearance
 import UI.Fonts
-import UI.Layout (centreNextWindow, gap)
+import UI.Layout (gap)
 import UI.State (Action (..))
-import UI.Style (withColourOf, withStyleVec)
+import UI.Style (withColourOf)
 import UI.Text (label, paragraph, rightAligned, textWidth)
-import UI.Widgets (closableModal)
+import UI.Modal (Modal (..), modal)
 
 data SettingsView = SettingsView
   { settingsVisible :: Bool,
@@ -31,19 +29,10 @@ data SettingsView = SettingsView
 -- | A modal: account actions run in the background so the window keeps drawing
 -- while the user completes OAuth in their browser.
 settingsModal :: Appearance -> SettingsView -> ImVec2 -> IO [Action]
-settingsModal e view (ImVec2 width height)
+settingsModal e view display
   | not (settingsVisible view) = pure []
   | otherwise = do
-      opened <- isCurrentPopupOpen "User settings"
-      unless opened (openPopup "User settings")
-      centreNextWindow (ImVec2 width height) ImGuiCond_Always
-      -- Fixed, compact width; the height follows the content, including errors.
-      with (ImVec2 (min 460 (width - 40)) 0) $ \size' -> Raw.setNextWindowSize size' ImGuiCond_Always
-      withStyleVec ImGuiStyleVar_WindowPadding (ImVec2 20 16) $
-        withStyleVec ImGuiStyleVar_FramePadding (ImVec2 10 6) $
-          withStyleVec ImGuiStyleVar_ItemSpacing (ImVec2 8 6) $ do
-            (visible, stillOpen) <- closableModal "User settings" (ImVec2 width height)
-            contents <- if not visible then pure [] else flip finally Raw.endPopup $ do
+            (contents, dismissed) <- modal e (Modal "user-settings" "User settings" 460) display $ do
               ImVec2 available _ <- Raw.getContentRegionAvail
               left <- getCursorPosX
               let edge = left + available
@@ -88,8 +77,6 @@ settingsModal e view (ImVec2 width height)
               forM_ (settingsError view) $ \err -> do
                 gap 6
                 withFont (small (fonts e)) $ paragraph edge (danger p) (safeText err)
-              escaped <- keyPressed [] ImGuiKey_Escape
-              when escaped closeCurrentPopup
-              pure (accountActions ++ progress ++ [CloseSettings | escaped])
-            pure (contents ++ [CloseSettings | not stillOpen])
+              pure (accountActions ++ progress, False)
+            pure (fromMaybe [] contents ++ [CloseSettings | dismissed])
   where p = palette e

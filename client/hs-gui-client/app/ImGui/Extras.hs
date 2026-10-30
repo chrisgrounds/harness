@@ -23,7 +23,7 @@ module ImGui.Extras
     styleColourU32,
     setMouseCursor,
     getFramePadding,
-    beginClosableModal,
+    beginModal,
     beginComboWithFlags,
   )
 where
@@ -38,7 +38,7 @@ import Foreign.C.String (CString)
 import Foreign.C.Types (CChar, CFloat (..), CInt (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
-import Foreign.Storable (peek, poke)
+import Foreign.Storable (peek)
 
 foreign import ccall unsafe "harness_layout_matches" c_layoutMatches :: IO CInt
 
@@ -177,8 +177,8 @@ foreign import ccall unsafe "harness_mouse_cursor"
   c_mouseCursor :: CInt -> IO ()
 foreign import ccall unsafe "harness_frame_padding"
   c_framePadding :: Ptr CFloat -> Ptr CFloat -> IO ()
-foreign import ccall unsafe "harness_begin_closable_modal"
-  c_beginClosableModal :: CString -> Ptr CInt -> CInt -> IO CInt
+foreign import ccall unsafe "harness_begin_modal"
+  c_beginModal :: CString -> CInt -> IO CInt
 foreign import ccall unsafe "harness_begin_combo"
   c_beginCombo :: CString -> CString -> CInt -> IO CInt
 
@@ -194,13 +194,9 @@ getFramePadding = alloca $ \px -> alloca $ \py -> do
   c_framePadding px py
   ImVec2 <$> (realToFrac <$> peek px) <*> (realToFrac <$> peek py)
 
--- | Begin a modal with a close button. EndPopup is needed only when visible.
-beginClosableModal :: CString -> ImGuiWindowFlags -> IO (Bool, Bool)
-beginClosableModal title (ImGuiWindowFlags flags') = alloca $ \ptr -> do
-  poke ptr 1
-  visible <- c_beginClosableModal title ptr flags'
-  open <- peek ptr
-  pure (visible /= 0, open /= 0)
+-- | Begin a modal with flags. EndPopup is needed only when visible.
+beginModal :: CString -> ImGuiWindowFlags -> IO Bool
+beginModal title (ImGuiWindowFlags flags') = (/= 0) <$> c_beginModal title flags'
 
 -- | Begin a combo with flags. EndCombo is needed only when open.
 beginComboWithFlags :: CString -> CString -> ImGuiComboFlags -> IO Bool

@@ -233,7 +233,7 @@ frame loop = do
 draw :: Env -> Map.Map Int UTCTime -> UTCTime -> UI -> IO [Action]
 draw e times now ui = do
   (shown, size') <- fullscreen $ do
-    keys <- if settingsOpen ui then pure [] else shortcuts (currentChatId ui)
+    keys <- if settingsOpen ui || maybe False (const True) (renameEditor ui) then pure [] else shortcuts (currentChatId ui)
     ImVec2 width height <- Raw.getContentRegionAvail
     rememberedWidth <- readIORef (sidebarSize e)
     let withSidebar = width >= 860
@@ -271,7 +271,8 @@ draw e times now ui = do
             Settings.settingsError = settingsError ui
           }
     settings <- Settings.settingsModal (appearance e) settingsView (ImVec2 width height)
-    pure (keys ++ picked ++ typed ++ settings)
+    renamed <- renameModal (appearance e) (renameEditor ui) (ImVec2 width height)
+    pure (keys ++ picked ++ typed ++ settings ++ renamed)
   closed <- if showingTools ui then toolsWindow (appearance e) size' else pure []
   pure (shown ++ map (Chat (currentChatId ui)) closed)
 
@@ -342,7 +343,7 @@ mainPane e ui titled size'@(ImVec2 width _) =
             Composer.composerReplacement = replacement ui,
             Composer.composerCanSend = canSend ui,
             Composer.composerFailure = failure ui,
-            Composer.composerBlocked = settingsOpen ui,
+            Composer.composerBlocked = settingsOpen ui || maybe False (const True) (renameEditor ui),
             Composer.composerWaiting = waiting ui,
             Composer.composerChoices = modelChoices ui,
             Composer.composerChoice = selectedChoice ui,
