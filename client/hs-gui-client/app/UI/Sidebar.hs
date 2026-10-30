@@ -76,8 +76,8 @@ sidebar e view size'@(ImVec2 width height) =
     p = palette e
     margin = 22
 
--- | A chat as a card of three lines: its model and how long since it
--- changed, its title, and how its latest run is doing.
+-- | A chat as a card of two lines: its model, how its latest run is doing
+-- and how long since it changed, then its title.
 chatRow :: Appearance -> SidebarView -> Float -> ChatSummary -> IO [Action]
 chatRow e view width summary = do
   smallHeight <- withFont (small (fonts e)) getTextLineHeight
@@ -88,7 +88,7 @@ chatRow e view width summary = do
       lineGap = 5
       cardWidth = width - 2 * inset
       textWidth' = cardWidth - 2 * padding
-      cardHeight = 2 * padding + 2 * smallHeight + bodyHeight + 2 * lineGap
+      cardHeight = 2 * padding + smallHeight + bodyHeight + lineGap
   setCursorPosX inset
   ImVec2 _ top <- Raw.getCursorPos
   clicked <- invisibleButton ("##chat" <> T.pack (show chat)) (ImVec2 cardWidth cardHeight) ImGuiButtonFlags_None
@@ -124,21 +124,22 @@ chatRow e view width summary = do
   withFont (small (fonts e)) $ do
     at padding
     let when' = maybe "" (`ago` sidebarNow view) (Map.lookup chat (sidebarTimes view))
-    whenWidth <- textWidth when'
-    label (muted p) =<< ellipsize (textWidth' - whenWidth - 12) (maybe "No model" (safeText . choiceLabel) (summaryChoice summary))
-    rightAt right (muted p) when'
-  at (padding + smallHeight + lineGap)
-  label (if selected' then foreground p else mix 0.85 (foreground p) (background p)) =<< ellipsize textWidth' (safeText (summaryTitle summary))
-  withFont (small (fonts e)) $ do
-    at (padding + smallHeight + bodyHeight + 2 * lineGap)
-    let run = summaryLatest summary
+        run = summaryLatest summary
         (kind, ink) = case currentStep run of
           _ | summaryBusy summary -> (Spinner, accent p)
           Just (_, Failed _) -> (Cross, danger p)
           Nothing | all ((== Passed) . snd) (steps run) -> (Tick, success p)
           _ -> (Hollow, muted p)
+        model = maybe "No model" (fst . T.breakOn " · " . safeText . choiceLabel) (summaryChoice summary)
+    whenWidth <- textWidth when'
     _ <- icon kind ink
-    label ink =<< ellipsize (textWidth' - smallHeight - 8) (runSummary run)
+    label (muted p) . (<> " ·") =<< ellipsize (textWidth' / 2) model
+    Raw.sameLine
+    statusLeft <- getCursorPosX
+    label ink =<< ellipsize (right - whenWidth - 12 - statusLeft) (runSummary run)
+    rightAt right (muted p) when'
+  at (padding + smallHeight + lineGap)
+  label (if selected' then foreground p else mix 0.85 (foreground p) (background p)) =<< ellipsize textWidth' (safeText (summaryTitle summary))
   setCursorPos' (ImVec2 inset (top + cardHeight))
   gap 4
   pure (actions ++ [SelectChat chat | clicked && null actions])
