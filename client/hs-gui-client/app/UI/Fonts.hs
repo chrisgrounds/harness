@@ -9,7 +9,7 @@ import DearImGui (Font)
 import qualified DearImGui.FontAtlas as FontAtlas
 import System.Directory (doesFileExist)
 
--- | The type scale: 15, 17.5, 20 and 25 points, with code in a
+-- | The type scale: 16, 18.5, 21 and 26.5 points, with code in a
 -- monospaced face.
 data Faces a = Faces
   { -- | Steps, notes and everything else.
@@ -49,11 +49,11 @@ loadFonts density = do
       fonts <-
         FontAtlas.rebuild
           Faces
-            { body = face regular 17.5,
-              small = face regular 15,
-              lead = face medium 20,
-              heading = face demiBold 25,
-              mono = face monoFace 16
+            { body = face regular 18.5,
+              small = face regular 16,
+              lead = face medium 21,
+              heading = face demiBold 26.5,
+              mono = face monoFace 17
             }
       pure (fonts, 1 / density)
   where
