@@ -324,11 +324,9 @@ status state = case failure state of
     iterationNote = case run of
       Just r | iteration r > 1 -> " · iteration " <> T.pack (show (iteration r))
       _ -> ""
-    toolCallNote = case run of
-      Just r -> case latestToolCall r of
-        Just tc -> " · " <> toolCallLabel tc
-        Nothing -> ""
-      Nothing -> ""
+    toolCallNote = case activeToolCalls <$> run of
+      Just calls@(_ : _) -> " · " <> toolCallLabel (last calls) <> (if length calls > 1 then " +" <> T.pack (show (length calls - 1)) <> " more" else "")
+      _ -> ""
 
 spinner :: UI -> Text
 spinner state = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] !! (frame state `mod` 10)

@@ -5,7 +5,7 @@ module Holey (Config (..), OnFailure (..), runHoley) where
 import Agent (Llm, runAgent)
 import Control.Concurrent (newMVar, newQSem, signalQSem, waitQSem, withMVar)
 import Control.Concurrent.Async (forConcurrently_)
-import Control.Exception (Exception, SomeException, bracket_, displayException, fromException, throwIO, try)
+import Control.Exception (Exception, SomeException, bracket_, displayException, finally, fromException, throwIO, try)
 import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Reader (ReaderT, ask, asks, runReaderT)
@@ -421,8 +421,8 @@ untilAccepted budget attempts tool handler chat = do
   modelTime <- liftIO (newIORef 0)
   calls <- liftIO (newIORef (0 :: Int))
   let respond request = do
-        runReaderT (modifyRun (setToolCall request)) env
-        (reply, seconds) <- timed (runReaderT (handler request) env)
+        runReaderT (modifyRun (startToolCall request)) env
+        (reply, seconds) <- timed (runReaderT (handler request) env) `finally` runReaderT (modifyRun (finishToolCall request)) env
         buildLog env ("-- " <> toolNameText (toolRequestFunctionParamsName (toolRequestFunction request)) <> " took " <> showSeconds seconds <> " --\n")
         case reply of
           Answer text -> pure text

@@ -6,7 +6,9 @@ import Test.QuickCheck
 import qualified Test.QuickCheck as HoleyQuickCheck
 import qualified System.Exit as HoleyExit
 import Core
-import Data.Aeson (FromJSON, ToJSON, decode, encode)
+import Data.Aeson (FromJSON, ToJSON, Value (..), decode, encode, toJSON)
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Aeson.Text (encodeToLazyText)
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
@@ -82,7 +84,7 @@ instance Arbitrary Run where
     base <- newRun <$> arbitrary
     statuses <- vectorOf (length allSteps) arbitrary
     run <-
-      (\i ts art files ws h tc -> base {iteration = i, tasks = ts, artefact = art, touchedFiles = files, warnings = ws, history = h, latestToolCall = tc})
+      (\i ts art files ws h tc -> base {iteration = i, tasks = ts, artefact = art, touchedFiles = files, warnings = ws, history = h, activeToolCalls = tc})
         <$> chooseInt (1, 5)
         <*> arbitrary
         <*> arbitrary
@@ -139,10 +141,20 @@ prop_currentStepIsActive run = case currentStep run of
   Nothing -> all ((`elem` [Pending, Passed]) . snd) (steps run)
 
 prop_newRunNoToolCall :: Requirement -> Bool
-prop_newRunNoToolCall req = latestToolCall (newRun req) == Nothing
+prop_newRunNoToolCall req = null (activeToolCalls (newRun req))
 
-prop_setToolCallRecords :: ToolRequest -> Requirement -> Bool
-prop_setToolCallRecords t req = latestToolCall (setToolCall t (newRun req)) == Just (toolCallOf t)
+prop_startToolCallAppends :: ToolRequest -> Run -> Bool
+prop_startToolCallAppends t run = activeToolCalls (startToolCall t run) == activeToolCalls run ++ [toolCallOf t]
+
+prop_finishUndoesStart :: ToolRequest -> Run -> Bool
+prop_finishUndoesStart t run = length (activeToolCalls (finishToolCall t (startToolCall t run))) == length (activeToolCalls run)
+
+prop_runWithoutActiveCallsDecodes :: Requirement -> Bool
+prop_runWithoutActiveCallsDecodes req = decode (encode (KeyMap.delete (Key.fromString "activeToolCalls") object)) == Just (newRun req)
+  where
+    object = case toJSON (newRun req) of
+      Object o -> o
+      _ -> KeyMap.empty
 
 prop_toolCallHasPath :: T.Text -> Bool
 prop_toolCallHasPath path =
@@ -162,7 +174,9 @@ main = do
       , putStrLn "=== prop_restartFromResetsLaterSteps" >> HoleyQuickCheck.quickCheckResult prop_restartFromResetsLaterSteps
       , putStrLn "=== prop_currentStepIsActive" >> HoleyQuickCheck.quickCheckResult prop_currentStepIsActive
       , putStrLn "=== prop_newRunNoToolCall" >> HoleyQuickCheck.quickCheckResult prop_newRunNoToolCall
-      , putStrLn "=== prop_setToolCallRecords" >> HoleyQuickCheck.quickCheckResult prop_setToolCallRecords
+      , putStrLn "=== prop_startToolCallAppends" >> HoleyQuickCheck.quickCheckResult prop_startToolCallAppends
+      , putStrLn "=== prop_finishUndoesStart" >> HoleyQuickCheck.quickCheckResult prop_finishUndoesStart
+      , putStrLn "=== prop_runWithoutActiveCallsDecodes" >> HoleyQuickCheck.quickCheckResult prop_runWithoutActiveCallsDecodes
       , putStrLn "=== prop_toolCallHasPath" >> HoleyQuickCheck.quickCheckResult prop_toolCallHasPath
       ]
   if all HoleyQuickCheck.isSuccess results then HoleyExit.exitSuccess else HoleyExit.exitFailure

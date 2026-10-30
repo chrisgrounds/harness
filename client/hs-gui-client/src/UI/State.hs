@@ -5,7 +5,7 @@
 module UI.State
   ( UI (..), Conversation, Scroll (..), Direction (..), Action (..), ChatAction (..),
     initialUI, update, updateAll, canSend, Status (..), status,
-    implementCounts, target, rateText, runSummary, toolCallLabel, allToolNames,
+    implementCounts, target, rateText, runSummary, toolCallLabel, toolCallsLabel, allToolNames,
     runs, draft, replacement, waiting, failure, runError, inputHistory, historyIndex,
     savedDraft, serverModel, tokenStats, showingTools, scrollRequest, quitting,
     ChatSummary (..), chatSummaries, ago, selectedChoice, selectedEffort, restoreChats, chatsToSave
@@ -202,7 +202,7 @@ data Status
 
 conversationStatus :: Conversation -> Status
 conversationStatus ui = case (cWaiting ui, latest) of
-  (True, Just (step, _)) -> Busy (stepLabel step <> progress step) (toolCallLabel <$> (run >>= latestToolCall))
+  (True, Just (step, _)) -> Busy (stepLabel step <> progress step) (toolCallsLabel . activeToolCalls =<< run)
   (True, Nothing) -> Busy "Starting" Nothing
   (False, Just (step, Failed _)) -> Stopped step
   _ -> Ready
@@ -249,6 +249,14 @@ toolCallLabel c = toolNameText (callTool c) <> maybe "" ((" " <>) . shorten . sa
     shorten s
       | T.length s > 60 = T.take 59 s <> "…"
       | otherwise = s
+
+-- | The tool calls still running as the conversationStatus line shows them: the
+-- newest, then how many others, e.g. @ReadFile a.hs  +2 more@.
+toolCallsLabel :: [ToolCall] -> Maybe Text
+toolCallsLabel [] = Nothing
+toolCallsLabel calls = Just (toolCallLabel (last calls) <> (if others > 0 then "  +" <> T.pack (show others) <> " more" else ""))
+  where
+    others = length calls - 1
 
 -- | The name of every tool the harness can call, in declaration order.
 allToolNames :: [Text]

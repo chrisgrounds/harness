@@ -37,11 +37,14 @@ module Core.Run
     restartFrom,
     currentStep,
     taskProgress,
-    setToolCall,
+    startToolCall,
+    finishToolCall,
   )
 where
 
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON (..), ToJSON, Value (..), defaultOptions, genericParseJSON, withObject)
+import qualified Data.Aeson.KeyMap as KeyMap
+import Data.List (delete)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
@@ -191,10 +194,15 @@ data Run = Run
     warnings :: [Text],
     -- | Why the run looped back or gave up, oldest first.
     history :: [Text],
-    -- | The most recent tool call the model made, for the status bar.
-    latestToolCall :: Maybe ToolCall
+    -- | The tool calls still running, oldest first, for the status bar.
+    activeToolCalls :: [ToolCall]
   }
-  deriving (Eq, Show, Generic, ToJSON, FromJSON)
+  deriving (Eq, Show, Generic, ToJSON)
+
+-- | Runs saved before 'activeToolCalls' existed decode with none running.
+instance FromJSON Run where
+  parseJSON = withObject "Run" $ \o ->
+    genericParseJSON defaultOptions (Object (KeyMap.insertWith (\_ saved -> saved) "activeToolCalls" (Array mempty) o))
 
 touchedPaths :: Run -> [FilePath]
 touchedPaths = map changedPath . touchedFiles
@@ -232,7 +240,7 @@ newRun req =
       touchedFiles = [],
       warnings = [],
       history = [],
-      latestToolCall = Nothing
+      activeToolCalls = []
     }
 
 addHistory :: Text -> Run -> Run
@@ -281,7 +289,11 @@ currentStep run = case filter (active . snd) (steps run) of
 taskProgress :: Run -> (Int, Int)
 taskProgress run = (length [() | (_, Done) <- tasks run], length (tasks run))
 
--- | Records the most recent tool request the model made, replacing any
--- earlier one, for the client's status bar.
-setToolCall :: ToolRequest -> Run -> Run
-setToolCall t run = run {latestToolCall = Just (toolCallOf t)}
+-- | Records a tool request the model made as running, for the client's
+-- status bar.
+startToolCall :: ToolRequest -> Run -> Run
+startToolCall t run = run {activeToolCalls = activeToolCalls run ++ [toolCallOf t]}
+
+-- | Removes one running call matching the request, once it has finished.
+finishToolCall :: ToolRequest -> Run -> Run
+finishToolCall t run = run {activeToolCalls = delete (toolCallOf t) (activeToolCalls run)}
