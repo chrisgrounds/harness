@@ -29,6 +29,7 @@ data ToolName
   = ReadFile
   | ListFiles
   | RipGrep
+  | SetPlan
   | SetTypes
   | SetFunctions
   | SetProperties

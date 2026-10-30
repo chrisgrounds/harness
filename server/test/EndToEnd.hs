@@ -320,6 +320,8 @@ scenario label layout strategy checks = do
     source <- if hasModule then readFile (root </> moduleFile layout) else pure ""
     published <- readIORef events
     replies <- readIORef counter
+    let transitions = [(s, status) | RunUpdated r <- reverse published, Just (s, status) <- [currentStep r]]
+        beforeTypes = takeWhile ((/= DesignTypes) . fst) transitions
     specific <- checks root run source
     let kept
           | null (changedFiles layout) = []
@@ -335,6 +337,8 @@ scenario label layout strategy checks = do
         ++ concat
           [ expect ("touched files: " <> show (touchedFiles run)) $
               touchedFiles run == changedFiles layout,
+            expect "discovery runs before types" ((Discover, Running) `elem` beforeTypes),
+            expect "discovery completed" (lookup Discover (steps run) == Just Passed),
             expect "every change published" (case [r | RunUpdated r <- published] of latest : _ -> latest == run; _ -> False),
             expect ("every reply's rate published: " <> show (length [() | TokenRate _ <- published], replies)) (length [() | TokenRate _ <- published] == replies)
           ]
@@ -558,14 +562,19 @@ repairsDependent root run source = do
 
 designer :: Layout -> MergeStrategy -> Chat -> Reply
 designer layout strategy chat = case latestText chat of
-  Just (Tool, _) -> Say "Done."
+  Just (Tool, reply)
+    | step == Just SetPlan, reply /= "Accepted." -> CallTool SetPlan plan
+    | otherwise -> Say "Done."
   _
     | ImplementFunction `elem` tools' -> case implementing chat >>= (`lookup` implementations layout (strategy (instructions chat))) of
         Just (definition, extraImports) ->
           CallTool ImplementFunction (object ["definition" .= definition, "imports" .= extraImports])
         Nothing -> Say "I do not know that function."
     | otherwise -> case step of
-        Just SetTypes -> CallTool SetTypes types
+        Just SetPlan -> CallTool ReadFile (object ["path" .= cabalPath layout])
+        Just SetTypes
+          | any (\m -> role m == Assistant && any ((== SetPlan) . toolRequestFunctionParamsName . toolRequestFunction) (toolCalls m)) (messages chat) -> CallTool SetTypes types
+          | otherwise -> Say "Missing discovery plan in the design context."
         Just SetFunctions -> CallTool SetFunctions functions'
         Just SetProperties -> CallTool SetProperties properties'
         _
@@ -575,14 +584,20 @@ designer layout strategy chat = case latestText chat of
               _ -> Say ""
           | otherwise -> Say "Nothing to do."
   where
+    plan = object
+      [ "behaviour" .= ("Merge sorted lists." :: Text),
+        "existingCode" .= ("demo contains Demo; reuse its component." :: Text),
+        "changes" .= ("Create Sorted.Merge and test sorted union." :: Text),
+        "assumptions" .= ("None." :: Text)
+      ]
     tools' = availableTools chat
     step = case [text | m <- messages chat, role m == User, Just text <- [content m]] of
-      latest : _ -> case [t | t <- [SetTypes, SetFunctions, SetProperties], toolNameText t `T.isInfixOf` latest] of
+      latest : _ -> case [t | t <- [SetPlan, SetTypes, SetFunctions, SetProperties], toolNameText t `T.isInfixOf` latest] of
         t : _ -> Just t
         [] -> Nothing
       [] -> Nothing
     revised = draftUntil layout `T.isInfixOf` instructions chat
-    reviewing = maybe False ("Step 4: review" `T.isInfixOf`) (listToMaybe [text | m <- messages chat, role m == User, Just text <- [content m]])
+    reviewing = maybe False ("Step 5: review" `T.isInfixOf`) (listToMaybe [text | m <- messages chat, role m == User, Just text <- [content m]])
     (types, functions', properties') = case draft layout of
       Just first | not revised -> first
       _ -> (typesArgs layout, functionsArgs layout, propertiesArgs layout)

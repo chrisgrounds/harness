@@ -1,0 +1,35 @@
+{
+  "type": "function",
+  "function": {
+    "name": "SetPlan",
+    "description": "Records discovery findings and the change plan before designing types. Keep small tasks brief.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "behaviour": {
+          "type": "string",
+          "description": "Required behaviour and how success will be checked."
+        },
+        "existingCode": {
+          "type": "string",
+          "description": "Relevant existing modules, types, functions and code paths found during exploration, including reusable code."
+        },
+        "changes": {
+          "type": "string",
+          "description": "Modules and functions to create or change, why, and integration points such as callers and UI entry points."
+        },
+        "assumptions": {
+          "type": "string",
+          "description": "Assumptions, unresolved questions and how the plan handles them; say none if there are none."
+        }
+      },
+      "required": [
+        "behaviour",
+        "existingCode",
+        "changes",
+        "assumptions"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

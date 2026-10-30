@@ -9,6 +9,7 @@ module Edits
     ImplementArgs (..),
     RefactorArgs (..),
     GapArgs (..),
+    PlanArgs (..),
     RefactorArg (..),
     decodeArgs,
     checkModules,
@@ -197,6 +198,12 @@ definitionOf name definition = do
         || ("`" <> n <> "`") `elem` infixPosition line
         || maybe False (`elem` infixPosition line) (T.stripPrefix "(" n >>= T.stripSuffix ")")
     infixPosition = take 1 . drop 1 . T.words
+
+data PlanArgs = PlanArgs Text Text Text Text
+
+instance FromJSON PlanArgs where
+  parseJSON = withObject "SetPlan" $ \o ->
+    PlanArgs <$> o .: "behaviour" <*> o .: "existingCode" <*> o .: "changes" <*> o .: "assumptions"
 
 newtype GapArgs = GapArgs Text
 

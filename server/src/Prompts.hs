@@ -2,6 +2,7 @@
 
 module Prompts
   ( designSystemPrompt,
+    discoveryInstruction,
     typesInstruction,
     functionsInstruction,
     propertiesInstruction,
@@ -24,7 +25,7 @@ designSystemPrompt :: Text
 designSystemPrompt =
   T.unlines
     [ "You are holey, a type-driven Haskell assistant working in the user's codebase (the current directory).",
-      "You turn a requirement into changes to the codebase in three design steps: types, then function signatures, then QuickCheck properties.",
+      "You turn a requirement into changes to the codebase by first discovering and planning, then designing types, function signatures and QuickCheck properties.",
       "The changes can create new modules and change existing ones: add types and functions, change existing types, and change or rewrite existing functions.",
       "Integrate the work: if the requirement needs existing code to use the new code (a key binding, a call site, a new case), change those existing functions too.",
       "You never implement functions. After design, each function is implemented by a separate agent that sees only its module, the design, its signature and documentation, and the properties. So:",
@@ -35,7 +36,25 @@ designSystemPrompt =
       "- Express every invariant the types cannot capture as a property.",
       "Existing functions that stop type checking because of your changes are found and repaired automatically, keeping their signatures.",
       "Use ReadFile, ListFiles and RipGrep to understand the existing code before designing, and reuse its types where they fit.",
+      "Batch independent ReadFile, ListFiles and RipGrep calls in one reply to explore in parallel.",
       "Each step tells you which tool records its result. Call it, then finish your turn with a one-line summary."
+    ]
+
+discoveryInstruction :: Requirement -> [Component] -> Text
+discoveryInstruction req components =
+  T.unlines
+    [ "Requirement:",
+      requirementText req,
+      "",
+      "Components in this project:",
+      T.unlines (map describeComponent components),
+      "Step 1: discover and plan. Use ReadFile, ListFiles and RipGrep to inspect the existing code before choosing a design.",
+      "Trace the relevant behaviour through its entry points and callers, including other components that must use the change.",
+      "Identify reusable types and functions, the modules and functions that need to change, and how success will be checked.",
+      "Call SetPlan with the required behaviour, findings with concrete code references, proposed changes and integration points,",
+      "and any assumptions or unresolved questions. Keep the plan proportionate: a small task needs only a brief plan.",
+      "On a redesign, revisit the findings and plan in light of the failure. Do not create types, signatures or implementations yet.",
+      "Planning proceeds automatically into type design; no user approval is needed."
     ]
 
 typesInstruction :: Requirement -> [Component] -> Text
@@ -46,7 +65,7 @@ typesInstruction req components =
       "",
       "Components in this project:",
       T.unlines (map describeComponent components),
-      "Step 1: types. Explore the code as needed, then call SetTypes with every module the requirement needs to create or change,",
+      "Step 2: types. Use the discovery findings and plan, exploring further if needed, then call SetTypes with every module the requirement needs to create or change,",
       "including modules where you will only add or change functions. For each module give:",
       "- its component, named exactly as listed;",
       "- its module name: an existing module to change it, or a new name to create it;",
@@ -59,7 +78,7 @@ typesInstruction req components =
 functionsInstruction :: Model -> Text
 functionsInstruction run =
   T.unlines $
-    [ "Step 2: functions. Call SetFunctions with every function to add or change, each with its module (from step 1),",
+    [ "Step 3: functions. Call SetFunctions with every function to add or change, each with its module (from step 2),",
       "its name, its signature (the type only), documentation stating exactly what it does, and, for an existing function, a change note.",
       "The documentation is agent context only and is never written into the code; existing source comments are preserved.",
       "Describe the function as it will be. The separate change note tells its implementer what to change and is never written into the code.",
@@ -79,15 +98,15 @@ functionsInstruction run =
 propertiesInstruction :: Text
 propertiesInstruction =
   T.unlines
-    [ "Step 3: properties. Call SetProperties with QuickCheck properties for the invariants the types cannot express.",
-      "The property module is built against the first module's component. It already imports Test.QuickCheck and every module from step 1",
+    [ "Step 4: properties. Call SetProperties with QuickCheck properties for the invariants the types cannot express.",
+      "The property module is built against the first module's component. It already imports Test.QuickCheck and every module from step 2",
       "that component can use: its own modules and those of libraries it depends on (never an executable's Main). It cannot use the others.",
       "It can only use names those modules export: everything in new modules, and in existing modules what they already export",
-      "plus the types and functions from steps 1 and 2. To use another existing type, repeat its declaration unchanged in step 1.",
+      "plus the types and functions from steps 2 and 3. To use another existing type, repeat its declaration unchanged in step 2.",
       "Put any other imports in imports, and Arbitrary instances or generators for the new types in helpers.",
       "Each property needs a name starting with prop_ and its full source: signature and definition.",
       "Test the requirement's behaviour, not definitions restated: a property that only repeats a constant or a function body checks nothing.",
-      "Properties may only use the types and the functions from step 2, and existing code."
+      "Properties may only use the types and the functions from step 3, and existing code."
     ]
 
 revisionNote :: Int -> Text -> Text
@@ -124,7 +143,7 @@ fixUpInstruction tool errors =
 reviewInstruction :: Requirement -> [ModulePlan] -> [ComponentName] -> [(ModuleName, [FunctionSpec])] -> Text
 reviewInstruction req plans untouched written =
   T.unlines $
-    [ "Step 4: review. The run's code type checks and its properties pass, but the properties cannot check everything the requirement asks for.",
+    [ "Step 5: review. The run's code type checks and its properties pass, but the properties cannot check everything the requirement asks for.",
       "The requirement was:",
       requirementText req,
       "",

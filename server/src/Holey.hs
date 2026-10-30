@@ -88,7 +88,7 @@ runHoley cfg root prog = do
   unless (finished || onFailure cfg == Keep) (undo origs)
   where
     logFile = "dist-newstyle" </> "holey" </> "last-run.log"
-    failStart reason = update prog (setStep DesignTypes (Failed reason)) >> pure False
+    failStart reason = update prog (setStep Discover (Failed reason)) >> pure False
     undo origs = do
       run <- readRun prog
       undone <- try (rollback root origs run)
@@ -107,7 +107,10 @@ pipeline = do
   where
     design :: Text -> Chat -> Holey ()
     design typesStep chat = do
-      chat1 <- designStep DesignTypes SetTypes typesStep chat
+      req <- requirement <$> getRun
+      cs <- asks (components . project)
+      planned <- designStep Discover SetPlan (discoveryInstruction req cs) chat
+      chat1 <- designStep DesignTypes SetTypes typesStep planned
       chat2 <- designStep DesignSignatures SetFunctions (functionsInstruction (model chat1)) chat1
       chat3 <- designStep WriteProperties SetProperties propertiesInstruction chat2
       verify typesStep chat3 maxFixUps
@@ -166,7 +169,7 @@ pipeline = do
         GiveUp reason -> note reason >> liftIO (throwIO Stopped)
         Redesign feedback -> do
           note (atIteration current (describeOutcome outcome <> ": " <> redesignReason outcome))
-          modifyRun (restartFrom DesignTypes)
+          modifyRun (restartFrom Discover)
           design typesStep (addMessage (textMessage User (revisionNote (current + 1) feedback)) chat)
         Reimplement work -> do
           note (atIteration current (describeOutcome outcome <> ", so reimplementing " <> describeWork refs (map fst work) <> "."))
@@ -217,7 +220,7 @@ designStep step tool instruction chat = do
     else stop step ("The model did not call " <> toolNameText tool <> ".")
 
 designTools :: [ToolName]
-designTools = [ReadFile, ListFiles, RipGrep, SetTypes, SetFunctions, SetProperties, Refactor, RequirementNotMet]
+designTools = [ReadFile, ListFiles, RipGrep, SetPlan, SetTypes, SetFunctions, SetProperties, Refactor, RequirementNotMet]
 
 data ToolReply = Answer Text | Recorded (Either Text ())
 
@@ -230,6 +233,11 @@ designTool tool request = do
       | name /= tool -> pure (Answer unavailable)
       | otherwise ->
           Recorded <$> case name of
+            SetPlan -> pure $ case decodeArgs args of
+              Left err -> Left err
+              Right (PlanArgs behaviour existing changes assumptions)
+                | any (T.null . T.strip) [behaviour, existing, changes, assumptions] -> Left "Every plan field must be non-empty."
+                | otherwise -> Right ()
             SetTypes -> either (pure . Left) setTypes (decodeArgs args)
             SetFunctions -> either (pure . Left) setFunctions (decodeArgs args)
             SetProperties -> either (pure . Left) (tryModifyRun . applyProperties) (decodeArgs args)
@@ -556,5 +564,5 @@ failCurrent prog reason = do
   run <- readRun prog
   let step = case [s | (s, Running) <- steps run] of
         s : _ -> s
-        [] -> DesignTypes
+        [] -> Discover
   update prog (setStep step (Failed reason))

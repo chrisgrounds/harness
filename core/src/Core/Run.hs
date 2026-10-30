@@ -53,7 +53,8 @@ newtype Requirement = Requirement {requirementText :: Text}
   deriving newtype (Eq, Show, ToJSON, FromJSON)
 
 data Step
-  = DesignTypes
+  = Discover
+  | DesignTypes
   | DesignSignatures
   | WriteProperties
   | CheckSkeleton
@@ -202,6 +203,7 @@ allSteps :: [Step]
 allSteps = [minBound .. maxBound]
 
 stepLabel :: Step -> Text
+stepLabel Discover = "Discovering and planning"
 stepLabel DesignTypes = "Creating types"
 stepLabel DesignSignatures = "Creating functions"
 stepLabel WriteProperties = "Creating properties"
