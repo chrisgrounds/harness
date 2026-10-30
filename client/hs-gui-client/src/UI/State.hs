@@ -8,7 +8,7 @@ module UI.State
     implementCounts, target, rateText, runSummary, toolCallLabel, toolCallsLabel, allToolNames,
     runs, draft, replacement, waiting, failure, runError, inputHistory, historyIndex,
     savedDraft, serverModel, tokenStats, showingTools, scrollRequest, quitting,
-    ChatSummary (..), chatSummaries, ago, selectedChoice, selectedEffort, restoreChats, chatsToSave, RenameEditor (..)
+    ChatSummary (..), chatSummaries, chatTitle, ago, selectedChoice, selectedEffort, restoreChats, chatsToSave, RenameEditor (..)
   ) where
 
 import Client (NetworkEvent (..), ClientTask (..), safeText)
@@ -414,10 +414,21 @@ data ChatSummary = ChatSummary
 -- Unsent drafts retain their state but do not appear as history entries.
 chatSummaries :: UI -> [ChatSummary]
 chatSummaries ui =
-  [ChatSummary key (maybe (requirementText (requirement oldest)) id (cCustomTitle conversation)) (cModelChoice conversation) (cWaiting conversation) latest
+  [ChatSummary key title (cModelChoice conversation) (cWaiting conversation) latest
    | (key, conversation) <- reverse (Map.toAscList (Map.insert (currentChatId ui) (currentConversation ui) (otherConversations ui))),
      latest : _ <- [cRuns conversation],
-     Just oldest <- [listToMaybe (reverse (cRuns conversation))]]
+     Just title <- [conversationTitle conversation]]
+
+-- | The current chat's name, once it has started a run.
+chatTitle :: UI -> Maybe Text
+chatTitle = conversationTitle . currentConversation
+
+-- | A chat's custom title, or else its first requirement, once it has
+-- started a run.
+conversationTitle :: Conversation -> Maybe Text
+conversationTitle conversation = case listToMaybe (reverse (cRuns conversation)) of
+  Nothing -> Nothing
+  Just oldest -> Just (maybe (requirementText (requirement oldest)) id (cCustomTitle conversation))
 
 -- | How long ago the first time was before the second, briefly: @now@,
 -- @7m@, @2h@, @3d@ or @5w@.

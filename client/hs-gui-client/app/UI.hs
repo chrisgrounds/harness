@@ -47,7 +47,7 @@ import qualified UI.Settings as Settings
 import UI.Sidebar
 import UI.State
 import UI.Style (withStyleVec)
-import UI.Text (label, paragraph, withText)
+import UI.Text (ellipsize, label, paragraph, withText)
 import UI.Tools
 import qualified UI.Transcript as Transcript
 import UI.Widgets (Navigation (..), navigationButton, resizeSidebar)
@@ -318,6 +318,15 @@ mainPane e ui titled size'@(ImVec2 width _) =
   pane "main" size' Nothing False $ do
     let column = min 1000 (width - 2 * 44)
         left = (width - column) / 2
+    forM_ (chatTitle ui) $ \title -> do
+      gap 14
+      setCursorPosX 20
+      label (foreground p) =<< ellipsize (width - 40) (safeText title)
+      gap 14
+      ImVec2 x0 _ <- Raw.getWindowPos
+      ImVec2 _ y0 <- Raw.getCursorScreenPos
+      rule <- colour 1 (seam p)
+      line rule 1 (ImVec2 x0 y0) (ImVec2 (x0 + width) y0)
     forM_ (failure ui) $ \err -> do
       gap 18
       setCursorPosX left
